@@ -1,0 +1,103 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: "Malgun Gothic", Arial, sans-serif; line-height: 1.6; }
+  h1 { color: #2c3e50; font-size: 24pt; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+  h2 { color: #2980b9; font-size: 18pt; margin-top: 20px; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+  h3 { color: #34495e; font-size: 14pt; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; margin-bottom: 20px; }
+  th { background-color: #f2f2f2; border: 1px solid #bdc3c7; padding: 8px; text-align: left; font-weight: bold; }
+  td { border: 1px solid #bdc3c7; padding: 8px; }
+  .highlight { background-color: #fce4ec; border-left: 4px solid #e91e63; padding: 10px; margin: 15px 0; }
+  .alert { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>프로젝트 계획서: 기업 정보 자동 수집 시스템</h1>
+<p><b>작성일:</b> 2026년 4월 13일<br>
+<b>버전:</b> 3.0 — Firecrawl + Google Gemini AI 하이브리드 자동화</p>
+
+<h2>1. 프로젝트 요약 (경영진 보고용)</h2>
+<h3>목표</h3>
+<p>인터넷에서 <b>6,000개 이상의 기업</b>의 연락처 정보(주소, 전화번호, 이메일, 웹사이트, 대표자)를 자동으로 검색 및 수집하는 툴을 구축하여, 기존의 수동 검색 프로세스를 대체합니다.</p>
+
+<h3>전체 프로세스</h3>
+<ul>
+  <li><b>1단계: 명단 읽기</b> - 시스템이 6,000개 이상의 기업 이름이 포함된 Excel 파일을 열고 읽습니다.</li>
+  <li><b>2단계: 자동 검색</b> - 각 기업 이름을 구글(Google)에 자동 검색하고 상위 10개의 결과 링크를 가져옵니다. (10개의 링크 데이터는 즉시 데이터베이스에 보존)</li>
+  <li><b>3단계: 내용 수집 (Scrape)</b> - 주요 타겟 사이트 또는 회사 공식 웹사이트만 추려내어 텍스트 콘텐츠(지저분한 광고 제거) 수집 저장.</li>
+  <li><b>4단계: AI 분석 및 분류</b> - 인공지능(Gemini)이 각 사이트의 텍스트를 분석하여 연락처 세부정보를 추출합니다.</li>
+  <li><b>5단계: 결과 출력</b> - 모든 결과가 Excel 파일로 기록되며, 사람이 편하게 비교할 수 있도록 출처별로 나열됩니다.</li>
+</ul>
+
+<h2>2. 9대 주요 타겟 웹사이트</h2>
+<table>
+  <tr><th>연번</th><th>타겟 웹사이트</th><th>주요 수집 정보</th><th>분류</th></tr>
+  <tr><td>1</td><td><b>masothue.com</b></td><td>사업자번호, 법정 주소, 대표자</td><td>주요 출처</td></tr>
+  <tr><td>2</td><td><b>yellowpages.vn</b></td><td>기업 디렉토리, 폰번호, 주소</td><td>주요 출처</td></tr>
+  <tr><td>3</td><td><b>thuvienphapluat.vn</b></td><td>법률 정보, 라이선스</td><td>주요 출처</td></tr>
+  <tr><td>4</td><td><b>hosocongty.vn</b></td><td>통합 기업 프로필</td><td>주요 출처</td></tr>
+  <tr><td>5</td><td><b>vietnamworks.com</b></td><td>지점 주소, 채용 이메일/HR전화</td><td>주요 출처</td></tr>
+  <tr><td>6</td><td><b>topcv.vn</b></td><td>상동 (VietnamWorks와 유사)</td><td>주요 출처</td></tr>
+  <tr><td>7</td><td><b>vietcareer.vn</b></td><td>상동</td><td>주요 출처</td></tr>
+  <tr><td>8</td><td><b>facebook.com</b></td><td>팬페이지: 전화, 위치, 이메일</td><td>보조 출처(*)</td></tr>
+  <tr><td>9</td><td><b>linkedin.com</b></td><td>규모, 본사, 공식 웹사이트 주소</td><td>보조 출처(*)</td></tr>
+  <tr><td>+1</td><td><b>기업 자체 웹사이트</b></td><td>회사 연혁 또는 연락처 정보망</td><td>주요 출처</td></tr>
+</table>
+<div class="alert">
+  <b>Facebook 및 LinkedIn 관련 특별 참고 사항:</b><br>
+  Facebook/LinkedIn 기업정보는 대부분 비공개 상태입니다. 이곳은 데이터가 비는 것을 막기 위한 보조 수단으로만 사용됩니다.
+</div>
+
+<h2>3. 실행 계획 (총 32 영업일)</h2>
+
+<h3>1단계: 시스템 기반 구축 (6일)</h3>
+<ul>
+  <li>데이터베이스(SQLite) 원시 데이터 영구저장 설계</li>
+  <li>대규모 Excel 읽기/쓰기 모듈 개발</li>
+  <li>AI 기계가 직접 판독 가능한 상세 로그(Log) 시스템 생성</li>
+</ul>
+
+<h3>2단계: 검색/수집 파일럿 테스트 - 10개 (8일)</h3>
+<ul>
+  <li>구글 링크 서칭 로직 및 9개 사이트 추려내기 알고리즘</li>
+  <li>실제 타겟 사이트 내부 텍스트 긁기(Scraping)</li>
+  <li>(이 구간 예산: $0, 자체 무료 크레딧 가능)</li>
+</ul>
+
+<h3>3단계: AI 데이터 통합 시나리오 테스트 - 10개 (8일)</h3>
+<ul>
+  <li>확보된 텍스트를 인공지능(Google Gemini) 한테 넘겨 문맥 파악</li>
+  <li>전화번호, 주소를 가져와 엑셀에 적되 "어디 사이트 표기 기준이었는지" 출처 필수 반영</li>
+  <li>실제 담당자 수기 성과와 비교하여 AI 명령 프롬프트 보완수정</li>
+</ul>
+
+<h3>4단계: 시스템 본 가동 스케일업 (10일)</h3>
+<ul>
+  <li><b>100 -> 1000 -> 6000건</b>으로 조금씩 늘려가면서, 트래픽을 분산해 서버 밴(Ban) 방지 제어.</li>
+  <li>(이 구간 예산: 1,000건 넘어가는 과금 시점에 <b>월 $99</b> 플랜 가입 필수)</li>
+</ul>
+
+<div class="highlight">
+  <b>경영진 참고사항 — 왜 한 방에 안 돌리고 나눠서 테스트 하나요?</b><br>
+  오류가 있는 채널로 6000개 요청을 한 번에 다 해버리면 바로 며칠만에 엄청난 서버 크레딧(자금)이 다 날아가버리기 때문입니다. 예산 방출을 보호하고 에러를 미리 엣지 케이스 단위로 잡아 비용을 아낄 목적입니다.
+</div>
+
+<h2>4. Firecrawl 요금표 및 예산 상세 플랜</h2>
+<table>
+  <tr><th>서비스 플랜</th><th>월 정액 지출</th><th>API 제공 한도</th><th>결론</th></tr>
+  <tr><td>Free (무료 계정)</td><td>$0</td><td>500 Credit</td><td>테스트에만 씁니다</td></tr>
+  <tr><td>Hobby (스타터)</td><td>$19</td><td>3,000 Credit</td><td>100건 돌릴쯤 씁니다</td></tr>
+  <tr><td style="color:#e74c3c;font-weight:bold;">Standard (표준)</td><td style="color:#e74c3c;font-weight:bold;">$99</td><td style="color:#e74c3c;font-weight:bold;">100,000 Credit</td><td style="color:#e74c3c;font-weight:bold;">본 프로젝트 필수</td></tr>
+</table>
+<p>
+  <b>총 지출 예산 정리:</b><br>
+  이 과업을 위해 시스템 인프라 지출이 발생하는 곳은 파이어크롤(Firecrawl API) 하나이며, 최종 6,000건 완수 기간동안 총 발생될 한화 금액은 약 13만원($99) 가량입니다. 인공지능 Google Gemini는 구글 자체 지급 일일 한도를 적용하여 방어하므로 $0 에 수렴합니다. 비용은 프로젝트 완료 시 언제든 해지 가능합니다.
+</p>
+
+</body>
+</html>

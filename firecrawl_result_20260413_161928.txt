@@ -1,0 +1,57 @@
+--- KẾT QUẢ TÌM KIẾM FIRECRAWL ---
+Thời gian: 2026-04-13 16:19:28.976788
+Từ khóa: GEN CONS VIỆT NAM
+Mã trạng thái HTTP: 200
+----------------------------------
+
+{
+    "success": true,
+    "data": {
+        "web": [
+            {
+                "url": "https://masothue.com/0106831501-cong-ty-co-phan-dau-tu-xay-dung-gen-cons-viet-nam",
+                "title": "CÔNG TY CỔ PHẦN ĐẦU TƯ XÂY DỰNG GEN CONS VIỆT NAM",
+                "description": "CÔNG TY CỔ PHẦN ĐẦU TƯ XÂY DỰNG GEN CONS VIỆT NAM. Mã số thuế, 0106831501. Địa chỉ Thuế, Tầng 25, Tòa tháp A, số 54A Nguyễn Chí Thanh, Phường Láng, ...",
+                "position": 1
+            },
+            {
+                "url": "https://roxcons.vn/",
+                "title": "ROX Cons Việt Nam",
+                "description": "Giới thiệu · Tin tức · Thư viện · Liên hệ; 0324888999; ROX CONS VIỆT NAM. Lĩnh vực hoạt động · Năng lực · Quan hệ cổ đông · Nhân sự. ROX CONS VIỆT NAM.",
+                "position": 2
+            },
+            {
+                "url": "https://thuvienphapluat.vn/ma-so-thue/cong-ty-co-phan-dau-tu-xay-dung-gen-cons-viet-nam-mst-0106831501.html?hl=en",
+                "title": "CÔNG TY CỔ PHẦN ĐẦU TƯ XÂY DỰNG GEN CONS VIỆT NAM",
+                "description": "CÔNG TY CỔ PHẦN ĐẦU TƯ XÂY DỰNG GEN CONS VIỆT NAM - Mã số thuế 0106831501 (Đã cập nhật Xã/phường, Tỉnh/Thành phố mới) - Địa chỉ: Tầng 25, Tòa tháp A, ...",
+                "position": 3
+            },
+            {
+                "url": "https://fast500.vn/Thong-tin-doanh-nghiep/CONG-TY-CP-DAU-TU-XAY-DUNG-ROX-CONS-VIET-NAM-Chart--44052-2023.html",
+                "title": "CÔNG TY CP ĐẦU TƯ XÂY DỰNG GEN CONS VIỆT NAM - FAST500",
+                "description": "Công ty Cổ phần Đầu tư Xây dưng Rox Cons Việt Nam - TNCons Vietnam thành lập năm 2015 và là đơn vị hoạt động trong lĩnh vực xây dựng dân dụng, công nghiệp và hạ ...",
+                "position": 4
+            },
+            {
+                "url": "https://vietstock.vn/2025/08/vua-bao-cao-so-huu-cua-co-dong-lon-ctcp-dau-tu-xay-dung-gen-cons-viet-nam-737-1343704.htm",
+                "title": "VUA: Báo cáo sở hữu của cổ đông lớn - CTCP Đầu tư Xây dựng ...",
+                "description": "Tên tổ chức thực hiện giao dịch: CTCP Đầu tư Xây dựng Gen Cons Việt Nam - Mã chứng khoán: VUA - Số lượng cổ phiếu nắm giữ trước khi trở ...",
+                "position": 5
+            },
+            {
+                "url": "https://rox.vn/tin-tuc/chinh-thuc-ra-mat-nen-tang-van-hoa-rox-cons-id2773.html",
+                "title": "Chính thức ra mắt nền tảng văn hóa ROX Cons",
+                "description": "Ngày 25122023 công ty Cổ phần Đầu tư Xây dựng ROX Cons Việt Nam ROX Cons Vietnam đã chính thức ra mắt nền tảng văn hóa ROX Cons hướng đến bồi đắp nội lực ...",
+                "position": 6
+            },
+            {
+                "url": "https://globalcons.vn/",
+                "title": "https://globalcons.vn/",
+                "description": "No information is available for this page. · Learn why",
+                "position": 7
+            }
+        ]
+    },
+    "creditsUsed": 2,
+    "id": "019d8623-801e-7436-9e81-5fece79778ef"
+}

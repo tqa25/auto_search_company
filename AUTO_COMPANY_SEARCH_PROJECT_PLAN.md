@@ -94,7 +94,27 @@ Xây dựng công cụ tự động tìm kiếm và thu thập thông tin liên 
 
 | Ngày | Hạng mục | Mô tả công việc | Sản phẩm bàn giao |
 |------|----------|------------------|--------------------|
-| 7–8 | Module tìm kiếm (Search) | Xây module tự động gõ Google qua Firecrawl. Mỗi công ty lấy 10 kết quả. **Lưu toàn bộ 10 link + tiêu đề + đoạn mô tả ngắn (snippet) vào kho dữ liệu ngay lập tức** — dữ liệu này có giá trị và không nên bỏ phí | Chạy thử 10 công ty, mỗi công ty có 10 link đã lưu |
+| 7–8 | Module tìm kiếm (Search) | Xây module tự động gõ Google qua Firecrawl. Mỗi công ty lấy 10 kết quả. **Lưu toàn bộ 10 link + tiêu đề + đoạn mô tả ngắn (snippet) vào kho dữ liệu ngay lập tức** — dữ liệu này có giá trị và không nên bỏ phí. ⚠️ **Xem thêm: Chiến lược Tìm kiếm Song ngữ bên dưới** | Chạy thử 10 công ty, mỗi công ty có 10 link đã lưu |
+
+> ### ⚠️ LƯU Ý ĐẶC BIỆT: CHIẾN LƯỢC TÌM KIẾM SONG NGỮ (Bilingual Search)
+>
+> **Vấn đề:** Danh sách đầu vào chỉ có tên công ty bằng **tiếng Anh** (VD: *ABC Software Solutions Co., Ltd*). Nhưng nhiều trang danh bạ nội địa Việt Nam (masothue.com, thuvienphapluat.vn, hosocongty.vn...) chỉ lưu tên pháp lý bằng **tiếng Việt** (VD: *Công ty TNHH Giải Pháp Phần Mềm ABC*). Nếu chỉ tìm kiếm bằng tên tiếng Anh → **bỏ sót rất nhiều kết quả từ các nguồn quan trọng nhất**.
+>
+> **Giải pháp kết hợp (được áp dụng trong Module Search):**
+>
+> **① Từ khóa mỏ neo (Anchor Keywords)** — Không tốn thêm chi phí:
+> - Thay vì search đơn giản: `"ABC Software Solutions"`
+> - Search nâng cao: `"ABC Software Solutions" AND ("mã số thuế" OR "công ty TNHH" OR "công ty cổ phần")`
+> - Hiệu quả: ép Google trả về kết quả từ các trang danh bạ nội địa Việt Nam
+>
+> **② Khai thác Mã số thuế (nếu có)** — Độ chính xác 100%:
+> - Nếu dòng Excel có cột mã số thuế → **ưu tiên dùng MST để tìm kiếm trước**, bỏ qua tên.
+> - MST là duy nhất, không phụ thuộc ngôn ngữ, không sợ trùng tên.
+>
+> **③ AI dịch tên (bổ sung cho trường hợp khó):**
+> - Dùng Gemini AI (miễn phí) dịch tên tiếng Anh thành dạng tên pháp lý tiếng Việt trước khi search.
+> - VD: AI tự biết `Joint Stock Company` = `Công ty Cổ phần`, `Company Limited` = `Công ty TNHH`.
+> - Search 2 lần: 1 lần bằng tên gốc tiếng Anh + 1 lần bằng tên tiếng Việt do AI suy luận.
 | 9–10 | Bộ lọc link thông minh | Xây bộ lọc: so sánh 10 link với 9 trang web mục tiêu. Đánh dấu link nào cần thu thập. Tự nhận diện website chính chủ của công ty | Mỗi công ty có danh sách "link đáng thu thập" |
 | 11–12 | Module thu thập (Scrape) | Xây module tự vào từng link đã lọc, lấy nội dung chữ sạch (Markdown). **Lưu toàn bộ nội dung văn bản vào kho dữ liệu** — đây là tài sản thông tin, sau này có thể phân tích lại bằng AI khác mà không tốn credit Firecrawl | Mỗi công ty có 2–5 file văn bản nội dung đã lưu |
 | 13–14 | Chạy thử Kịch bản A | Chạy pipeline Search → Lọc → Scrape cho **10 công ty mẫu**. Kiểm tra kết quả. Đo thời gian & credit tiêu thụ | Báo cáo thử nghiệm Kịch bản A (10 công ty) |
