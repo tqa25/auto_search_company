@@ -1,4 +1,10 @@
 /AUTO_COMPANY_SEARCH_PROJECT_PLAN_KO.md
 /PIC 수집 시도_글투실_20260409.xlsx
 /PIC 수집 시도_글투실_20260409.xlsx:Zone.Identifier
-/venv
+/venv/
+.env
+*.db
+data/*.db
+output/
+__pycache__/
+*.xlsx
