@@ -1,0 +1,49 @@
+
+FILTER MODULE — SCORING TEST
+════════════════════════════════════════════════════════════════
+
+
+URL: https://thuvienphapluat.vn/doanh-nghiep/abc
+Mô tả: Legal domain
+Kết quả:
+  - source_type: thuvienphapluat
+  - relevance_score: 30.0
+  - should_scrape: True
+  - score_breakdown: {'domain_score': 30.0, 'keyword_bonuses': {}, 'total': 30.0}
+
+
+URL: https://vietnamworks.com/cong-ty/abc/lien-he
+Mô tả: Job + contact keyword
+Kết quả:
+  - source_type: vietnamworks
+  - relevance_score: 30.0
+  - should_scrape: True
+  - score_breakdown: {'domain_score': 20.0, 'keyword_bonuses': {'contact': 10}, 'total': 30.0}
+
+
+URL: https://masothue.com/abc
+Mô tả: Blacklisted domain
+Kết quả:
+  - source_type: blacklisted
+  - relevance_score: 0.0
+  - should_scrape: False
+  - score_breakdown: {'domain_score': 0.0, 'keyword_bonuses': {}, 'total': 0.0}
+
+
+URL: https://example.com
+Mô tả: Official website guess
+Kết quả:
+  - source_type: official_website
+  - relevance_score: 40.0
+  - should_scrape: True
+  - score_breakdown: {'domain_score': 40.0, 'keyword_bonuses': {}, 'total': 40.0}
+
+
+URL: https://facebook.com/abc-corp
+Mô tả: Social media
+Kết quả:
+  - source_type: facebook
+  - relevance_score: 10.0
+  - should_scrape: True
+  - score_breakdown: {'domain_score': 10.0, 'keyword_bonuses': {}, 'total': 10.0}
+

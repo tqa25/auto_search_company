@@ -1,0 +1,24 @@
+
+SCRAPE MODULE — URL DEDUP
+════════════════════════════════════════════════════════════════
+
+CÁC METHOD MỚI:
+  - discover_contact_pages(): True
+  - _normalize_url_and_hash(): True
+
+URL HASH TEST (utm params bị loại bỏ):
+  https://example.com/page?utm_source=google&utm_medium=cpc              → 3641c5f2274c5471...
+  https://example.com/page?utm_source=facebook                           → 3641c5f2274c5471...
+  https://example.com/page                                               → 3641c5f2274c5471...
+  https://EXAMPLE.COM/page/                                              → 3641c5f2274c5471...
+  https://example.com/page?utm_source=test&other=param                   → 6eb17dbeecd4bb26...
+
+
+CONTACT DISCOVERY CONFIG:
+  - CONTACT_DISCOVERY_ENABLED: True
+  - CONTACT_PATHS: ['/contact', '/lien-he', '/about']
+
+EXPECTED BEHAVIOR:
+  - discover_contact_pages() được gọi khi không tìm thấy SĐT
+  - Thử cào /contact, /lien-he, /about từ domain của công ty
+  - Re-run AI Extract trên các trang mới tìm được

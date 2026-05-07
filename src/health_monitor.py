@@ -181,7 +181,7 @@ class HealthMonitor:
         perm_failed = perm_failed_row['cnt'] if perm_failed_row else 0
 
         in_progress_row = self.db.fetch_one(
-            "SELECT COUNT(*) as cnt FROM companies WHERE status IN ('searching', 'scraping', 'extracting')"
+            "SELECT COUNT(*) as cnt FROM companies WHERE status IN ('searching', 'searched', 'scraping', 'scraped', 'extracting', 'ai_done', 'contact_discovering')"
         )
         in_progress = in_progress_row['cnt'] if in_progress_row else 0
 

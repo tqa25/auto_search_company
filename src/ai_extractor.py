@@ -5,6 +5,7 @@ import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
+from src.errors import RetryableError, CriticalError, SkippableError
 
 class AIExtractor:
     def __init__(self, db: DatabaseManager, logger: PipelineLogger, gemini_api_key: str):
@@ -20,6 +21,9 @@ class AIExtractor:
         self.model = genai.GenerativeModel('gemini-3-flash-preview') 
 
     EXTRACTION_PROMPT_TEMPLATE = """
+    Bạn đang trích xuất thông tin liên hệ của công ty: {company_name}
+    CHỈ trích xuất thông tin của công ty trên, KHÔNG lấy thông tin của các công ty khác được đề cập trên trang.
+
     Bạn là một chuyên gia trích xuất dữ liệu. Hãy đọc nội dung Markdown dưới đây và 
     trích xuất CHÍNH XÁC các thông tin liên hệ của công ty, bao gồm:
     
@@ -74,12 +78,19 @@ class AIExtractor:
         source_url = scraped_page['url']
         markdown_content = scraped_page['markdown_content'] or ""
         
+        company_record = self.db.get_company(company_id)
+        company_name = company_record['original_name'] if company_record else "Unknown Company"
+        
         # Long content safeguard
         if len(markdown_content) > 30000:
             self.logger.logger.warning(f"Markdown content too long for scraped_page_id {scraped_page_id}, truncating to 30,000 chars.")
             markdown_content = markdown_content[:30000]
 
-        prompt = self.EXTRACTION_PROMPT_TEMPLATE.replace("{markdown_content}", markdown_content)
+        prompt = self.EXTRACTION_PROMPT_TEMPLATE.replace(
+            "{company_name}", company_name
+        ).replace(
+            "{markdown_content}", markdown_content
+        )
         
         log_id = self.logger.log_step_start(company_id, "AI_EXT", source_url=source_url, source_name=source_type)
         
@@ -192,14 +203,17 @@ class AIExtractor:
                         self.logger.logger.warning(f"Rate limit exceeded (429). Retrying in 60s... (Attempt {attempt}/{max_retries})")
                         time.sleep(60)
                         continue
+                    else:
+                        self.logger.log_step_end(log_id, "FAILED", error_message="Rate limit exceeded after retries")
+                        raise RetryableError(f"Rate limit exceeded (429) after {max_retries} retries")
                 elif "quota exceeded" in error_msg.lower():
                     self.logger.logger.error("Gemini API Quota Exceeded! Stop processing.")
                     self.logger.log_step_end(log_id, "FAILED", error_message="Quota Exceeded")
-                    raise e
-                
+                    raise CriticalError("Gemini API quota exceeded. Stop pipeline.")
+
                 self.logger.logger.error(f"Gemini API error: {error_msg}")
                 self.logger.log_step_end(log_id, "FAILED", error_message=error_msg[:100])
-                return {"status": "failed", "reason": "api_error", "message": error_msg}
+                raise SkippableError(f"AI extraction error: {error_msg[:100]}")
                 
         self.logger.log_step_end(log_id, "FAILED", error_message="max_retries reached")
         return {"status": "failed", "reason": "max_retries"}

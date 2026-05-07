@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import threading
 
 class DatabaseManager:
     """Manages the SQLite database for the company data extraction pipeline."""
@@ -9,147 +10,198 @@ class DatabaseManager:
         self.db_path = db_path
         # Ensure the data directory exists
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        # Thread-local storage for connection pooling
+        self._local = threading.local()
 
     def _get_connection(self):
-        """Get a database connection."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        """Reuse connection per thread via thread-local storage."""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            self._local.conn = conn
+        return self._local.conn
+
+    def close(self):
+        """Close current thread's connection."""
+        if hasattr(self._local, 'conn') and self._local.conn:
+            self._local.conn.close()
+            self._local.conn = None
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, *args):
+        """Context manager exit."""
+        self.close()
 
     def init_db(self):
         """Initialize the database tables and indexes."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
+        conn = self._get_connection()
+        cursor = conn.cursor()
 
-            # 1. companies
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS companies (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    original_name TEXT NOT NULL,
-                    vietnamese_name TEXT,
-                    tax_code TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+        # 1. companies
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS companies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_name TEXT NOT NULL,
+                vietnamese_name TEXT,
+                tax_code TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-            # 2. search_results
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS search_results (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    company_id INTEGER REFERENCES companies(id),
-                    search_query TEXT NOT NULL,
-                    search_type TEXT,
-                    result_rank INTEGER,
-                    url TEXT NOT NULL,
-                    title TEXT,
-                    snippet TEXT,
-                    credits_used REAL DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+        # 2. search_results
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS search_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER REFERENCES companies(id),
+                search_query TEXT NOT NULL,
+                search_type TEXT,
+                result_rank INTEGER,
+                url TEXT NOT NULL,
+                title TEXT,
+                snippet TEXT,
+                credits_used REAL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-            # 3. filtered_links
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS filtered_links (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    search_result_id INTEGER REFERENCES search_results(id),
-                    company_id INTEGER REFERENCES companies(id),
-                    url TEXT NOT NULL,
-                    source_type TEXT NOT NULL,
-                    should_scrape BOOLEAN DEFAULT 1,
-                    reason TEXT
-                )
-            """)
+        # 3. filtered_links
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS filtered_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_result_id INTEGER REFERENCES search_results(id),
+                company_id INTEGER REFERENCES companies(id),
+                url TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                should_scrape BOOLEAN DEFAULT 1,
+                reason TEXT,
+                relevance_score REAL DEFAULT 0.0
+            )
+        """)
 
-            # 4. scraped_pages
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS scraped_pages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    filtered_link_id INTEGER REFERENCES filtered_links(id),
-                    company_id INTEGER REFERENCES companies(id),
-                    url TEXT NOT NULL,
-                    source_type TEXT NOT NULL,
-                    markdown_content TEXT,
-                    content_length INTEGER,
-                    scrape_status TEXT,
-                    credits_used REAL DEFAULT 0,
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+        # Safe migration: add relevance_score to existing filtered_links tables
+        try:
+            cursor.execute("ALTER TABLE filtered_links ADD COLUMN relevance_score REAL DEFAULT 0.0")
+        except Exception:
+            pass  # column already exists
 
-            # 5. extracted_contacts
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS extracted_contacts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    company_id INTEGER REFERENCES companies(id),
-                    scraped_page_id INTEGER REFERENCES scraped_pages(id),
-                    source_type TEXT NOT NULL,
-                    source_url TEXT,
-                    address TEXT,
-                    phone TEXT,
-                    email TEXT,
-                    website TEXT,
-                    fax TEXT,
-                    representative TEXT,
-                    raw_ai_response TEXT,
-                    confidence_score REAL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+        # 4. scraped_pages
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS scraped_pages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filtered_link_id INTEGER REFERENCES filtered_links(id),
+                company_id INTEGER REFERENCES companies(id),
+                url TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                markdown_content TEXT,
+                content_length INTEGER,
+                scrape_status TEXT,
+                credits_used REAL DEFAULT 0,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-            # 6. pipeline_logs
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS pipeline_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    company_id INTEGER REFERENCES companies(id),
-                    step TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    started_at TIMESTAMP,
-                    finished_at TIMESTAMP,
-                    duration_seconds REAL,
-                    source_url TEXT,
-                    source_name TEXT,
-                    credits_used REAL DEFAULT 0,
-                    error_message TEXT,
-                    data_saved BOOLEAN DEFAULT 0,
-                    metadata_json TEXT
-                )
-            """)
+        # 5. extracted_contacts
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS extracted_contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER REFERENCES companies(id),
+                scraped_page_id INTEGER REFERENCES scraped_pages(id),
+                source_type TEXT NOT NULL,
+                source_url TEXT,
+                address TEXT,
+                phone TEXT,
+                email TEXT,
+                website TEXT,
+                fax TEXT,
+                representative TEXT,
+                raw_ai_response TEXT,
+                confidence_score REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-            # index for pipeline_logs
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_pipeline_logs_company_step 
-                ON pipeline_logs(company_id, step)
-            """)
+        # 6. pipeline_logs
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER REFERENCES companies(id),
+                step TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                duration_seconds REAL,
+                source_url TEXT,
+                source_name TEXT,
+                credits_used REAL DEFAULT 0,
+                error_message TEXT,
+                data_saved BOOLEAN DEFAULT 0,
+                metadata_json TEXT
+            )
+        """)
 
-            conn.commit()
+        # 7. query_cache
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS query_cache (
+                query_hash TEXT PRIMARY KEY,
+                query_text TEXT NOT NULL,
+                company_id INTEGER REFERENCES companies(id),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                result_count INTEGER DEFAULT 0
+            )
+        """)
+
+        # 8. url_cache
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS url_cache (
+                url_hash TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                scrape_status TEXT,
+                content_hash TEXT,
+                scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ttl_expires_at TIMESTAMP
+            )
+        """)
+
+        # index for pipeline_logs
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pipeline_logs_company_step
+            ON pipeline_logs(company_id, step)
+        """)
+
+        conn.commit()
 
     # Generic method for inserting/updating to avoid redundant code
     def execute_query(self, query, params=()):
         """Execute a general query that doesn't return rows (INSERT/UPDATE/DELETE)."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            conn.commit()
-            return cursor.lastrowid
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        conn.commit()
+        return cursor.lastrowid
 
     def fetch_all(self, query, params=()):
         """Execute a query and return all rows."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
-    
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
     def fetch_one(self, query, params=()):
         """Execute a query and return the first row."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            row = cursor.fetchone()
-            return dict(row) if row else None
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
     # --- Companies ---
     def insert_company(self, original_name, vietnamese_name=None, tax_code=None, status="pending"):
@@ -242,4 +294,54 @@ class DatabaseManager:
     def get_pipeline_logs_for_company(self, company_id):
         """Get pipeline logs for a company."""
         return self.fetch_all("SELECT * FROM pipeline_logs WHERE company_id = ? ORDER BY started_at ASC", (company_id,))
+
+    # --- Query Cache ---
+    def insert_query_cache(self, query_hash: str, query_text: str, company_id: int, expires_at: str, result_count: int = 0):
+        return self.execute_query(
+            "INSERT OR REPLACE INTO query_cache (query_hash, query_text, company_id, expires_at, result_count) VALUES (?, ?, ?, ?, ?)",
+            (query_hash, query_text, company_id, expires_at, result_count)
+        )
+
+    def get_query_cache(self, query_hash: str):
+        return self.fetch_one("SELECT * FROM query_cache WHERE query_hash = ?", (query_hash,))
+
+    def is_query_cached(self, query_hash: str) -> bool:
+        """Returns True if query is cached AND not expired."""
+        row = self.fetch_one(
+            "SELECT * FROM query_cache WHERE query_hash = ? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
+            (query_hash,)
+        )
+        return row is not None
+
+    # --- URL Cache ---
+    def insert_url_cache(self, url_hash: str, url: str, scrape_status: str, content_hash: str = None, ttl_expires_at: str = None):
+        return self.execute_query(
+            "INSERT OR REPLACE INTO url_cache (url_hash, url, scrape_status, content_hash, ttl_expires_at) VALUES (?, ?, ?, ?, ?)",
+            (url_hash, url, scrape_status, content_hash, ttl_expires_at)
+        )
+
+    def get_url_cache(self, url_hash: str):
+        return self.fetch_one("SELECT * FROM url_cache WHERE url_hash = ?", (url_hash,))
+
+    def is_url_cached(self, url_hash: str) -> bool:
+        """Returns True if URL was successfully scraped AND cache is not expired."""
+        row = self.fetch_one(
+            "SELECT * FROM url_cache WHERE url_hash = ? AND scrape_status = 'success' AND (ttl_expires_at IS NULL OR ttl_expires_at > CURRENT_TIMESTAMP)",
+            (url_hash,)
+        )
+        return row is not None
+
+    # --- Filtered Links (update relevance_score) ---
+    def update_filtered_link_score(self, filtered_link_id: int, relevance_score: float):
+        self.execute_query(
+            "UPDATE filtered_links SET relevance_score = ? WHERE id = ?",
+            (relevance_score, filtered_link_id)
+        )
+
+    def get_top_scored_links(self, company_id: int, top_n: int = 10) -> list:
+        """Get top N filtered links by relevance_score for a company (should_scrape=1 only)."""
+        return self.fetch_all(
+            "SELECT * FROM filtered_links WHERE company_id = ? AND should_scrape = 1 ORDER BY relevance_score DESC LIMIT ?",
+            (company_id, top_n)
+        )
 

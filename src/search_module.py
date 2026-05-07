@@ -1,31 +1,38 @@
 """
-Search Module — Bilingual Search Strategy for Company Data Extraction Pipeline.
+Search Module — 2-Tier Coarse+Fallback Search Strategy for Company Data Extraction Pipeline.
 
-This module implements a three-tier search strategy to find Vietnamese business
+This module implements a two-tier search strategy to find Vietnamese business
 information from English company names:
-  ① Tax Code search (most precise, if available)
-  ② English name + Vietnamese anchor keywords (forces domestic results)
-  ③ Vietnamese translated name via Gemini AI (fallback if ② misses key sources)
+  ① Tier 1 — Coarse search: English name + contact keywords (broad, with early-stop check)
+  ② Tier 2 — Fallback (only if Tier 1 didn't trigger early-stop):
+      2a. Recruitment query
+      2b. Abbreviation query (if applicable)
+      2c. Facebook search (if below FB_FALLBACK_THRESHOLD good links)
+
+All search queries are deduplicated via a query_cache table before hitting the API.
 
 Dependencies:
   - src.database.DatabaseManager (existing)
   - src.logger.PipelineLogger (existing)
+  - src.config.Config (new)
   - Firecrawl Search API (external)
-  - Google Gemini AI (optional, for Vietnamese name translation)
   - src.rate_limiter.AdaptiveRateLimiter (optional, for adaptive pacing)
   - src.connection_pool.ConnectionManager (optional, for connection reuse)
 """
 
+import hashlib
 import os
 import time
 import json
 import logging
 import requests
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
+from src.errors import RetryableError, CriticalError
 
 # Load .env file at module level
 load_dotenv()
@@ -34,15 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 class SearchModule:
-    """Search for company information using a bilingual (EN/VN) strategy via Firecrawl."""
-
-    # Vietnamese anchor keywords to force Google into returning domestic business pages
-    ANCHOR_KEYWORDS = (
-        '"mã số thuế" OR "công ty TNHH" OR "công ty cổ phần" OR "giấy phép kinh doanh"'
-    )
-
-    # Key target domains whose presence means step ② was sufficient
-    KEY_TARGET_DOMAINS = ["masothue.com", "thuvienphapluat.vn"]
+    """Search for company information using a 2-tier coarse+fallback strategy via Firecrawl."""
 
     # Firecrawl API endpoint
     FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v1/search"
@@ -58,6 +57,8 @@ class SearchModule:
         gemini_api_key: str = None,
         rate_limiter=None,
         connection_manager=None,
+        config=None,
+        filter_module=None,
     ):
         """Initialize the SearchModule.
 
@@ -65,19 +66,29 @@ class SearchModule:
             db: DatabaseManager instance for reading/writing company and search data.
             pipeline_logger: PipelineLogger instance for structured logging.
             firecrawl_api_key: Firecrawl API key. Falls back to env var FIRECRAWL_API_KEY.
-            gemini_api_key: Google Gemini API key for Vietnamese translation.
+            gemini_api_key: Google Gemini API key (kept for backward compatibility, unused).
                             Falls back to env var GEMINI_API_KEY.
             rate_limiter: Optional AdaptiveRateLimiter instance. When provided,
                           replaces fixed delay with adaptive pacing.
             connection_manager: Optional ConnectionManager instance. When provided,
                                 uses session-based connection pooling instead of raw requests.
+            config: Optional Config instance. Falls back to default_config.
         """
+        from src.config import default_config
+
+        self.config = config or default_config
         self.db = db
         self.pipeline_logger = pipeline_logger
         self.firecrawl_api_key = firecrawl_api_key or os.getenv("FIRECRAWL_API_KEY", "")
         self.gemini_api_key = gemini_api_key or os.getenv("GEMINI_API_KEY", "")
         self.rate_limiter = rate_limiter
         self.connection_manager = connection_manager
+
+        if filter_module is None:
+            from src.filter_module import LinkFilter
+            self.filter_module = LinkFilter(db, pipeline_logger, config=self.config)
+        else:
+            self.filter_module = filter_module
 
         if not self.firecrawl_api_key:
             logger.warning("FIRECRAWL_API_KEY is not set. Search requests will fail.")
@@ -87,13 +98,13 @@ class SearchModule:
     # ------------------------------------------------------------------
 
     def search_company(self, company_id: int) -> List[Dict]:
-        """Execute the full bilingual search strategy for a single company.
+        """Execute the full 2-tier coarse+fallback search strategy for a single company.
 
         Strategy order:
-          ① If tax_code exists → search by tax code
-          ② Always → search English name + Vietnamese anchor keywords
-          ③ Conditional → if ② didn't hit key target domains, translate name
-             to Vietnamese via Gemini and search again.
+          ① Tier 1 — Coarse search: ("{name}" OR "{abbr}") AND ("lien he" OR "contact")
+          ② Tier 2a — Recruitment query (if Tier 1 didn't early-stop)
+          ③ Tier 2b — Abbreviation query (if applicable and Tier 2a didn't early-stop)
+          ④ Tier 2c — Facebook search (if < FB_FALLBACK_THRESHOLD high-scoring links)
 
         Args:
             company_id: ID of the company in the `companies` table.
@@ -107,58 +118,44 @@ class SearchModule:
             return []
 
         company_name = company["original_name"]
-        tax_code = company.get("tax_code")
 
         # Update status to 'searching'
         self.db.update_company(company_id, status="searching")
 
         all_results: List[Dict] = []
 
-        # ① Tax Code search
-        if tax_code and tax_code.strip():
-            log_id = self.pipeline_logger.log_step_start(
-                company_id, "search", source_name=f"tax_code: {tax_code}"
-            )
-            try:
-                results = self._firecrawl_search(tax_code.strip())
-                saved = self._save_results(
-                    company_id, tax_code.strip(), "tax_code", results
-                )
-                all_results.extend(saved)
-                self.pipeline_logger.log_step_end(
-                    log_id,
-                    status="success",
-                    credits_used=self.CREDITS_PER_SEARCH,
-                    data_saved=True,
-                    metadata={"links_found": len(saved), "search_type": "tax_code"},
-                )
-            except FirecrawlCreditExhausted:
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
-                )
-                raise
-            except Exception as e:
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e)
-                )
+        # Compute abbreviation
+        abbreviation = self._compute_abbreviation(company_name)
 
-        # ② English name + anchor keywords (always executed)
-        anchor_query = f'"{company_name}" AND ({self.ANCHOR_KEYWORDS})'
+        # ------------------------------------------------------------------
+        # Tier 1 — Coarse search
+        # ------------------------------------------------------------------
+        if abbreviation:
+            tier1_query = (
+                f'("{company_name}" OR "{abbreviation}") AND ("liên hệ" OR "contact")'
+            )
+        else:
+            tier1_query = f'"{company_name}" AND ("liên hệ" OR "contact")'
+
         log_id = self.pipeline_logger.log_step_start(
-            company_id, "search", source_name=f"english: {company_name}"
+            company_id, "search", source_name=f"tier1_coarse: {company_name}"
         )
         try:
-            results = self._firecrawl_search(anchor_query)
-            saved = self._save_results(
-                company_id, anchor_query, "english", results
+            results, cache_hit = self._search_with_dedup(
+                tier1_query, company_id, limit=self.config.SEARCH_LIMIT
             )
+            saved = self._save_results(company_id, tier1_query, "tier1_coarse", results)
             all_results.extend(saved)
             self.pipeline_logger.log_step_end(
                 log_id,
                 status="success",
-                credits_used=self.CREDITS_PER_SEARCH,
+                credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
                 data_saved=True,
-                metadata={"links_found": len(saved), "search_type": "english"},
+                metadata={
+                    "links_found": len(saved),
+                    "search_type": "tier1_coarse",
+                    "cache_hit": cache_hit,
+                },
             )
         except FirecrawlCreditExhausted:
             self.pipeline_logger.log_step_end(
@@ -170,42 +167,130 @@ class SearchModule:
                 log_id, status="failed", error_message=str(e)
             )
 
-        # ③ Vietnamese name search (conditional)
-        if not self._has_key_target_hit(all_results):
-            vn_name = self._translate_to_vietnamese(company_name)
-            if vn_name:
-                # Persist the Vietnamese name for future use
-                self.db.update_company(company_id, vietnamese_name=vn_name)
+        if self._check_inline_early_stop(company_id, company_name, all_results, "T1"):
+            self.db.update_company(company_id, status="searched")
+            return all_results
 
-                log_id = self.pipeline_logger.log_step_start(
-                    company_id, "search", source_name=f"vietnamese: {vn_name}"
+        # ------------------------------------------------------------------
+        # Tier 2a — Recruitment query
+        # ------------------------------------------------------------------
+        tier2a_query = (
+            f'"{company_name}" AND ("tuyển dụng" OR "nhân sự" OR "việc làm")'
+        )
+
+        log_id = self.pipeline_logger.log_step_start(
+            company_id, "search", source_name=f"tier2a_recruitment: {company_name}"
+        )
+        try:
+            results, cache_hit = self._search_with_dedup(
+                tier2a_query, company_id, limit=self.config.SEARCH_LIMIT
+            )
+            saved = self._save_results(company_id, tier2a_query, "tier2a_recruitment", results)
+            all_results.extend(saved)
+            self.pipeline_logger.log_step_end(
+                log_id,
+                status="success",
+                credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
+                data_saved=True,
+                metadata={
+                    "links_found": len(saved),
+                    "search_type": "tier2a_recruitment",
+                    "cache_hit": cache_hit,
+                },
+            )
+        except FirecrawlCreditExhausted:
+            self.pipeline_logger.log_step_end(
+                log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
+            )
+            raise
+        except Exception as e:
+            self.pipeline_logger.log_step_end(
+                log_id, status="failed", error_message=str(e)
+            )
+
+        if self._check_inline_early_stop(company_id, company_name, all_results, "T2a"):
+            self.db.update_company(company_id, status="searched")
+            return all_results
+
+        # ------------------------------------------------------------------
+        # Tier 2b — Abbreviation query (only if abbreviation exists and differs)
+        # ------------------------------------------------------------------
+        if abbreviation and abbreviation.upper() != company_name.upper():
+            tier2b_query = f'"{abbreviation}" AND ("liên hệ" OR "contact")'
+
+            log_id = self.pipeline_logger.log_step_start(
+                company_id, "search", source_name=f"tier2b_abbrev: {abbreviation}"
+            )
+            try:
+                results, cache_hit = self._search_with_dedup(
+                    tier2b_query, company_id, limit=self.config.SEARCH_LIMIT
                 )
-                try:
-                    results = self._firecrawl_search(vn_name)
-                    saved = self._save_results(
-                        company_id, vn_name, "vietnamese", results
-                    )
-                    all_results.extend(saved)
-                    self.pipeline_logger.log_step_end(
-                        log_id,
-                        status="success",
-                        credits_used=self.CREDITS_PER_SEARCH,
-                        data_saved=True,
-                        metadata={"links_found": len(saved), "search_type": "vietnamese"},
-                    )
-                except FirecrawlCreditExhausted:
-                    self.pipeline_logger.log_step_end(
-                        log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
-                    )
-                    raise
-                except Exception as e:
-                    self.pipeline_logger.log_step_end(
-                        log_id, status="failed", error_message=str(e)
-                    )
-            else:
-                logger.info(
-                    f"Skipping Vietnamese search for company_id={company_id}: "
-                    "translation unavailable."
+                saved = self._save_results(
+                    company_id, tier2b_query, "tier2b_abbrev", results
+                )
+                all_results.extend(saved)
+                self.pipeline_logger.log_step_end(
+                    log_id,
+                    status="success",
+                    credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
+                    data_saved=True,
+                    metadata={
+                        "links_found": len(saved),
+                        "search_type": "tier2b_abbrev",
+                        "cache_hit": cache_hit,
+                    },
+                )
+            except FirecrawlCreditExhausted:
+                self.pipeline_logger.log_step_end(
+                    log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
+                )
+                raise
+            except Exception as e:
+                self.pipeline_logger.log_step_end(
+                    log_id, status="failed", error_message=str(e)
+                )
+
+            if self._check_inline_early_stop(company_id, company_name, all_results, "T2b"):
+                self.db.update_company(company_id, status="searched")
+                return all_results
+
+        # ------------------------------------------------------------------
+        # Tier 2c — Facebook search (only if below FB_FALLBACK_THRESHOLD)
+        # ------------------------------------------------------------------
+        good_count = self._count_good_links(company_id)
+        if good_count < self.config.FB_FALLBACK_THRESHOLD:
+            tier2c_query = f'site:facebook.com "{company_name}"'
+
+            log_id = self.pipeline_logger.log_step_start(
+                company_id, "search", source_name=f"tier2c_facebook: {company_name}"
+            )
+            try:
+                results, cache_hit = self._search_with_dedup(
+                    tier2c_query, company_id, limit=self.config.SEARCH_LIMIT
+                )
+                saved = self._save_results(
+                    company_id, tier2c_query, "tier2c_facebook", results
+                )
+                all_results.extend(saved)
+                self.pipeline_logger.log_step_end(
+                    log_id,
+                    status="success",
+                    credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
+                    data_saved=True,
+                    metadata={
+                        "links_found": len(saved),
+                        "search_type": "tier2c_facebook",
+                        "cache_hit": cache_hit,
+                    },
+                )
+            except FirecrawlCreditExhausted:
+                self.pipeline_logger.log_step_end(
+                    log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
+                )
+                raise
+            except Exception as e:
+                self.pipeline_logger.log_step_end(
+                    log_id, status="failed", error_message=str(e)
                 )
 
         # Mark company as searched
@@ -308,6 +393,125 @@ class SearchModule:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def _compute_abbreviation(self, company_name: str) -> Optional[str]:
+        """Compute an abbreviation from an English company name.
+
+        Rules:
+        - If name is already <= 4 chars, return None.
+        - Split on whitespace; collect first letter of each word that starts
+          with an uppercase letter.
+        - If 2 or more such words exist, return the joined initials string.
+        - Otherwise return None.
+
+        Examples:
+            "Vietnam Development Corporation" -> "VDC"
+            "ABC Software Solutions"          -> "ASS" (3 uppercase words)
+            "ABC"                             -> None  (already <= 4 chars)
+            "the quick brown fox"             -> None  (no uppercase initials)
+        """
+        name = company_name.strip()
+        if len(name) <= 4:
+            return None
+
+        words = name.split()
+        initials = [w[0] for w in words if w and w[0].isupper()]
+        if len(initials) >= 2:
+            return "".join(initials)
+        return None
+
+    def _normalize_and_hash(self, query: str) -> str:
+        """Normalize query: lowercase, strip extra whitespace, then SHA-256."""
+        normalized = " ".join(query.lower().split())
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _search_with_dedup(
+        self, query: str, company_id: int, limit: int = 20
+    ) -> tuple:
+        """Check query cache before calling Firecrawl; populate cache after.
+
+        Args:
+            query: The search query string.
+            company_id: Company ID (for cache insertion and logging).
+            limit: Max results to request from Firecrawl.
+
+        Returns:
+            Tuple of (results: List[Dict], cache_hit: bool).
+            On a cache hit, results are loaded from the search_results table.
+        """
+        query_hash = self._normalize_and_hash(query)
+
+        # Dedup check (honoured only if ENABLE_QUERY_DEDUP is True)
+        if self.config.ENABLE_QUERY_DEDUP and not self.config.FORCE_REFRESH:
+            if self.db.is_query_cached(query_hash):
+                self.pipeline_logger.log_event(
+                    "dedup_query_cache_hit",
+                    company_id,
+                    {"query": query, "hash": query_hash},
+                )
+                # Retrieve previously saved results for this query
+                cached_results = self.db.fetch_all(
+                    "SELECT * FROM search_results WHERE search_query = ? AND company_id = ?",
+                    (query, company_id),
+                )
+                return cached_results, True
+
+        # Live API call
+        results = self._firecrawl_search(query, limit=limit)
+
+        # Populate query cache
+        expires_at = (
+            datetime.utcnow() + timedelta(days=self.config.CACHE_TTL_DAYS)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        self.db.insert_query_cache(
+            query_hash=query_hash,
+            query_text=query,
+            company_id=company_id,
+            expires_at=expires_at,
+            result_count=len(results),
+        )
+
+        return results, False
+
+    def _check_early_stop(self, company_id: int) -> bool:
+        """Returns True if enough high-scoring filtered_links exist for this company."""
+        if not self.config.EARLY_STOP_COUNT:
+            return False
+        links = self.db.fetch_all(
+            "SELECT COUNT(*) as cnt FROM filtered_links WHERE company_id = ? AND relevance_score >= ? AND should_scrape = 1",
+            (company_id, self.config.EARLY_STOP_SCORE),
+        )
+        count = links[0]["cnt"] if links else 0
+        return count >= self.config.EARLY_STOP_COUNT
+
+    def _check_inline_early_stop(self, company_id: int, company_name: str, all_results: List[Dict], tier: str) -> bool:
+        """Inline early stop check: score results directly without DB read."""
+        if not self.config.EARLY_STOP_COUNT:
+            return False
+            
+        scored = self.filter_module.score_urls_batch(all_results, company_name)
+        qualified_count = sum(1 for item in scored if item["relevance_score"] >= self.config.EARLY_STOP_SCORE)
+        
+        if qualified_count >= self.config.EARLY_STOP_COUNT:
+            self.pipeline_logger.log_event(
+                "early_stop_triggered",
+                company_id,
+                {
+                    "tier": tier,
+                    "qualified_count": qualified_count,
+                    "threshold": self.config.EARLY_STOP_COUNT
+                }
+            )
+            return True
+        return False
+
+    def _count_good_links(self, company_id: int) -> int:
+        """Return the count of high-scoring filtered_links for this company."""
+        links = self.db.fetch_all(
+            "SELECT COUNT(*) as cnt FROM filtered_links WHERE company_id = ? AND relevance_score >= ? AND should_scrape = 1",
+            (company_id, self.config.EARLY_STOP_SCORE),
+        )
+        return links[0]["cnt"] if links else 0
+
     def _firecrawl_search(
         self, query: str, limit: int = 10, max_retries: int = 3
     ) -> List[Dict]:
@@ -366,7 +570,7 @@ class SearchModule:
                 if resp.status_code == 402:
                     if self.rate_limiter:
                         self.rate_limiter.report_error(402)
-                    raise FirecrawlCreditExhausted(
+                    raise CriticalError(
                         "Firecrawl credits exhausted (HTTP 402). Stop immediately."
                     )
 
@@ -381,7 +585,7 @@ class SearchModule:
                     if attempt < max_retries:
                         time.sleep(wait)
                         continue
-                    raise FirecrawlSearchError(
+                    raise RetryableError(
                         f"Rate-limited (429) after {max_retries} retries."
                     )
 
@@ -417,8 +621,9 @@ class SearchModule:
         Args:
             company_id: Company this search relates to.
             search_query: The actual query string sent to Firecrawl.
-            search_type: One of 'tax_code', 'english', 'vietnamese'.
-            results: Raw result dicts from Firecrawl.
+            search_type: One of 'tier1_coarse', 'tier2a_recruitment',
+                         'tier2b_abbrev', 'tier2c_facebook'.
+            results: Raw result dicts from Firecrawl (or cached DB rows).
 
         Returns:
             List of saved result dicts (with added 'id' and 'result_rank').
@@ -460,79 +665,6 @@ class SearchModule:
                 }
             )
         return saved
-
-    def _has_key_target_hit(self, results: List[Dict]) -> bool:
-        """Check whether any result URL belongs to a key target domain.
-
-        If masothue.com or thuvienphapluat.vn already appeared, we consider
-        the English search sufficient and skip the Vietnamese translation step.
-        """
-        for r in results:
-            url = r.get("url", "").lower()
-            for domain in self.KEY_TARGET_DOMAINS:
-                if domain in url:
-                    return True
-        return False
-
-    def _translate_to_vietnamese(self, english_name: str) -> Optional[str]:
-        """Translate an English company name to its Vietnamese legal name using Gemini AI.
-
-        Args:
-            english_name: The English company name (e.g. "ABC Software Solutions Co., Ltd").
-
-        Returns:
-            Vietnamese legal name string, or None if translation fails or API key is missing.
-        """
-        if not self.gemini_api_key:
-            logger.info("Gemini API key not set — skipping Vietnamese translation.")
-            return None
-
-        prompt = (
-            "Dịch tên công ty sau sang tên pháp lý tiếng Việt. "
-            "Chỉ trả về tên tiếng Việt, không giải thích gì thêm.\n\n"
-            "Quy tắc:\n"
-            '- "Joint Stock Company" hoặc "JSC" → "Công ty Cổ phần"\n'
-            '- "Limited Liability Company" hoặc "LLC" → "Công ty TNHH"\n'
-            '- "Co., Ltd" hoặc "Ltd." → "Công ty TNHH"\n'
-            '- "Corporation" hoặc "Corp." → "Tập đoàn" hoặc "Công ty"\n'
-            "- Giữ nguyên tên riêng (brand name) nếu không có bản dịch phổ biến.\n\n"
-            f"Tên tiếng Anh: {english_name}\n"
-            "Tên tiếng Việt:"
-        )
-
-        try:
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.0-flash:generateContent?key={self.gemini_api_key}"
-            )
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.2,
-                    "maxOutputTokens": 100,
-                },
-            }
-            resp = requests.post(url, json=payload, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        vn_name = parts[0].get("text", "").strip()
-                        if vn_name:
-                            logger.info(
-                                f"Translated '{english_name}' → '{vn_name}'"
-                            )
-                            return vn_name
-            else:
-                logger.warning(
-                    f"Gemini API error: HTTP {resp.status_code} — {resp.text[:200]}"
-                )
-        except Exception as e:
-            logger.warning(f"Gemini translation failed: {e}")
-
-        return None
 
 
 # ------------------------------------------------------------------

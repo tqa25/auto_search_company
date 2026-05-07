@@ -1,0 +1,29 @@
+
+FASTAPI DASHBOARD
+════════════════════════════════════════════════════════════════
+
+ROUTES:
+  /                                        ✅
+  /companies                               ✅
+  /companies/{company_id}/rerun            ✅
+  /companies/{company_id}/logs             ✅
+  /config                                  ✅
+  /logs                                    ✅
+  /api/status                              ✅
+  /api/companies                           ✅
+
+
+QUICK START:
+  python dashboard/run.py
+  Mở http://localhost:8000 trên trình duyệt
+
+ENDPOINTS:
+  - GET /              — Trang tổng quan (progress, credits, stats)
+  - GET /companies    — Danh sách công ty (có filter theo status)
+  - POST /companies/:id/rerun — Reset công ty để chạy lại
+  - GET /companies/:id/logs — Logs chi tiết cho 1 công ty
+  - GET /config       — Xem/sửa config
+  - POST /config      — Lưu config (ghi vào .env)
+  - GET /logs         — Xem JSONL logs
+  - GET /api/status   — JSON status endpoint
+  - GET /api/companies — JSON company list

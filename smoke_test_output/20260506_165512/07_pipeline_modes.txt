@@ -1,0 +1,59 @@
+
+PIPELINE ORCHESTRATION
+════════════════════════════════════════════════════════════════
+
+CONSTRUCTOR PARAMETERS (Pipeline.__init__):
+[
+  "self",
+  "config",
+  "pipeline_config"
+]
+
+RUN METHOD PARAMETERS (Pipeline.run):
+[
+  "self",
+  "company_ids",
+  "limit",
+  "offset",
+  "replay_mode",
+  "force_refresh"
+]
+
+CÁC METHOD MỚI:
+  - run_step(step, company_id): True
+  - inject_search_results(company_id, urls): True
+  - _company_has_no_phone(company_id): True
+
+NEW PARAMETERS:
+  - replay_mode: ✅ CÓ
+  - force_refresh: ✅ CÓ
+  - pipeline_config: ✅ CÓ
+
+STATUS_FLOW UPDATES:
+{
+  "pending": "search",
+  "searching": "search",
+  "searched": "filter",
+  "scraping": "filter",
+  "scraped": "ai_extract",
+  "extracting": "ai_extract",
+  "ai_done": "contact_discovery",
+  "contact_discovering": "contact_discovery",
+  "failed": "search"
+}
+
+EXPECTED STEP SEQUENCE:
+  1. search
+  2. filter (+ scoring)
+  3. scrape (top N by score)
+  4. ai_extract
+  5. contact_discovery (if no phone)
+  → done
+
+MANUAL MODE USAGE:
+  pipeline.run_step('search', company_id=123)
+  pipeline.run_step('filter', company_id=123)
+  pipeline.inject_search_results(123, ['https://example.com'])
+
+REPLAY MODE USAGE:
+  pipeline.run(company_ids=[123], replay_mode=True)  # 0 API calls

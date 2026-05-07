@@ -3,3 +3,7 @@ colorama
 requests
 python-dotenv
 google-generativeai
+fastapi
+uvicorn
+jinja2
+python-multipart

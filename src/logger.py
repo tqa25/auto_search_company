@@ -10,7 +10,7 @@ from src.database import DatabaseManager
 init(autoreset=True)
 
 class PipelineLogger:
-    def __init__(self, db: DatabaseManager):
+    def __init__(self, db: DatabaseManager, log_dir: str = "output/logs"):
         self.db = db
         # Python logging configuration
         self.logger = logging.getLogger("PipelineLogger")
@@ -19,6 +19,29 @@ class PipelineLogger:
             handler = logging.StreamHandler()
             handler.setFormatter(logging.Formatter("%(message)s"))
             self.logger.addHandler(handler)
+
+        # JSONL structured log output
+        self._log_dir = log_dir
+        os.makedirs(log_dir, exist_ok=True)
+        self._current_log_date = None
+        self._jsonl_file = None
+        self._open_jsonl_file()
+
+    def _open_jsonl_file(self):
+        """Opens (or reopens on date change) the daily JSONL log file."""
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        if self._current_log_date != today:
+            if self._jsonl_file:
+                self._jsonl_file.close()
+            path = os.path.join(self._log_dir, f"pipeline_{today}.jsonl")
+            self._jsonl_file = open(path, "a", encoding="utf-8")
+            self._current_log_date = today
+
+    def _write_jsonl(self, event: dict):
+        """Rotates file if date changed, then appends one JSON line."""
+        self._open_jsonl_file()  # handles rotation
+        self._jsonl_file.write(json.dumps(event, ensure_ascii=False) + "\n")
+        self._jsonl_file.flush()
 
     def log_step_start(self, company_id: int, step: str, source_url: str = None, source_name: str = None) -> int:
         """Ghi record mới với status='started', started_at=now(). Trả về log_id."""
@@ -31,20 +54,34 @@ class PipelineLogger:
             source_url=source_url,
             source_name=source_name
         )
+
+        # JSONL event
+        now_iso = datetime.datetime.now().isoformat(timespec='milliseconds')
+        self._write_jsonl({
+            "timestamp": now_iso,
+            "event_type": "step_start",
+            "company_id": company_id,
+            "step": step,
+            "source_url": source_url,
+            "source_name": source_name,
+            "log_id": log_id,
+            "start_time": now_iso,
+        })
+
         return log_id
 
-    def log_step_end(self, log_id: int, status: str, credits_used: float = 0, error_message: str = None, 
+    def log_step_end(self, log_id: int, status: str, credits_used: float = 0, error_message: str = None,
                      data_saved: bool = False, metadata: dict = None):
         """Update record: finished_at=now(), tính duration_seconds, cập nhật status, in ra console format"""
         finished_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         # Calculate duration
         log_record = self.db.fetch_one("SELECT * FROM pipeline_logs WHERE id = ?", (log_id,))
         duration = 0.0
         company_id = 0
         step = "UNKNOWN"
         source_name = "UNKNOWN"
-        
+
         if log_record:
             company_id = log_record['company_id']
             step = log_record['step']
@@ -56,9 +93,9 @@ class PipelineLogger:
                     duration = (finish_time - start_time).total_seconds()
                 except ValueError:
                     duration = 0.0
-        
+
         metadata_json = json.dumps(metadata) if metadata else None
-        
+
         self.db.update_pipeline_log(
             log_id,
             status=status,
@@ -69,12 +106,12 @@ class PipelineLogger:
             data_saved=data_saved,
             metadata_json=metadata_json
         )
-        
+
         # Console output
         # Format: [2026-04-20 09:15:23] [CMP-0001] [SEARCH] [SUCCESS] 2 credits | 3.2s | "ABC Corp" → 10 links found
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cmp_str = f"CMP-{company_id:04d}"
-        
+
         color = Fore.WHITE
         if status.upper() == 'SUCCESS':
             color = Fore.GREEN
@@ -82,12 +119,12 @@ class PipelineLogger:
             color = Fore.RED
         elif status.upper() == 'SKIPPED':
             color = Fore.YELLOW
-            
+
         company_name = "Unknown"
         company = self.db.get_company(company_id)
         if company:
             company_name = company['original_name']
-            
+
         msg_detail = ""
         if error_message:
             msg_detail = f"→ {error_message}"
@@ -106,53 +143,101 @@ class PipelineLogger:
             msg_detail = f'Filtered links'
         else:
             msg_detail = f'"{company_name}"'
-            
+
         credits_str = f"{credits_used:g} credit{'s' if credits_used != 1 else ''}"
-        
+
         log_msg = f"[{now_str}] [{cmp_str}] [{step.upper()}] {color}[{status.upper()}]{Style.RESET_ALL} {credits_str:<10} | {duration:.1f}s | {msg_detail}"
         self.logger.info(log_msg)
+
+        # JSONL event
+        now_iso = datetime.datetime.now().isoformat(timespec='milliseconds')
+        started_at_iso = log_record['started_at'] if log_record and log_record['started_at'] else None
+        self._write_jsonl({
+            "timestamp": now_iso,
+            "event_type": "step_end",
+            "company_id": company_id,
+            "step": step,
+            "log_id": log_id,
+            "status": status,
+            "start_time": started_at_iso,
+            "end_time": finished_at,
+            "duration_ms": int(duration * 1000),
+            "credits_used": credits_used,
+            "error_message": error_message,
+            "data_saved": data_saved,
+            "metadata": metadata,
+            "dedup_action": metadata.get("dedup_action") if isinstance(metadata, dict) else None,
+            "fallback_reason": metadata.get("fallback_reason") if isinstance(metadata, dict) else None,
+            "retry_count": metadata.get("retry_count", 0) if isinstance(metadata, dict) else 0,
+            "scoring_breakdown": metadata.get("scoring_breakdown") if isinstance(metadata, dict) else None,
+        })
+
+    def log_event(self, event_type: str, company_id: int, data: dict = None):
+        """Log a one-off event (cache hit, dedup skip, etc.) to JSONL only (no DB record)."""
+        event = {
+            "timestamp": datetime.datetime.now().isoformat(timespec='milliseconds'),
+            "event_type": event_type,
+            "company_id": company_id,
+        }
+        if data:
+            event.update(data)
+        self._write_jsonl(event)
+
+        # Brief console line for cache_ and dedup_ event types
+        prefix = event_type.split("_")[0] if "_" in event_type else ""
+        if prefix in ("cache", "dedup"):
+            label = "CACHE" if prefix == "cache" else "DEDUP"
+            cmp_str = f"CMP-{company_id:04d}"
+            self.logger.info(f"[{label}] {cmp_str} {event_type}")
+
+    def __del__(self):
+        if self._jsonl_file:
+            try:
+                self._jsonl_file.close()
+            except Exception:
+                pass
 
     def get_daily_summary(self) -> dict:
         """Trả về dict summary"""
         today = datetime.datetime.now().strftime("%Y-%m-%d")
-        
+
         # total_companies
         row = self.db.fetch_one("SELECT COUNT(id) as cnt FROM companies")
         total_companies = row['cnt'] if row else 0
-        
+
         # total_processed_all
         row = self.db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM pipeline_logs")
         total_processed_all = row['cnt'] if row and row['cnt'] else 0
-        
+
         # total_processed_today
         row = self.db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM pipeline_logs WHERE started_at LIKE ?", (f"{today}%",))
         total_processed_today = row['cnt'] if row and row['cnt'] else 0
-        
+
         # success_rate: % of processed companies that have some extracted contacts (approximation)
         # Using extracted_contacts table to determine if we have info. If the table is empty for that company, then no info.
         row = self.db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM extracted_contacts")
         companies_with_info = row['cnt'] if row and row['cnt'] else 0
         success_rate = (companies_with_info / total_processed_all * 100) if total_processed_all > 0 else 0.0
-        
+
         # total_credits_used
         row = self.db.fetch_one("SELECT SUM(credits_used) as total FROM pipeline_logs")
         total_credits = row['total'] if row and row['total'] else 0.0
-        
+
         # avg_time_per_company
         row = self.db.fetch_one("SELECT SUM(duration_seconds) as total FROM pipeline_logs")
         total_duration = row['total'] if row and row['total'] else 0.0
         avg_time = (total_duration / total_processed_all) if total_duration and total_processed_all > 0 else 0.0
-        
+
         # top_5_errors
         errors = self.db.fetch_all("SELECT error_message, COUNT(*) as count FROM pipeline_logs WHERE error_message IS NOT NULL AND error_message != '' AND status='failed' GROUP BY error_message ORDER BY count DESC LIMIT 5")
-        
+
         # source_distribution
         sources = self.db.fetch_all("SELECT source_type, COUNT(*) as cnt FROM scraped_pages WHERE scrape_status='success' GROUP BY source_type")
         total_sources = sum(s['cnt'] for s in sources)
         source_dist = {}
         for s in sources:
             source_dist[s['source_type']] = f"{(s['cnt'] / total_sources * 100):.1f}%" if total_sources > 0 else "0%"
-            
+
         return {
             "total_processed_today": total_processed_today,
             "total_processed_all": total_processed_all,
@@ -170,7 +255,7 @@ class PipelineLogger:
         logs = self.db.fetch_all("SELECT * FROM pipeline_logs ORDER BY started_at ASC")
         if not logs:
             return
-        
+
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=logs[0].keys())
@@ -183,7 +268,7 @@ class PipelineLogger:
         wb = Workbook()
         ws = wb.active
         ws.title = "Daily Summary"
-        
+
         # Write summary basic info
         ws.append(["Metric", "Value"])
         ws.append(["Total Processed Today", summary["total_processed_today"]])
@@ -193,21 +278,21 @@ class PipelineLogger:
         ws.append(["Success Rate", f"{summary['success_rate']:.2f}%"])
         ws.append(["Total Credits Used", summary["total_credits_used"]])
         ws.append(["Avg Time per Company (s)", f"{summary['avg_time_per_company']:.2f}"])
-        
+
         ws.append([])
         ws.append(["Top Errors"])
         ws.append(["Error Message", "Count"])
         for err in summary["top_5_errors"]:
             ws.append([err["error_message"], err["count"]])
-            
+
         ws.append([])
         ws.append(["Source Distribution"])
         ws.append(["Source", "Percentage"])
         for src, pct in summary["source_distribution"].items():
             ws.append([src, pct])
-            
+
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
+
         # Simple formatting
         for col in ws.columns:
             max_length = 0

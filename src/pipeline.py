@@ -9,55 +9,67 @@ from src.logger import PipelineLogger
 from src.search_module import SearchModule
 from src.filter_module import LinkFilter
 from src.scrape_module import ScrapeModule
-from src.scrape_module import ScrapeModule
 from src.excel_handler import ExcelReader, ExcelWriter
 from src.ai_extractor import AIExtractor
 from src.result_aggregator import ResultAggregator
+from src.errors import PipelineError, RetryableError, SkippableError, CriticalError
 
 class Pipeline:
     """Pipeline orchestrator with resume, checkpoint, and graceful shutdown support."""
 
-    # Status progression: pending → searched → scraped → done
+    # Status progression: pending → searched → scraped → ai_done → done
     # Failed states: failed, permanently_failed
     STATUS_FLOW = {
-        'pending': 'search',
-        'searching': 'search',       # interrupted during search
-        'searched': 'filter',
-        'scraping': 'filter',        # interrupted during scrape — redo filter+scrape
-        'scraped': 'ai_extract',
-        'extracting': 'ai_extract',  # interrupted during extraction
-        'failed': 'search',          # retry from beginning
+        'pending':              'search',
+        'searching':            'search',           # interrupted during search
+        'searched':             'filter',
+        'scraping':             'filter',           # interrupted during scrape — redo filter+scrape
+        'scraped':              'ai_extract',
+        'extracting':           'ai_extract',       # interrupted during extraction
+        'ai_done':              'contact_discovery', # check if phone missing → maybe discover
+        'contact_discovering':  'contact_discovery',
+        'failed':               'search',           # retry from beginning
     }
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, pipeline_config=None):
+        # existing dict-based config stays for backward compat
         self.config = config
         self.firecrawl_api_key = config.get("firecrawl_api_key")
         self.input_excel_path = config.get("input_excel_path")
         self.output_dir = config.get("output_dir", "output")
         self.delay_seconds = config.get("delay_seconds", 3.0)
         self.batch_size = config.get("batch_size", 10)
-        
+
         # Ensure output dir exists
         os.makedirs(self.output_dir, exist_ok=True)
-        
+
         self.db = DatabaseManager()
         self.logger = PipelineLogger(self.db)
-        self.search_module = SearchModule(self.db, self.logger, self.firecrawl_api_key)
-        self.filter_module = LinkFilter(self.db, self.logger)
-        self.scrape_module = ScrapeModule(self.db, self.logger, self.firecrawl_api_key)
-        
+
+        # New: load typed Config object
+        from src.config import Config, default_config
+        if pipeline_config is not None:
+            self.cfg = pipeline_config
+        else:
+            self.cfg = default_config
+
+        # Pass cfg to sub-modules
+        self.search_module = SearchModule(self.db, self.logger, self.firecrawl_api_key, config=self.cfg)
+        self.filter_module = LinkFilter(self.db, self.logger, config=self.cfg)
+        self.scrape_module = ScrapeModule(self.db, self.logger, self.firecrawl_api_key, config=self.cfg)
+
         self.gemini_api_key = config.get("gemini_api_key")
-        
+
         # We handle AIExtractor gracefully if GEMINI API KEY doesn't exist yet for legacy scripts
         self.ai_extractor = None
         if self.gemini_api_key:
             self.ai_extractor = AIExtractor(self.db, self.logger, self.gemini_api_key)
-            
+
         self.result_aggregator = ResultAggregator(self.db)
-        
+
         self.excel_reader = ExcelReader()
         self.excel_writer = ExcelWriter()
-        
+
         # Graceful shutdown support
         self._shutdown_requested = False
         self._original_sigint_handler = None
@@ -99,26 +111,38 @@ class Pipeline:
 
     def _should_do_step(self, next_step: str, target_step: str) -> bool:
         """Check if a given target_step should be executed given the next_step.
-        
-        Pipeline order: search → filter → scrape → ai_extract
-        If next_step is 'filter', we skip search but do filter, scrape, ai_extract.
+
+        Pipeline order: search → filter → scrape → ai_extract → contact_discovery
+        If next_step is 'filter', we skip search but do filter, scrape, ai_extract, contact_discovery.
         """
-        step_order = ['search', 'filter', 'scrape', 'ai_extract']
+        step_order = ['search', 'filter', 'scrape', 'ai_extract', 'contact_discovery']
         if next_step not in step_order or target_step not in step_order:
             return True
         return step_order.index(target_step) >= step_order.index(next_step)
 
+    def _company_has_no_phone(self, company_id: int) -> bool:
+        """Returns True if no phone number was extracted for this company."""
+        row = self.db.fetch_one(
+            "SELECT COUNT(*) as cnt FROM extracted_contacts WHERE company_id = ? AND phone IS NOT NULL AND phone != ''",
+            (company_id,)
+        )
+        return (row['cnt'] if row else 0) == 0
+
     # ------------------------------------------------------------------
-    # Core run method (upgraded with resume + checkpoint + graceful shutdown)
+    # Core run method (upgraded with resume + checkpoint + graceful shutdown
+    #                   + contact discovery + replay mode + force refresh)
     # ------------------------------------------------------------------
 
-    def run(self, company_ids: list[int] = None, limit: int = None, offset: int = 0):
+    def run(self, company_ids: list[int] = None, limit: int = None, offset: int = 0,
+            replay_mode: bool = False, force_refresh: bool = False):
         """Execute the pipeline for a list of companies with resume and checkpoint support.
-        
+
         Args:
             company_ids: Specific company IDs to process. If None, fetches from DB.
             limit: Maximum number of companies to process.
             offset: Number of companies to skip from the beginning.
+            replay_mode: If True, skip all API-calling steps and re-process from cached DB data.
+            force_refresh: If True, temporarily bypass caches for search/scrape steps.
         """
         if not company_ids:
             companies = self.db.get_all_companies()
@@ -127,17 +151,24 @@ class Pipeline:
             if limit:
                 companies = companies[:limit]
             company_ids = [c["id"] for c in companies]
-            
+
         total_to_process = len(company_ids)
         print(f"Starting pipeline for {total_to_process} companies...")
-        
+
+        # Replay / force-refresh notices
+        if replay_mode:
+            print("[REPLAY MODE] Re-processing from cached DB data. No API calls.")
+        if force_refresh:
+            self.cfg.FORCE_REFRESH = True
+            print("[FORCE REFRESH] Cache bypass enabled.")
+
         # Install signal handlers for graceful shutdown
         self._install_signal_handlers()
-        
+
         success_count = 0
         fail_count = 0
         skip_count = 0
-        
+
         try:
             for idx, company_id in enumerate(company_ids):
                 # Check for graceful shutdown
@@ -151,82 +182,213 @@ class Pipeline:
                     print(f"[{idx+1}/{total_to_process}] Company ID {company_id} not found in DB.")
                     fail_count += 1
                     continue
-                    
+
                 status = company['status']
                 company_name = company['original_name']
-                
+
                 print(f"[{idx+1}/{total_to_process}] Processing company ID {company_id} - {company_name} (status: {status})...")
-                
+
                 # Skip already completed companies
                 if status == 'done':
                     print(f"  -> Skipping (already completed)")
                     skip_count += 1
                     continue
-                
+
                 # Skip permanently failed companies
                 if status == 'permanently_failed':
                     print(f"  -> Skipping (permanently failed)")
                     skip_count += 1
                     continue
-                    
+
                 # Determine which step to resume from
                 next_step = self._get_next_step(status)
                 if next_step != 'search':
                     print(f"  -> Resuming from step: {next_step} (previous status: {status})")
-                    
-                try:
-                    # 1. SEARCH (skip if already searched/scraped)
-                    if self._should_do_step(next_step, 'search'):
-                        print("  -> Searching...")
-                        self.search_module.search_company(company_id)
-                        # Checkpoint: mark as searched
-                        self.db.update_company(company_id, status='searched')
-                        time.sleep(self.delay_seconds)
-                    
-                    # 2. FILTER (idempotent, can always rerun)
-                    if self._should_do_step(next_step, 'filter'):
-                        print("  -> Filtering...")
-                        self.filter_module.filter_company_links(company_id)
-                        # Note: filter doesn't change status (fast, no credits)
-                    
-                    # 3. SCRAPE
-                    if self._should_do_step(next_step, 'scrape'):
-                        print("  -> Scraping...")
-                        self.scrape_module.scrape_company(company_id, self.delay_seconds)
-                        # Checkpoint: mark as scraped
-                        self.db.update_company(company_id, status='scraped')
-                    
-                    # 4. AI EXTRACT
-                    if self._should_do_step(next_step, 'ai_extract'):
-                        if self.ai_extractor:
-                            print("  -> AI Extracting...")
-                            self.db.update_company(company_id, status='extracting')
-                            self.ai_extractor.extract_for_company(company_id, self.delay_seconds)
-                            # Checkpoint: mark as done
-                            self.db.update_company(company_id, status='done')
+
+                retry_count = 0
+                max_retries = 2
+
+                while retry_count < max_retries:
+                    try:
+                        # 1. SEARCH (skip if already searched/scraped)
+                        if self._should_do_step(next_step, 'search'):
+                            if not replay_mode:
+                                print("  -> Searching...")
+                                self.search_module.search_company(company_id)
+                                # Checkpoint: mark as searched
+                                self.db.update_company(company_id, status='searched')
+                                time.sleep(self.delay_seconds)
+                            else:
+                                print(f"  -> [REPLAY] Skipping search for company {company_id}")
+
+                        # 2. FILTER (idempotent, can always rerun)
+                        if self._should_do_step(next_step, 'filter'):
+                            print("  -> Filtering...")
+                            self.filter_module.filter_company_links(company_id)
+                            # Note: filter doesn't change status (fast, no credits)
+
+                        # 3. SCRAPE
+                        if self._should_do_step(next_step, 'scrape'):
+                            if not replay_mode:
+                                print("  -> Scraping...")
+                                self.scrape_module.scrape_company(company_id, self.delay_seconds)
+                                # Checkpoint: mark as scraped
+                                self.db.update_company(company_id, status='scraped')
+                            else:
+                                print(f"  -> [REPLAY] Skipping scrape for company {company_id}")
+
+                        # 4. AI EXTRACT
+                        if self._should_do_step(next_step, 'ai_extract'):
+                            if not replay_mode and self.ai_extractor:
+                                print("  -> AI Extracting...")
+                                self.db.update_company(company_id, status='extracting')
+                                self.ai_extractor.extract_for_company(company_id, self.delay_seconds)
+                                self.db.update_company(company_id, status='ai_done')
+                            elif not replay_mode:
+                                print("  -> AI Extract SKIP (no API Key)")
+                                self.db.update_company(company_id, status='ai_done')
+                            else:
+                                print(f"  -> [REPLAY] Skipping AI extract for company {company_id}")
+                                self.db.update_company(company_id, status='ai_done')
+
+                        # 5. CONTACT PAGE DISCOVERY (only if no phone found after AI extract)
+                        if self._should_do_step(next_step, 'contact_discovery') and self.cfg.CONTACT_DISCOVERY_ENABLED:
+                            if self._company_has_no_phone(company_id):
+                                print("  -> No phone found, trying Contact Page Discovery...")
+                                new_pages = self.scrape_module.discover_contact_pages(company_id, self.delay_seconds)
+                                if new_pages and self.ai_extractor:
+                                    # Re-run AI extract on newly scraped contact pages only
+                                    new_page_ids = []
+                                    for page_result in new_pages:
+                                        if page_result.get('status') == 'success':
+                                            # Find the scraped_page id for this company's newest pages
+                                            recent = self.db.fetch_all(
+                                                "SELECT id FROM scraped_pages WHERE company_id = ? AND source_type = 'contact_page' ORDER BY id DESC LIMIT 5",
+                                                (company_id,)
+                                            )
+                                            new_page_ids.extend([p['id'] for p in recent])
+                                    for page_id in set(new_page_ids):
+                                        self.ai_extractor.extract_from_page(page_id)
+
+                        self.db.update_company(company_id, status='done')
+                        print(f"  -> SUCCESS: Processed {company_name}")
+                        success_count += 1
+                        break  # Exit retry loop on success
+
+                    except RetryableError as e:
+                        retry_count += 1
+                        error_msg = str(e)
+                        print(f"  -> RETRY #{retry_count}: {error_msg}")
+                        if retry_count < max_retries:
+                            backoff_time = 60 * retry_count
+                            print(f"     Waiting {backoff_time}s before retry...")
+                            time.sleep(backoff_time)
                         else:
-                            print("  -> AI Extract SKIP (no API Key)")
-                            # If no AI key, mark as done after scrape
-                            self.db.update_company(company_id, status='done')
-                    
-                    print(f"  -> SUCCESS: Processed {company_name}")
-                    success_count += 1
-                    
-                except Exception as e:
-                    error_msg = str(e)
-                    print(f"  -> FAILED: Error processing {company_name}: {error_msg}")
-                    self.db.update_company(company_id, status='failed')
-                    fail_count += 1
-                    
+                            print(f"  -> FAILED: Exceeded max retries ({max_retries})")
+                            self.db.update_company(company_id, status='failed')
+                            fail_count += 1
+                            break
+
+                    except SkippableError as e:
+                        error_msg = str(e)
+                        print(f"  -> SKIPPED: {error_msg}")
+                        self.db.update_company(company_id, status='failed')
+                        fail_count += 1
+                        break
+
+                    except CriticalError as e:
+                        error_msg = str(e)
+                        print(f"  -> CRITICAL: {error_msg}")
+                        print("  -> Stopping entire pipeline.")
+                        self._restore_signal_handlers()
+                        raise
+
+                    except Exception as e:
+                        # Unknown error — treat as skippable
+                        error_msg = str(e)
+                        print(f"  -> FAILED (unknown error): {error_msg}")
+                        self.db.update_company(company_id, status='failed')
+                        fail_count += 1
+                        break
+
         finally:
             # Always restore signal handlers
             self._restore_signal_handlers()
-                    
+            if force_refresh:
+                self.cfg.FORCE_REFRESH = False
+
         print("\n=== PIPELINE EXECUTION COMPLETED ===")
         print(f"Total: {total_to_process} | Success: {success_count} | Failed: {fail_count} | Skipped: {skip_count}")
-        
+
         if self._shutdown_requested:
             print("⚠️  Pipeline đã dừng an toàn do nhận tín hiệu. Chạy lại với --resume để tiếp tục.")
+
+    # ------------------------------------------------------------------
+    # Manual step execution
+    # ------------------------------------------------------------------
+
+    def run_step(self, step: str, company_id: int, **kwargs):
+        """Run a single pipeline step for one company. For manual/debug use.
+
+        Args:
+            step: One of 'search', 'filter', 'scrape', 'ai_extract', 'contact_discovery'
+            company_id: Company to process
+            **kwargs: Step-specific overrides (e.g. delay_seconds)
+        """
+        delay = kwargs.get('delay_seconds', self.delay_seconds)
+
+        if step == 'search':
+            self.search_module.search_company(company_id)
+            self.db.update_company(company_id, status='searched')
+        elif step == 'filter':
+            self.filter_module.filter_company_links(company_id)
+        elif step == 'scrape':
+            self.scrape_module.scrape_company(company_id, delay)
+            self.db.update_company(company_id, status='scraped')
+        elif step == 'ai_extract':
+            if self.ai_extractor:
+                self.db.update_company(company_id, status='extracting')
+                self.ai_extractor.extract_for_company(company_id, delay)
+                self.db.update_company(company_id, status='ai_done')
+        elif step == 'contact_discovery':
+            pages = self.scrape_module.discover_contact_pages(company_id, delay)
+            if pages and self.ai_extractor:
+                recent = self.db.fetch_all(
+                    "SELECT id FROM scraped_pages WHERE company_id = ? AND source_type = 'contact_page' ORDER BY id DESC LIMIT 5",
+                    (company_id,)
+                )
+                for p in recent:
+                    self.ai_extractor.extract_from_page(p['id'])
+            self.db.update_company(company_id, status='done')
+        else:
+            raise ValueError(f"Unknown step: {step}. Valid: search, filter, scrape, ai_extract, contact_discovery")
+
+    # ------------------------------------------------------------------
+    # Manual URL injection
+    # ------------------------------------------------------------------
+
+    def inject_search_results(self, company_id: int, urls: list[str]):
+        """Inject custom URLs as search results for a company (bypasses Firecrawl search).
+
+        Useful for manual testing with known URLs.
+
+        Args:
+            company_id: Target company
+            urls: List of URL strings to inject
+        """
+        for i, url in enumerate(urls):
+            self.db.insert_search_result(
+                company_id=company_id,
+                search_query="__manual_inject__",
+                search_type="manual",
+                result_rank=i + 1,
+                url=url,
+                title="",
+                snippet="",
+                credits_used=0
+            )
+        self.db.update_company(company_id, status='searched')
+        print(f"Injected {len(urls)} URLs for company {company_id}")
 
     # ------------------------------------------------------------------
     # Resume method (upgraded)
@@ -234,24 +396,24 @@ class Pipeline:
 
     def resume(self):
         """Resume pipeline from where it was interrupted.
-        
+
         Finds all companies that are not 'done' or 'permanently_failed'
         and processes them in order.
         """
         resumable = self.get_resumable_companies()
-        
+
         if not resumable:
             print("✅ No companies to resume. All done!")
             return
-            
+
         company_ids = [c["company_id"] for c in resumable]
-        
+
         print(f"Resuming pipeline for {len(company_ids)} companies...")
         for item in resumable[:5]:  # Show first 5
             print(f"  - Company ID {item['company_id']}: status={item['status']}, next_step={item['next_step']}")
         if len(resumable) > 5:
             print(f"  ... and {len(resumable) - 5} more")
-            
+
         self.run(company_ids=company_ids)
 
     # ------------------------------------------------------------------
@@ -260,29 +422,29 @@ class Pipeline:
 
     def get_resumable_companies(self) -> list[dict]:
         """Get list of companies that need processing, with their current status and next step.
-        
+
         Returns:
             List of dicts: [{"company_id": int, "status": str, "next_step": str, "retry_count": int}, ...]
         """
         companies = self.db.get_all_companies()
         resumable = []
-        
+
         for company in companies:
             status = company['status']
-            
+
             # Skip completed or permanently failed
             if status in ('done', 'permanently_failed'):
                 continue
-                
+
             next_step = self._get_next_step(status)
-            
+
             # Count how many times this company has failed (from pipeline_logs)
             fail_logs = self.db.fetch_all(
                 "SELECT COUNT(*) as cnt FROM pipeline_logs WHERE company_id = ? AND status = 'failed'",
                 (company['id'],)
             )
             retry_count = fail_logs[0]['cnt'] if fail_logs else 0
-            
+
             resumable.append({
                 "company_id": company['id'],
                 "company_name": company['original_name'],
@@ -290,7 +452,7 @@ class Pipeline:
                 "next_step": next_step,
                 "retry_count": retry_count
             })
-            
+
         return resumable
 
     # ------------------------------------------------------------------
@@ -299,7 +461,7 @@ class Pipeline:
 
     def retry_failed(self, max_retries: int = 2):
         """Retry all companies with status='failed'.
-        
+
         Args:
             max_retries: Maximum number of retry attempts. Companies that fail
                          beyond this limit are marked as 'permanently_failed'.
@@ -307,17 +469,17 @@ class Pipeline:
         failed_companies = self.db.fetch_all(
             "SELECT * FROM companies WHERE status = 'failed'"
         )
-        
+
         if not failed_companies:
             print("✅ No failed companies to retry.")
             return
-            
+
         print(f"Found {len(failed_companies)} failed companies to retry (max_retries={max_retries})...")
-        
+
         for company in failed_companies:
             company_id = company['id']
             company_name = company['original_name']
-            
+
             # Count previous failures for this company
             fail_logs = self.db.fetch_all(
                 "SELECT COUNT(DISTINCT started_at) as cnt FROM pipeline_logs "
@@ -325,17 +487,17 @@ class Pipeline:
                 (company_id,)
             )
             retry_count = fail_logs[0]['cnt'] if fail_logs else 0
-            
+
             if retry_count >= max_retries:
                 print(f"  ❌ Company {company_id} ({company_name}): exceeded max_retries ({retry_count}/{max_retries}) → permanently_failed")
                 self.db.update_company(company_id, status='permanently_failed')
                 continue
-                
+
             print(f"  🔄 Retrying company {company_id} ({company_name}): attempt {retry_count + 1}/{max_retries}...")
-            
+
             # Reset status to pending so run() processes it from scratch
             self.db.update_company(company_id, status='pending')
-            
+
         # Now run the pipeline for the companies we just reset
         pending_companies = self.db.fetch_all(
             "SELECT id FROM companies WHERE status = 'pending'"
@@ -351,11 +513,11 @@ class Pipeline:
     def generate_report(self, output_path: str):
         """Generate final Excel report with aggregated data."""
         print(f"Generating report at {output_path}...")
-        
+
         # Use ResultAggregator for Phase 3 logic
         aggregated_data = self.result_aggregator.aggregate_all()
         summary_stats = self.result_aggregator.generate_summary_stats(aggregated_data)
-        
+
         # Check if new write_final_report is available, otherwise fallback
         if hasattr(self.excel_writer, "write_final_report"):
             self.excel_writer.write_final_report(output_path, aggregated_data, summary_stats)
@@ -364,7 +526,7 @@ class Pipeline:
             # Fallback backward compatibility code
             companies = self.db.get_all_companies()
             results = []
-            
+
             for company in companies:
                 if hasattr(self.db, "get_scraped_pages_for_company"):
                     scraped_pages = self.db.get_scraped_pages_for_company(company["id"])
@@ -377,7 +539,7 @@ class Pipeline:
                         scraped_pages = [dict(zip(columns, row)) for row in cursor.fetchall()]
                     except:
                         scraped_pages = []
-                        
+
                 sources = []
                 for sp in scraped_pages:
                     sources.append({
@@ -387,12 +549,12 @@ class Pipeline:
                         "email": sp.get("scrape_status", ""),
                         "date": datetime.now().strftime("%Y-%m-%d")
                     })
-                    
+
                 results.append({
                     "name": company.get("original_name", ""),
                     "tax_code": company.get("tax_code", ""),
                     "sources": sources
                 })
-                
+
             self.excel_writer.write_results(output_path, results)
             print("Report generated using fallback logic.")

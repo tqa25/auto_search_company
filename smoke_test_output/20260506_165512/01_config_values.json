@@ -1,0 +1,23 @@
+{
+  "domain_scores": {
+    "official": 40,
+    "legal": 30,
+    "job": 20,
+    "social": 10
+  },
+  "keyword_scores": {
+    "contact": 10,
+    "admin": 10,
+    "recruitment": 5
+  },
+  "contact_paths": [
+    "/contact",
+    "/lien-he",
+    "/about"
+  ],
+  "cache_settings": {
+    "enable_query_dedup": true,
+    "enable_url_dedup": true,
+    "cache_ttl_days": 7
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "routes": [
+    "/openapi.json",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+    "/",
+    "/companies",
+    "/companies/{company_id}/rerun",
+    "/companies/{company_id}/logs",
+    "/config",
+    "/config",
+    "/logs",
+    "/api/status",
+    "/api/companies"
+  ],
+  "expected_routes": [
+    "/",
+    "/companies",
+    "/companies/{company_id}/rerun",
+    "/companies/{company_id}/logs",
+    "/config",
+    "/logs",
+    "/api/status",
+    "/api/companies"
+  ],
+  "all_present": true
+}

@@ -1,0 +1,27 @@
+{
+  "tables": [
+    "companies",
+    "extracted_contacts",
+    "filtered_links",
+    "pipeline_logs",
+    "query_cache",
+    "scraped_pages",
+    "search_results",
+    "url_cache"
+  ],
+  "filtered_links_columns": [
+    "id",
+    "search_result_id",
+    "company_id",
+    "url",
+    "source_type",
+    "should_scrape",
+    "reason",
+    "relevance_score"
+  ],
+  "new_tables": {
+    "query_cache": true,
+    "url_cache": true,
+    "relevance_score": true
+  }
+}
