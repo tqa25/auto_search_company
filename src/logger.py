@@ -43,7 +43,7 @@ class PipelineLogger:
         self._jsonl_file.write(json.dumps(event, ensure_ascii=False) + "\n")
         self._jsonl_file.flush()
 
-    def log_step_start(self, company_id: int, step: str, source_url: str = None, source_name: str = None) -> int:
+    def log_step_start(self, company_id: int, step: str, source_url: str = None, source_name: str = None, raw_request: dict = None) -> int:
         """Ghi record mới với status='started', started_at=now(). Trả về log_id."""
         started_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_id = self.db.insert_pipeline_log(
@@ -66,12 +66,15 @@ class PipelineLogger:
             "source_name": source_name,
             "log_id": log_id,
             "start_time": now_iso,
+            "raw_request": raw_request,
         })
 
         return log_id
 
     def log_step_end(self, log_id: int, status: str, credits_used: float = 0, error_message: str = None,
-                     data_saved: bool = False, metadata: dict = None):
+                     data_saved: bool = False, metadata: dict = None, network_latency_ms: float = None,
+                     processing_time_ms: float = None, raw_response_summary: dict = None,
+                     error_category: str = None):
         """Update record: finished_at=now(), tính duration_seconds, cập nhật status, in ra console format"""
         finished_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -164,12 +167,16 @@ class PipelineLogger:
             "duration_ms": int(duration * 1000),
             "credits_used": credits_used,
             "error_message": error_message,
+            "error_category": error_category,
             "data_saved": data_saved,
             "metadata": metadata,
             "dedup_action": metadata.get("dedup_action") if isinstance(metadata, dict) else None,
             "fallback_reason": metadata.get("fallback_reason") if isinstance(metadata, dict) else None,
             "retry_count": metadata.get("retry_count", 0) if isinstance(metadata, dict) else 0,
             "scoring_breakdown": metadata.get("scoring_breakdown") if isinstance(metadata, dict) else None,
+            "network_latency_ms": network_latency_ms,
+            "processing_time_ms": processing_time_ms,
+            "raw_response_summary": raw_response_summary,
         })
 
     def log_event(self, event_type: str, company_id: int, data: dict = None):

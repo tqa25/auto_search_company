@@ -5,7 +5,7 @@ import requests
 from urllib.parse import urlparse, urlencode, parse_qs
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
-from src.errors import RetryableError, CriticalError, SkippableError
+from src.errors import RetryableError, CriticalError, SkippableError, PipelineError
 
 class ScrapeModule:
     def __init__(self, db: DatabaseManager, logger: PipelineLogger, firecrawl_api_key: str,
@@ -217,11 +217,12 @@ class ScrapeModule:
                         credits_used=0,
                         error_message=error_msg
                     )
-                    self.logger.log_step_end(log_id, status="failed", credits_used=0, error_message=error_msg)
+                    self.logger.log_step_end(log_id, status="failed", credits_used=0, error_message=error_msg, error_category="critical")
                     raise CriticalError(error_msg)
 
                 else:
                     error_msg = f"HTTP {response.status_code}: {response.text}"
+                    self.logger.log_step_end(log_id, status="failed", credits_used=0, error_message=error_msg, error_category="skippable")
                     raise SkippableError(error_msg)
 
             except Exception as e:
@@ -253,7 +254,8 @@ class ScrapeModule:
                     error_message=error_msg
                 )
                 log_status = "skipped" if status_val == "skipped" else "failed"
-                self.logger.log_step_end(log_id, status=log_status, credits_used=0, error_message=error_msg)
+                category = e.category if isinstance(e, PipelineError) else "unknown"
+                self.logger.log_step_end(log_id, status=log_status, credits_used=0, error_message=error_msg, error_category=category)
 
                 return {"status": status_val, "content_length": 0, "source_type": source_type, "error": error_msg}
 

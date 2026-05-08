@@ -89,7 +89,7 @@ def main():
 
     # 6. Xuất báo cáo
     os.makedirs(config["output_dir"], exist_ok=True)
-    report_path = os.path.join(config["output_dir"], "test_5_full_report.xlsx")
+    report_path = os.path.join(config["output_dir"], "test_5_full_report_0507.xlsx")
     pipeline.generate_report(report_path)
     print(f"-> Full Report exported to {report_path}")
 

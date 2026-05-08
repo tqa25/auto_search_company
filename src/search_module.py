@@ -32,7 +32,8 @@ from dotenv import load_dotenv
 
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
-from src.errors import RetryableError, CriticalError
+from src.errors import RetryableError, CriticalError, PipelineError
+from src.schemas import validate_search_result
 
 # Load .env file at module level
 load_dotenv()
@@ -138,12 +139,15 @@ class SearchModule:
             tier1_query = f'"{company_name}" AND ("liên hệ" OR "contact")'
 
         log_id = self.pipeline_logger.log_step_start(
-            company_id, "search", source_name=f"tier1_coarse: {company_name}"
+            company_id, "search", source_name=f"tier1_coarse: {company_name}",
+            raw_request={"query": tier1_query, "tier": "tier1_coarse"}
         )
         try:
+            start_time = time.time()
             results, cache_hit = self._search_with_dedup(
                 tier1_query, company_id, limit=self.config.SEARCH_LIMIT
             )
+            elapsed_ms = (time.time() - start_time) * 1000
             saved = self._save_results(company_id, tier1_query, "tier1_coarse", results)
             all_results.extend(saved)
             self.pipeline_logger.log_step_end(
@@ -151,20 +155,28 @@ class SearchModule:
                 status="success",
                 credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
                 data_saved=True,
+                network_latency_ms=elapsed_ms,
+                raw_response_summary={"result_count": len(saved), "status_code": 200},
                 metadata={
                     "links_found": len(saved),
                     "search_type": "tier1_coarse",
                     "cache_hit": cache_hit,
                 },
             )
-        except FirecrawlCreditExhausted:
+        except CriticalError as e:
             self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
+                log_id, status="failed", error_message=str(e), error_category=e.category
+            )
+            raise
+        except RetryableError as e:
+            self.pipeline_logger.log_step_end(
+                log_id, status="failed", error_message=str(e), error_category=e.category
             )
             raise
         except Exception as e:
+            category = e.category if isinstance(e, PipelineError) else "unknown"
             self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e)
+                log_id, status="failed", error_message=str(e), error_category=category
             )
 
         if self._check_inline_early_stop(company_id, company_name, all_results, "T1"):
@@ -179,12 +191,15 @@ class SearchModule:
         )
 
         log_id = self.pipeline_logger.log_step_start(
-            company_id, "search", source_name=f"tier2a_recruitment: {company_name}"
+            company_id, "search", source_name=f"tier2a_recruitment: {company_name}",
+            raw_request={"query": tier2a_query, "tier": "tier2a_recruitment"}
         )
         try:
+            start_time = time.time()
             results, cache_hit = self._search_with_dedup(
                 tier2a_query, company_id, limit=self.config.SEARCH_LIMIT
             )
+            elapsed_ms = (time.time() - start_time) * 1000
             saved = self._save_results(company_id, tier2a_query, "tier2a_recruitment", results)
             all_results.extend(saved)
             self.pipeline_logger.log_step_end(
@@ -192,20 +207,28 @@ class SearchModule:
                 status="success",
                 credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
                 data_saved=True,
+                network_latency_ms=elapsed_ms,
+                raw_response_summary={"result_count": len(saved), "status_code": 200},
                 metadata={
                     "links_found": len(saved),
                     "search_type": "tier2a_recruitment",
                     "cache_hit": cache_hit,
                 },
             )
-        except FirecrawlCreditExhausted:
+        except CriticalError as e:
             self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
+                log_id, status="failed", error_message=str(e), error_category=e.category
+            )
+            raise
+        except RetryableError as e:
+            self.pipeline_logger.log_step_end(
+                log_id, status="failed", error_message=str(e), error_category=e.category
             )
             raise
         except Exception as e:
+            category = e.category if isinstance(e, PipelineError) else "unknown"
             self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e)
+                log_id, status="failed", error_message=str(e), error_category=category
             )
 
         if self._check_inline_early_stop(company_id, company_name, all_results, "T2a"):
@@ -219,12 +242,15 @@ class SearchModule:
             tier2b_query = f'"{abbreviation}" AND ("liên hệ" OR "contact")'
 
             log_id = self.pipeline_logger.log_step_start(
-                company_id, "search", source_name=f"tier2b_abbrev: {abbreviation}"
+                company_id, "search", source_name=f"tier2b_abbrev: {abbreviation}",
+                raw_request={"query": tier2b_query, "tier": "tier2b_abbrev"}
             )
             try:
+                start_time = time.time()
                 results, cache_hit = self._search_with_dedup(
                     tier2b_query, company_id, limit=self.config.SEARCH_LIMIT
                 )
+                elapsed_ms = (time.time() - start_time) * 1000
                 saved = self._save_results(
                     company_id, tier2b_query, "tier2b_abbrev", results
                 )
@@ -234,20 +260,28 @@ class SearchModule:
                     status="success",
                     credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
                     data_saved=True,
+                    network_latency_ms=elapsed_ms,
+                    raw_response_summary={"result_count": len(saved), "status_code": 200},
                     metadata={
                         "links_found": len(saved),
                         "search_type": "tier2b_abbrev",
                         "cache_hit": cache_hit,
                     },
                 )
-            except FirecrawlCreditExhausted:
+            except CriticalError as e:
                 self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
+                    log_id, status="failed", error_message=str(e), error_category=e.category
+                )
+                raise
+            except RetryableError as e:
+                self.pipeline_logger.log_step_end(
+                    log_id, status="failed", error_message=str(e), error_category=e.category
                 )
                 raise
             except Exception as e:
+                category = e.category if isinstance(e, PipelineError) else "unknown"
                 self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e)
+                    log_id, status="failed", error_message=str(e), error_category=category
                 )
 
             if self._check_inline_early_stop(company_id, company_name, all_results, "T2b"):
@@ -262,12 +296,15 @@ class SearchModule:
             tier2c_query = f'site:facebook.com "{company_name}"'
 
             log_id = self.pipeline_logger.log_step_start(
-                company_id, "search", source_name=f"tier2c_facebook: {company_name}"
+                company_id, "search", source_name=f"tier2c_facebook: {company_name}",
+                raw_request={"query": tier2c_query, "tier": "tier2c_facebook"}
             )
             try:
+                start_time = time.time()
                 results, cache_hit = self._search_with_dedup(
                     tier2c_query, company_id, limit=self.config.SEARCH_LIMIT
                 )
+                elapsed_ms = (time.time() - start_time) * 1000
                 saved = self._save_results(
                     company_id, tier2c_query, "tier2c_facebook", results
                 )
@@ -277,20 +314,28 @@ class SearchModule:
                     status="success",
                     credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
                     data_saved=True,
+                    network_latency_ms=elapsed_ms,
+                    raw_response_summary={"result_count": len(saved), "status_code": 200},
                     metadata={
                         "links_found": len(saved),
                         "search_type": "tier2c_facebook",
                         "cache_hit": cache_hit,
                     },
                 )
-            except FirecrawlCreditExhausted:
+            except CriticalError as e:
                 self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message="Firecrawl credits exhausted (HTTP 402)"
+                    log_id, status="failed", error_message=str(e), error_category=e.category
+                )
+                raise
+            except RetryableError as e:
+                self.pipeline_logger.log_step_end(
+                    log_id, status="failed", error_message=str(e), error_category=e.category
                 )
                 raise
             except Exception as e:
+                category = e.category if isinstance(e, PipelineError) else "unknown"
                 self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e)
+                    log_id, status="failed", error_message=str(e), error_category=category
                 )
 
         # Mark company as searched
@@ -397,27 +442,46 @@ class SearchModule:
         """Compute an abbreviation from an English company name.
 
         Rules:
-        - If name is already <= 4 chars, return None.
-        - Split on whitespace; collect first letter of each word that starts
-          with an uppercase letter.
-        - If 2 or more such words exist, return the joined initials string.
-        - Otherwise return None.
+        1. Split company_name into words.
+        2. Check if first word is already an abbreviation (≥3 consecutive uppercase letters).
+           If yes, return it directly.
+        3. Filter out stop words (case-insensitive).
+        4. Filter out words with trailing dots.
+        5. Take first letter of remaining words and combine into abbreviation.
+        6. If abbreviation < 2 characters, return None.
 
         Examples:
-            "Vietnam Development Corporation" -> "VDC"
-            "ABC Software Solutions"          -> "ASS" (3 uppercase words)
-            "ABC"                             -> None  (already <= 4 chars)
-            "the quick brown fox"             -> None  (no uppercase initials)
+            "ABC Software Co., Ltd"          -> "ABC" (detect ABC as existing abbreviation)
+            "FPT Software"                   -> "FPT" (detect FPT as existing abbreviation)
+            "Vietnam Development Corp"       -> None (only "D" left after filtering)
+            "Hòa Phát Group Joint Stock"    -> "HPG"
         """
         name = company_name.strip()
-        if len(name) <= 4:
+        words = name.split()
+
+        if not words:
             return None
 
-        words = name.split()
-        initials = [w[0] for w in words if w and w[0].isupper()]
-        if len(initials) >= 2:
-            return "".join(initials)
-        return None
+        # Check if first word is already an abbreviation (≥3 consecutive uppercase letters)
+        first_word = words[0]
+        if len(first_word) >= 3 and first_word.isupper():
+            return first_word
+
+        # Build list of stop words (case-insensitive)
+        stop_words_lower = [w.lower() for w in self.config.ABBREVIATION_STOP_WORDS]
+
+        # Filter out stop words and words with trailing dots
+        filtered_words = [
+            w for w in words
+            if w.lower() not in stop_words_lower and not w.endswith(".")
+        ]
+
+        # Take first letter of each remaining word
+        initials = [w[0] for w in filtered_words if w]
+
+        # Join initials; return None if < 2 characters
+        abbreviation = "".join(initials)
+        return abbreviation if len(abbreviation) >= 2 else None
 
     def _normalize_and_hash(self, query: str) -> str:
         """Normalize query: lowercase, strip extra whitespace, then SHA-256."""
@@ -565,7 +629,17 @@ class SearchModule:
                     if self.rate_limiter:
                         self.rate_limiter.report_success()
                     # Firecrawl returns {"success": true, "data": [...]}
-                    return data.get("data", [])
+                    raw_results = data.get("data", [])
+                    # Validate each result
+                    validated_results = []
+                    for result in raw_results:
+                        try:
+                            validated = validate_search_result(result)
+                            validated_results.append(result)  # Return original dict, validation passed
+                        except ValueError as e:
+                            logger.warning(f"Skipping invalid search result: {e}")
+                            continue
+                    return validated_results
 
                 if resp.status_code == 402:
                     if self.rate_limiter:

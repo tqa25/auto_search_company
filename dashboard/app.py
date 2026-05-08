@@ -9,10 +9,11 @@ action.  Does NOT start any background threads or run the pipeline itself.
 import os
 import sys
 import json
+import asyncio
 from datetime import datetime
 
 from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from dotenv import set_key, load_dotenv
 
 # Ensure the project root (parent of dashboard/) is on sys.path so that
@@ -24,6 +25,7 @@ from src.database import DatabaseManager
 from src.health_monitor import HealthMonitor
 from src.logger import PipelineLogger
 from src.config import Config
+from src.pipeline import Pipeline
 
 load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 
@@ -483,6 +485,21 @@ def company_logs(company_id: int):
   <strong>Tax code:</strong> {company.get('tax_code') or 'N/A'}
   &nbsp;&nbsp;
   <a href="/companies" class="view-link">← Back to Companies</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="/companies/{company_id}/scores" class="view-link">View Scores</a>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Run Pipeline Step</h2>
+  <form method="post" action="/companies/{company_id}/run-step" style="display:flex;gap:8px;align-items:center;">
+    <select name="step" style="padding:5px 8px;background:#0f1e3a;border:1px solid #0f3460;color:#eee;border-radius:4px;">
+      <option value="search">Search</option>
+      <option value="filter">Filter</option>
+      <option value="scrape">Scrape</option>
+      <option value="extract">Extract</option>
+    </select>
+    <button type="submit" class="btn btn-rerun">Run Step</button>
+  </form>
 </div>
 
 <h2>Pipeline Logs ({len(logs)} entries)</h2>
@@ -706,3 +723,132 @@ def api_companies():
         return JSONResponse(rows)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# Sub-task A: GET /companies/{company_id}/scores  — Scoring breakdown view
+# ---------------------------------------------------------------------------
+
+@app.get("/companies/{company_id}/scores", response_class=HTMLResponse)
+def company_scores(company_id: int):
+    db = _get_db()
+    company = db.get_company(company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail=f"Company {company_id} not found")
+
+    # Query filtered_links ordered by relevance_score DESC
+    filtered_links = db.fetch_all(
+        "SELECT url, source_type, relevance_score, should_scrape, reason "
+        "FROM filtered_links WHERE company_id = ? ORDER BY relevance_score DESC",
+        (company_id,)
+    )
+
+    # Build table rows
+    rows_html = ""
+    for link in filtered_links:
+        rows_html += f"""
+<tr>
+  <td style="word-break:break-all;max-width:400px;"><a href="{link['url']}" target="_blank" style="color:#60b0ff;">{link['url']}</a></td>
+  <td>{link['source_type'] or ''}</td>
+  <td>{link['relevance_score'] or ''}</td>
+  <td>{link['should_scrape'] or 'N/A'}</td>
+  <td>{link['reason'] or ''}</td>
+</tr>"""
+
+    body = f"""
+<h1>Scoring Breakdown: {company.get('original_name','')} (ID {company_id})</h1>
+<div class="card" style="margin-bottom:8px;">
+  <strong>Tax code:</strong> {company.get('tax_code') or 'N/A'}
+  &nbsp;&nbsp;
+  <a href="/companies/{company_id}/logs" class="view-link">← Back to logs</a>
+</div>
+
+<h2>Filtered Links ({len(filtered_links)} total)</h2>
+<div class="card" style="overflow-x:auto;">
+  <table>
+    <thead><tr>
+      <th>URL</th><th>Source Type</th><th>Score</th><th>Should Scrape</th><th>Reason</th>
+    </tr></thead>
+    <tbody>{rows_html or '<tr><td colspan="5" style="color:#a0a0b0;">No filtered links yet.</td></tr>'}</tbody>
+  </table>
+</div>
+"""
+    return HTMLResponse(_page(f"Scores: Company {company_id}", body))
+
+
+# ---------------------------------------------------------------------------
+# Sub-task B: POST /companies/{company_id}/run-step  — Step-level execution
+# ---------------------------------------------------------------------------
+
+@app.post("/companies/{company_id}/run-step")
+async def company_run_step(company_id: int, request: Request):
+    form = await request.form()
+    step = form.get("step")
+
+    if not step or step not in ("search", "filter", "scrape", "extract"):
+        raise HTTPException(status_code=400, detail="Invalid or missing step parameter")
+
+    db = _get_db()
+    company = db.get_company(company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail=f"Company {company_id} not found")
+
+    try:
+        # Map form step names to pipeline step names
+        step_map = {
+            "search": "search",
+            "filter": "filter",
+            "scrape": "scrape",
+            "extract": "ai_extract"
+        }
+        pipeline_step = step_map.get(step, step)
+
+        # Instantiate Pipeline with minimal config
+        config = {
+            "firecrawl_api_key": os.getenv("FIRECRAWL_API_KEY"),
+            "gemini_api_key": os.getenv("GEMINI_API_KEY"),
+            "input_excel_path": None,
+            "output_dir": "output"
+        }
+        pipeline = Pipeline(config)
+        pipeline.run_step(pipeline_step, company_id)
+
+        return RedirectResponse(url=f"/companies/{company_id}/logs", status_code=303)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error running step: {str(exc)}")
+
+
+# ---------------------------------------------------------------------------
+# Sub-task C: GET /api/logs/stream  — SSE real-time logs
+# ---------------------------------------------------------------------------
+
+async def log_generator():
+    """Generate log lines as Server-Sent Events from the JSONL file."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_file = os.path.join(LOG_DIR, f"pipeline_{today}.jsonl")
+
+    # Check if file exists
+    if not os.path.exists(log_file):
+        yield f"data: {json.dumps({'event': 'error', 'message': 'Log file not found'})}\n\n"
+        return
+
+    try:
+        with open(log_file, "r", encoding="utf-8") as f:
+            # Seek to end of file
+            f.seek(0, 2)
+            while True:
+                line = f.readline()
+                if line:
+                    # Yield as SSE format
+                    yield f"data: {line.strip()}\n\n"
+                else:
+                    # No new data, sleep briefly before checking again
+                    await asyncio.sleep(1)
+    except Exception as exc:
+        yield f"data: {json.dumps({'event': 'error', 'message': str(exc)})}\n\n"
+
+
+@app.get("/api/logs/stream")
+async def logs_stream():
+    """Server-Sent Events endpoint for real-time log streaming."""
+    return StreamingResponse(log_generator(), media_type="text/event-stream")

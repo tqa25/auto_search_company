@@ -82,7 +82,7 @@ class Config:
         # --- Scoring group (JSON dicts) ---
         self.DOMAIN_SCORES: dict = _parse_json_dict(
             os.getenv("DOMAIN_SCORES"),
-            default={"official": 40, "legal": 30, "job": 20, "social": 10},
+            default={"official": 40, "legal": 30, "job": 20, "social": 10, "name_match": 15},
         )
         self.KEYWORD_SCORES: dict = _parse_json_dict(
             os.getenv("KEYWORD_SCORES"),
@@ -132,6 +132,17 @@ class Config:
             os.getenv("BATCH_SIZE"), default=10
         )
 
+        # --- Abbreviation group ---
+        self.ABBREVIATION_STOP_WORDS: list = _parse_str_list(
+            os.getenv("ABBREVIATION_STOP_WORDS"),
+            default=["Co", "Ltd", "Corp", "Inc", "Company", "Joint", "Stock", "Vietnam", "Viet", "JSC", "TNHH", "CP", "Cổ", "Phần"],
+        )
+
+        # --- Confidence threshold group ---
+        self.MIN_CONFIDENCE_THRESHOLD: float = _parse_float(
+            os.getenv("MIN_CONFIDENCE_THRESHOLD"), default=0.3
+        )
+
     def __repr__(self) -> str:
         return (
             f"Config("
@@ -152,7 +163,9 @@ class Config:
             f"DELAY_SECONDS={self.DELAY_SECONDS!r}, "
             f"MAX_RETRIES={self.MAX_RETRIES!r}, "
             f"EXECUTION_MODE={self.EXECUTION_MODE!r}, "
-            f"BATCH_SIZE={self.BATCH_SIZE!r}"
+            f"BATCH_SIZE={self.BATCH_SIZE!r}, "
+            f"ABBREVIATION_STOP_WORDS={self.ABBREVIATION_STOP_WORDS!r}, "
+            f"MIN_CONFIDENCE_THRESHOLD={self.MIN_CONFIDENCE_THRESHOLD!r}"
             f")"
         )
 

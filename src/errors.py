@@ -24,17 +24,28 @@ class PipelineError(Exception):
         self.company_id = company_id
         self.step = step
 
+    @property
+    def category(self):
+        """Return the error category string."""
+        return "unknown"
+
 
 class RetryableError(PipelineError):
     """Temporary error — should retry (429, timeout, network, transient failures)."""
-    pass
+    @property
+    def category(self):
+        return "retryable"
 
 
 class SkippableError(PipelineError):
     """Company-specific error — skip company, continue batch (invalid data, no results)."""
-    pass
+    @property
+    def category(self):
+        return "skippable"
 
 
 class CriticalError(PipelineError):
     """Critical error — stop entire pipeline (402 credits exhausted, DB corrupt)."""
-    pass
+    @property
+    def category(self):
+        return "critical"
