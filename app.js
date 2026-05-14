@@ -11,9 +11,21 @@ const SUB_STEPS_MAP = {
   3: [{id:"4.1",title:"Contact Query"},{id:"4.2",title:"Infer VN"},{id:"4.3",title:"Tax Code"},{id:"4.4",title:"Bare Query"}],
   4: [{id:"5.1",title:"Firecrawl"},{id:"5.2",title:"AI Extract"}]
 };
-const NODE_POSITIONS = [
-  {x:50,y:30},{x:250,y:160},{x:490,y:30},{x:700,y:160},{x:930,y:30}
-];
+let NODE_POSITIONS = [];
+
+function updatePositions() {
+  const isMobile = window.innerWidth <= 768;
+  if (isMobile) {
+    NODE_POSITIONS = [
+      {x: 20, y: 30}, {x: 20, y: 180}, {x: 20, y: 330}, {x: 20, y: 480}, {x: 20, y: 630}
+    ];
+  } else {
+    NODE_POSITIONS = [
+      {x: 50, y: 30}, {x: 250, y: 160}, {x: 490, y: 30}, {x: 700, y: 160}, {x: 930, y: 30}
+    ];
+  }
+}
+updatePositions();
 const CONN_PAIRS = [{from:0,to:1},{from:1,to:2},{from:2,to:3},{from:3,to:4}];
 
 let currentLang = 'vi';
@@ -99,7 +111,9 @@ function renderConnections() {
 
   CONN_PAIRS.forEach((c,i) => {
     const f = getNodeCenter(c.from), t = getNodeCenter(c.to);
-    const mx = (f.x+t.x)/2, my = Math.min(f.y,t.y) - 30 + (i%2===0 ? -20 : 40);
+    const isMobile = Math.abs(f.x - t.x) < 10;
+    const mx = isMobile ? f.x + 100 : (f.x+t.x)/2;
+    const my = isMobile ? (f.y+t.y)/2 : Math.min(f.y,t.y) - 30 + (i%2===0 ? -20 : 40);
     const path = `M${f.x},${f.y} Q${mx},${my} ${t.x},${t.y}`;
 
     const base = document.createElementNS("http://www.w3.org/2000/svg","path");
@@ -127,11 +141,14 @@ function updateLineLabels() {
   const t = T();
   CONN_PAIRS.forEach((c,i) => {
     const f = getNodeCenter(c.from), to = getNodeCenter(c.to);
-    const mx = (f.x+to.x)/2, my = Math.min(f.y,to.y) - 30 + (i%2===0 ? -20 : 40);
+    const isMobile = Math.abs(f.x - to.x) < 10;
+    const mx = isMobile ? f.x + 100 : (f.x+to.x)/2;
+    const my = isMobile ? (f.y+to.y)/2 : Math.min(f.y,to.y) - 30 + (i%2===0 ? -20 : 40);
     const label = document.createElement('div');
     label.className = 'line-label'; label.dataset.conn = i;
     label.textContent = t.connections[i].label;
-    label.style.left = `${mx-60}px`; label.style.top = `${my+(i%2===0?-18:12)}px`;
+    label.style.left = isMobile ? `${mx - 40}px` : `${mx-60}px`; 
+    label.style.top = isMobile ? `${my - 10}px` : `${my+(i%2===0?-18:12)}px`;
     canvas.appendChild(label);
   });
 }
@@ -190,13 +207,16 @@ function toggleSubSteps() {
 
 function renderSubSteps() {
   const canvas = document.getElementById('diagramCanvas');
+  const isMobile = window.innerWidth <= 768;
   Object.entries(SUB_STEPS_MAP).forEach(([stepIdx, subs]) => {
     const pos = NODE_POSITIONS[parseInt(stepIdx)];
     const color = STEP_COLORS[parseInt(stepIdx)];
     subs.forEach((sub,i) => {
       const el = document.createElement('div');
       el.className = 'sub-node' + (subStepsVisible?' visible':'');
-      el.style.cssText = `left:${pos.x-30+i*55}px;top:${pos.y+155+Math.abs(i-1)*10}px;--node-color:${color}`;
+      const left = isMobile ? (pos.x + 10 + (i%2)*80) : (pos.x-30+i*55);
+      const top = isMobile ? (pos.y + 120 + Math.floor(i/2)*45) : (pos.y+155+Math.abs(i-1)*10);
+      el.style.cssText = `left:${left}px;top:${top}px;--node-color:${color}`;
       el.innerHTML = `<div class="sub-node-label">${sub.id}</div><div class="sub-node-title">${sub.title}</div>`;
       el.addEventListener('click',e=>{e.stopPropagation();openModal(parseInt(stepIdx));});
       canvas.appendChild(el);
@@ -219,4 +239,9 @@ document.addEventListener('DOMContentLoaded', () => {
   updateLineLabels();
   document.getElementById('modalOverlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+  
+  window.addEventListener('resize', () => {
+    updatePositions();
+    rebuildUI();
+  });
 });

@@ -666,9 +666,12 @@ body {
 /* Responsive */
 @media (max-width: 768px) {
   .node-tooltip { display: none; }
-  .node { width: 180px; padding: 14px; }
-  .node-title { font-size: 12px; }
-  .diagram-canvas { min-height: 800px; }
+  .node { width: 200px; padding: 14px; }
+  .node-title { font-size: 13px; }
+  .diagram-canvas { min-height: 950px; }
+  .header h1 { font-size: 28px; }
+  .header { padding: 80px 20px 20px; } /* More top padding for lang toggle */
+  .sub-node { width: 140px; padding: 10px; }
 }
 
 /* Scrollbar */
