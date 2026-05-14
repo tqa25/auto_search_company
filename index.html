@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auto Search Company — System Workflow</title>
+  <meta name="description" content="Quy trình vận hành hệ thống Auto Search Company - Sequential Fallback & Early Stop Architecture">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+  <div class="bg-glow bg-glow-3"></div>
+
+  <!-- Language Toggle -->
+  <div class="lang-toggle">
+    <button class="lang-btn active" data-lang="vi" onclick="setLang('vi')">🇻🇳 Tiếng Việt</button>
+    <button class="lang-btn" data-lang="ko" onclick="setLang('ko')">🇰🇷 한국어</button>
+  </div>
+
+  <header class="header">
+    <div class="badge"><span class="dot"></span><span id="headerBadge">Kiến trúc Hệ thống</span></div>
+    <h1 id="headerTitle">Auto Search Company</h1>
+    <p class="subtitle" id="headerSubtitle">Kiến trúc <strong>Sequential Fallback</strong> & <strong>Early Stop</strong> — Tối đa hoá tỷ lệ tìm thấy thông tin liên hệ với chi phí API thấp nhất</p>
+  </header>
+
+  <div class="stats-bar">
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-value">5</div><div class="stat-label">Core Steps</div></div>
+      <div class="stat-card"><div class="stat-value">3</div><div class="stat-label">Early Stop Points</div></div>
+      <div class="stat-card"><div class="stat-value">4</div><div class="stat-label">Search Strategies</div></div>
+      <div class="stat-card"><div class="stat-value">6+</div><div class="stat-label">API Integrations</div></div>
+      <div class="stat-card"><div class="stat-value">∞</div><div class="stat-label">Resumable</div></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button data-action="substeps" onclick="toggleSubSteps()">📐 Sub-steps</button>
+    <button data-action="highlight" onclick="highlightAll()">✨ Highlight All</button>
+  </div>
+
+  <div class="diagram-wrapper">
+    <div class="diagram-canvas" id="diagramCanvas">
+      <svg class="connections-svg" id="connectionsSvg"></svg>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-inner">
+      <div class="legend-item"><div class="legend-color" style="background:#818cf8"></div><span class="legend-text">Bước 1: Khởi tạo</span></div>
+      <div class="legend-item"><div class="legend-color" style="background:#60a5fa"></div><span class="legend-text">Bước 2: AI Search</span></div>
+      <div class="legend-item"><div class="legend-color" style="background:#22d3ee"></div><span class="legend-text">Bước 3: Maps</span></div>
+      <div class="legend-item"><div class="legend-color" style="background:#c084fc"></div><span class="legend-text">Bước 4: Deep Search</span></div>
+      <div class="legend-item"><div class="legend-color" style="background:#34d399"></div><span class="legend-text">Bước 5: Scrape & Extract</span></div>
+      <div class="legend-item"><div class="legend-color" style="background:#fbbf24;border-radius:50%"></div><span class="legend-text">Early Stop Point</span></div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <p id="footerTitle">Auto Search Company — Sequential Fallback Pipeline v1.0</p>
+    <p id="footerHint" style="margin-top:6px;opacity:0.6">Hover để xem tóm tắt • Click để xem chi tiết • Đường nối sáng lên khi hover node</p>
+  </footer>
+
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2><span class="step-badge">1</span><span class="modal-title-text">Title</span></h2>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
