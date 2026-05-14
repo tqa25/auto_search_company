@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CV - NGUYEN THI THANH HOAI</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/ScrollTrigger.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/studio-freight/lenis@1.0.19/bundled/lenis.min.js"></script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    
+    <div class="scroll-container" id="scroll-container">
+        <!-- Content will be duplicated here for infinity scroll if needed, 
+             but we will use a loop mechanism in JS to reset scroll or just create a long parallax effect -->
+        <div class="content-wrapper">
+            
+            <section class="hero glass-panel fade-in">
+                <div class="profile-img">
+                    <img src="assets/BIN0004.jpg" alt="Profile Picture" onerror="this.style.display='none';">
+                </div>
+                <div class="hero-text">
+                    <h1>NGUYEN THI THANH HOAI</h1>
+                    <p class="subtitle">응웬티탄화이</p>
+                    <div class="contact-info">
+                        <span><i class="icon">🎂</i> 1997/03/26</span>
+                        <span><i class="icon">📞</i> 010-6512-2263</span>
+                        <span><i class="icon">✉️</i> HVK8481@gmail.com</span>
+                        <span><i class="icon">📍</i> 서울특별시 성동구 하왕십리동 971-2</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="about glass-panel fade-in">
+                <h2>성장과정 <span class="glow">Growth</span></h2>
+                <p>
+                    안녕하세요. 저는 경기대학교에서 호텔경영학과를 졸업한 응웬티탄화이 라고 합니다. 사람들은 저를 부르실 때 '화이'라고 많이 부릅니다. 베트남 하띤이란 작은 도시에서 태어나 어머니의 사랑과 돌봄 아래 용감하고 밝은 성격으로 성장하였습니다.
+                </p>
+                <p>
+                    사실 한국으로 유학 오기 전 베트남 외국어대학교에서 러시아어를 전공했지만, 공부하다가 저와 맞지 않다는 생각이 들었고 한국어에 관심이 많아져 한국 유학을 결심하게 되었습니다. 2017년부터 2년 동안 경희대학교 한국어학당에 다녔고, 이후 경기대학교 호텔경영학과에 편입하여 4년간 공부했습니다. 그 기간 동안 과제, 논문, 실습 등 다양한 경험을 통해 한국어 능력을 향상시켰고, 2023년 9월에 학사과정을 무사히 마쳤습니다.
+                </p>
+            </section>
+
+            <section class="experience glass-panel fade-in">
+                <h2>학력 및 경력사항 <span class="glow">Education</span></h2>
+                <div class="timeline">
+                    <div class="timeline-item">
+                        <div class="timeline-dot"></div>
+                        <div class="timeline-content">
+                            <h3>경희대학교 한국어학당</h3>
+                            <span class="date">2017.10 ~ 2019.06</span>
+                            <p>서울특별시 동대문구 경희대로 26</p>
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-dot"></div>
+                        <div class="timeline-content">
+                            <h3>경기대학교 호텔경영학과</h3>
+                            <span class="date">2019.09 ~ 2023.09</span>
+                            <p>서울특별시 서대문구 경기대로9길 24</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="skills glass-panel fade-in">
+                <h2>자격 및 특기사항 <span class="glow">Skills</span></h2>
+                <div class="skills-grid">
+                    <div class="skill-category">
+                        <h3>언어능력</h3>
+                        <ul>
+                            <li><strong>베트남어:</strong> 모국어</li>
+                            <li><strong>한국어:</strong> 중급 (TOPIK 5급, 2022)</li>
+                            <li><strong>영어:</strong> 초급</li>
+                        </ul>
+                    </div>
+                    <div class="skill-category">
+                        <h3>실무능력</h3>
+                        <ul>
+                            <li>바이어 상담회 통·번역, 워크숍 통역</li>
+                            <li>페이스북 페이지 관리 및 고객 대응</li>
+                            <li>자유 관광 가이드</li>
+                        </ul>
+                    </div>
+                    <div class="skill-category">
+                        <h3>대외활동</h3>
+                        <ul>
+                            <li>다문화가정 언어지원</li>
+                            <li>베트남 학생회 활동</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="personality glass-panel fade-in">
+                <h2>성격의 장단점 <span class="glow">Personality</span></h2>
+                <div class="traits">
+                    <div class="trait pro">
+                        <h3>장점</h3>
+                        <p>소통 능력과 적응 능력이 뛰어납니다. 한국 생활을 하며 외국 친구들과 사귀면서 다양한 문화에 대한 이해도를 높였고 적극적으로 소통했습니다. 낯선 환경에서도 빠르게 적응하며 성실하고 친절한 태도로 신뢰를 얻습니다. 항상 긍정적인 태도와 책임감을 가지고 문제를 정확하고 빠르게 처리하며 새로운 도전을 즐깁니다.</p>
+                    </div>
+                    <div class="trait con">
+                        <h3>단점</h3>
+                        <p>일에 대한 책임감이 강해 원하는 결과가 나오지 않으면 스스로 스트레스를 받는 편입니다. 또한, 일을 빠르게 처리하려는 조급한 면이 있습니다. 이를 극복하기 위해 매일 15분 동안 명상하는 습관을 들이며 마음의 평화와 안정을 찾고 있습니다.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="efforts glass-panel fade-in">
+                <h2>노력 및 취미 <span class="glow">Efforts</span></h2>
+                <p>한국 유학 생활 중 대외활동과 봉사활동을 통해 능력을 키웠습니다. 심리상담 통역사 활동, 웨딩 통·번역사, 베트남 유학생회 활동 등을 통해 문제 해결 능력과 기획력을 향상시켰습니다.</p>
+                <p>꾸준한 운동과 독서를 즐기며 새로운 지식을 습득하고 있습니다. 어릴 적부터 어머니의 장사를 도우며 고객 응대법을 배웠고, 소셜 네트워크(페이스북, 인스타그램)를 활용한 홍보 활동으로 고객 유치에 기여한 경험이 있습니다.</p>
+            </section>
+
+            <section class="vision glass-panel fade-in">
+                <h2>입사 후 포부 <span class="glow">Vision</span></h2>
+                <p>6년간의 유학 생활에서 배운 인내와 다양한 경험을 바탕으로 어떠한 업무가 맡겨지더라도 최선을 다해 좋은 성과를 낼 자신이 있습니다.</p>
+                <p>입사하게 된다면 선배님들의 가르침을 경청하고, 시키지 않아도 솔선수범하는 자세로 임하겠습니다. 실수를 두려워하지 않고 개선을 위해 노력하며, 맡은 일은 반드시 완수하고 동료들과 협력하겠습니다. 항상 자기계발에 힘쓰며 부족한 부분을 채워나가는 인재가 되겠습니다.</p>
+            </section>
+            
+            <div class="scroll-indicator">
+                <p>Keep Scrolling</p>
+                <div class="mouse"></div>
+            </div>
+
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
