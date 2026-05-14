@@ -538,6 +538,9 @@ class AIExtractor:
             self.db.update_company(company_id, status='done') # No text to extract means it's fully processed
             return []
 
+        company_record = self.db.get_company(company_id)
+        company_name = company_record['original_name'] if company_record else "Unknown Company"
+
         priority_order = [
             "masothue", "thuvienphapluat", "yellowpages", "hosocongty",
             "official_website", "vietnamworks", "topcv", "vietcareer",

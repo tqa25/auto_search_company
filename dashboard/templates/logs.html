@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Raw Logs{% endblock %}
+
+{% block content %}
+<div class="flex-between mb-2">
+  <h1 style="margin-bottom:0">📋 Raw Logs — {{ today }}</h1>
+  <div class="flex gap-1">
+    <button class="btn btn-outline btn-sm" onclick="window.open('/api/export/logs?format=jsonl','_blank')">📥 Download JSONL</button>
+    <button class="btn btn-outline btn-sm" onclick="window.open('/api/export/logs?format=markdown','_blank')">📝 Markdown Report</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="text-muted" style="font-size:12px">Last {{ log_count }} lines (newest first)</span>
+    <span class="badge badge-running" id="liveIndicator">● LIVE</span>
+  </div>
+  <div class="log-container" id="rawLogContainer" style="max-height:75vh">
+    {% for line in log_lines %}
+    <div class="log-entry {{ line.css }}"><pre>{{ line.text }}</pre></div>
+    {% endfor %}
+    {% if not log_lines %}
+    <p class="text-muted" style="text-align:center;padding:20px">No log entries for today.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Auto-refresh via WebSocket
+  connectLogStream('rawLogContainer');
+</script>
+{% endblock %}

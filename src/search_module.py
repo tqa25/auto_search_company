@@ -26,6 +26,8 @@ import time
 import json
 import logging
 import requests
+import re
+import urllib.parse
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
@@ -98,249 +100,212 @@ class SearchModule:
     # Core public API
     # ------------------------------------------------------------------
 
-    def search_company(self, company_id: int) -> List[Dict]:
-        """Execute the full 2-tier coarse+fallback search strategy for a single company.
+    VN_COMPANY_PATTERNS = [
+        r"(?:Công ty|CÔNG TY)\s+(?:TNHH|CP|CỔ PHẦN|HỢP DANH|MTV|MỘT THÀNH VIÊN)\s+([\w\s&.,-]+?)(?:\s+tại\s+|-|Mã số thuế|Địa chỉ|\n|$)",
+        r"(?:Tập đoàn|TẬP ĐOÀN)\s+([\w\s&.,-]+?)(?:\s+tại\s+|-|Mã số thuế|Địa chỉ|\n|$)",
+        r"(?:Tổng công ty|TỔNG CÔNG TY)\s+([\w\s&.,-]+?)(?:\s+tại\s+|-|Mã số thuế|Địa chỉ|\n|$)"
+    ]
 
-        Strategy order:
-          ① Tier 1 — Coarse search: ("{name}" OR "{abbr}") AND ("lien he" OR "contact")
-          ② Tier 2a — Recruitment query (if Tier 1 didn't early-stop)
-          ③ Tier 2b — Abbreviation query (if applicable and Tier 2a didn't early-stop)
-          ④ Tier 2c — Facebook search (if < FB_FALLBACK_THRESHOLD high-scoring links)
-
-        Args:
-            company_id: ID of the company in the `companies` table.
-
-        Returns:
-            List of dicts representing all search results saved to DB.
-        """
+    def search_company(self, company_id: int, vn_name: str = None, tax_code: str = None) -> List[Dict]:
+        """Execute the 4-step search strategy."""
         company = self.db.get_company(company_id)
         if not company:
             logger.error(f"Company with id={company_id} not found in DB.")
             return []
 
         company_name = company["original_name"]
-
-        # Update status to 'searching'
         self.db.update_company(company_id, status="searching")
+        
+        # Override with DB values if available and not passed
+        if not vn_name:
+            vn_name = company.get("vietnamese_name")
+        if not tax_code:
+            tax_code = company.get("tax_code")
 
-        all_results: List[Dict] = []
+        all_results = []
 
-        # Compute abbreviation
-        abbreviation = self._compute_abbreviation(company_name)
-
-        # ------------------------------------------------------------------
-        # Tier 1 — Coarse search
-        # ------------------------------------------------------------------
-        if abbreviation:
-            tier1_query = (
-                f'("{company_name}" OR "{abbreviation}") AND ("liên hệ" OR "contact")'
-            )
-        else:
-            tier1_query = f'"{company_name}" AND ("liên hệ" OR "contact")'
-
-        log_id = self.pipeline_logger.log_step_start(
-            company_id, "search", source_name=f"tier1_coarse: {company_name}",
-            raw_request={"query": tier1_query, "tier": "tier1_coarse"}
-        )
-        try:
-            start_time = time.time()
-            results, cache_hit = self._search_with_dedup(
-                tier1_query, company_id, limit=self.config.SEARCH_LIMIT
-            )
-            elapsed_ms = (time.time() - start_time) * 1000
-            saved = self._save_results(company_id, tier1_query, "tier1_coarse", results)
-            all_results.extend(saved)
-            self.pipeline_logger.log_step_end(
-                log_id,
-                status="success",
-                credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
-                data_saved=True,
-                network_latency_ms=elapsed_ms,
-                raw_response_summary={"result_count": len(saved), "status_code": 200},
-                metadata={
-                    "links_found": len(saved),
-                    "search_type": "tier1_coarse",
-                    "cache_hit": cache_hit,
-                },
-            )
-        except CriticalError as e:
-            self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e), error_category=e.category
-            )
-            raise
-        except RetryableError as e:
-            self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e), error_category=e.category
-            )
-            raise
-        except Exception as e:
-            category = e.category if isinstance(e, PipelineError) else "unknown"
-            self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e), error_category=category
-            )
-
-        if self._check_inline_early_stop(company_id, company_name, all_results, "T1"):
+        # Step 1: Contact Query (EN + VN)
+        step1_results = self._step1_contact_query(company_id, company_name, vn_name)
+        all_results.extend(step1_results)
+        if self._count_qualified(company_name, vn_name, all_results) >= self.config.EARLY_STOP_COUNT:
             self.db.update_company(company_id, status="searched")
             return all_results
 
-        # ------------------------------------------------------------------
-        # Tier 2a — Recruitment query
-        # ------------------------------------------------------------------
-        tier2a_query = (
-            f'"{company_name}" AND ("tuyển dụng" OR "nhân sự" OR "việc làm")'
-        )
+        # Step 2: Infer VN Name & Data (Skip if we already have both from Gemini)
+        if not (vn_name and tax_code):
+            vn_data = self._step2_infer_vn_data(company_id, step1_results)
+            vn_name = vn_name or vn_data.get("vn_name")
+            tax_code = tax_code or vn_data.get("tax_code")
 
-        log_id = self.pipeline_logger.log_step_start(
-            company_id, "search", source_name=f"tier2a_recruitment: {company_name}",
-            raw_request={"query": tier2a_query, "tier": "tier2a_recruitment"}
-        )
-        try:
-            start_time = time.time()
-            results, cache_hit = self._search_with_dedup(
-                tier2a_query, company_id, limit=self.config.SEARCH_LIMIT
-            )
-            elapsed_ms = (time.time() - start_time) * 1000
-            saved = self._save_results(company_id, tier2a_query, "tier2a_recruitment", results)
-            all_results.extend(saved)
-            self.pipeline_logger.log_step_end(
-                log_id,
-                status="success",
-                credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
-                data_saved=True,
-                network_latency_ms=elapsed_ms,
-                raw_response_summary={"result_count": len(saved), "status_code": 200},
-                metadata={
-                    "links_found": len(saved),
-                    "search_type": "tier2a_recruitment",
-                    "cache_hit": cache_hit,
-                },
-            )
-        except CriticalError as e:
-            self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e), error_category=e.category
-            )
-            raise
-        except RetryableError as e:
-            self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e), error_category=e.category
-            )
-            raise
-        except Exception as e:
-            category = e.category if isinstance(e, PipelineError) else "unknown"
-            self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e), error_category=category
-            )
-
-        if self._check_inline_early_stop(company_id, company_name, all_results, "T2a"):
-            self.db.update_company(company_id, status="searched")
-            return all_results
-
-        # ------------------------------------------------------------------
-        # Tier 2b — Abbreviation query (only if abbreviation exists and differs)
-        # ------------------------------------------------------------------
-        if abbreviation and abbreviation.upper() != company_name.upper():
-            tier2b_query = f'"{abbreviation}" AND ("liên hệ" OR "contact")'
-
-            log_id = self.pipeline_logger.log_step_start(
-                company_id, "search", source_name=f"tier2b_abbrev: {abbreviation}",
-                raw_request={"query": tier2b_query, "tier": "tier2b_abbrev"}
-            )
-            try:
-                start_time = time.time()
-                results, cache_hit = self._search_with_dedup(
-                    tier2b_query, company_id, limit=self.config.SEARCH_LIMIT
-                )
-                elapsed_ms = (time.time() - start_time) * 1000
-                saved = self._save_results(
-                    company_id, tier2b_query, "tier2b_abbrev", results
-                )
-                all_results.extend(saved)
-                self.pipeline_logger.log_step_end(
-                    log_id,
-                    status="success",
-                    credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
-                    data_saved=True,
-                    network_latency_ms=elapsed_ms,
-                    raw_response_summary={"result_count": len(saved), "status_code": 200},
-                    metadata={
-                        "links_found": len(saved),
-                        "search_type": "tier2b_abbrev",
-                        "cache_hit": cache_hit,
-                    },
-                )
-            except CriticalError as e:
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e), error_category=e.category
-                )
-                raise
-            except RetryableError as e:
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e), error_category=e.category
-                )
-                raise
-            except Exception as e:
-                category = e.category if isinstance(e, PipelineError) else "unknown"
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e), error_category=category
-                )
-
-            if self._check_inline_early_stop(company_id, company_name, all_results, "T2b"):
+        # Step 3: Tax Code Query
+        if tax_code:
+            step3_results = self._step3_tax_query(company_id, tax_code)
+            all_results.extend(step3_results)
+            if self._count_qualified(company_name, vn_name, all_results) >= self.config.EARLY_STOP_COUNT:
                 self.db.update_company(company_id, status="searched")
                 return all_results
-
-        # ------------------------------------------------------------------
-        # Tier 2c — Facebook search (only if below FB_FALLBACK_THRESHOLD)
-        # ------------------------------------------------------------------
-        good_count = self._count_good_links(company_id)
-        if good_count < self.config.FB_FALLBACK_THRESHOLD:
-            tier2c_query = f'site:facebook.com "{company_name}"'
-
-            log_id = self.pipeline_logger.log_step_start(
-                company_id, "search", source_name=f"tier2c_facebook: {company_name}",
-                raw_request={"query": tier2c_query, "tier": "tier2c_facebook"}
+        else:
+            logger.info(f"[{company_id}] No tax code found. Skipping step 3.")
+            self.db.execute_query(
+                "UPDATE companies SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (company_id,)
             )
-            try:
-                start_time = time.time()
-                results, cache_hit = self._search_with_dedup(
-                    tier2c_query, company_id, limit=self.config.SEARCH_LIMIT
-                )
-                elapsed_ms = (time.time() - start_time) * 1000
-                saved = self._save_results(
-                    company_id, tier2c_query, "tier2c_facebook", results
-                )
-                all_results.extend(saved)
-                self.pipeline_logger.log_step_end(
-                    log_id,
-                    status="success",
-                    credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
-                    data_saved=True,
-                    network_latency_ms=elapsed_ms,
-                    raw_response_summary={"result_count": len(saved), "status_code": 200},
-                    metadata={
-                        "links_found": len(saved),
-                        "search_type": "tier2c_facebook",
-                        "cache_hit": cache_hit,
-                    },
-                )
-            except CriticalError as e:
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e), error_category=e.category
-                )
-                raise
-            except RetryableError as e:
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e), error_category=e.category
-                )
-                raise
-            except Exception as e:
-                category = e.category if isinstance(e, PipelineError) else "unknown"
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(e), error_category=category
-                )
 
-        # Mark company as searched
+        # Step 4: Bare Query
+        step4_results = self._step4_bare_query(company_id, company_name, vn_name)
+        all_results.extend(step4_results)
+
         self.db.update_company(company_id, status="searched")
         return all_results
+
+    def _step1_contact_query(self, company_id: int, en_name: str, vn_name: str) -> List[Dict]:
+        if vn_name:
+            query = f'("{en_name}" OR "{vn_name}") AND ("liên hệ" OR "contact")'
+        else:
+            query = f'"{en_name}" AND ("liên hệ" OR "contact")'
+            
+        log_id = self.pipeline_logger.log_step_start(
+            company_id, "search", source_name=f"step1_contact: {en_name}",
+            raw_request={"query": query, "tier": "step1_contact"}
+        )
+        return self._execute_search_query(company_id, query, "step1_contact", log_id)
+
+    def _step2_infer_vn_data(self, company_id: int, anchor_results: List[Dict]) -> dict:
+        legal_results = [r for r in anchor_results if self._is_legal_domain(r.get("url", ""))]
+        
+        # 2a. Extract from snippets
+        for result in legal_results:
+            data = self._extract_vn_data_from_snippet(result.get("snippet", ""), result.get("url", ""))
+            if data.get("vn_name"):
+                self._update_company_vn_data(company_id, data)
+                return data
+
+        # 2b. Scrape fallback
+        max_scrape = getattr(self.config, 'INFER_MAX_SCRAPE', 2)
+        if max_scrape > 0 and legal_results:
+            for result in legal_results[:max_scrape]:
+                data = self._scrape_and_extract_vn_data(result.get("url", ""))
+                if data.get("vn_name"):
+                    self._update_company_vn_data(company_id, data)
+                    return data
+        return {}
+
+    def _step4_bare_query(self, company_id: int, en_name: str, vn_name: str) -> List[Dict]:
+        if vn_name:
+            query = f'("{en_name}" OR "{vn_name}")'
+        else:
+            query = f'"{en_name}"'
+            
+        log_id = self.pipeline_logger.log_step_start(
+            company_id, "search", source_name=f"step4_bare: {en_name}",
+            raw_request={"query": query, "tier": "step4_bare"}
+        )
+        return self._execute_search_query(company_id, query, "step4_bare", log_id)
+
+    def _step3_tax_query(self, company_id: int, tax_code: str) -> List[Dict]:
+        query = f'"{tax_code}"'
+        log_id = self.pipeline_logger.log_step_start(
+            company_id, "search", source_name=f"step3_tax: {tax_code}",
+            raw_request={"query": query, "tier": "step3_tax"}
+        )
+        return self._execute_search_query(company_id, query, "step3_tax", log_id)
+
+    def _execute_search_query(self, company_id: int, query: str, search_type: str, log_id: int) -> List[Dict]:
+        try:
+            start_time = time.time()
+            results, cache_hit = self._search_with_dedup(query, company_id, limit=self.config.SEARCH_LIMIT)
+            elapsed_ms = (time.time() - start_time) * 1000
+            saved = self._save_results(company_id, query, search_type, results)
+            self.pipeline_logger.log_step_end(
+                log_id,
+                status="success",
+                credits_used=0 if cache_hit else self.CREDITS_PER_SEARCH,
+                data_saved=bool(saved),
+                network_latency_ms=elapsed_ms,
+                raw_response_summary={"result_count": len(saved), "status_code": 200},
+                metadata={"links_found": len(saved), "search_type": search_type, "cache_hit": cache_hit},
+            )
+            return saved
+        except Exception as e:
+            category = getattr(e, 'category', 'unknown')
+            self.pipeline_logger.log_step_end(log_id, status="failed", error_message=str(e), error_category=category)
+            if isinstance(e, (CriticalError, RetryableError)):
+                raise
+            return []
+
+    def _is_legal_domain(self, url: str) -> bool:
+        if not url: return False
+        domain = urllib.parse.urlparse(url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return any(domain.endswith(d) or domain == d for d in self.config.VN_LEGAL_DOMAINS)
+
+    def _extract_vn_data_from_snippet(self, snippet: str, url: str) -> dict:
+        data = {"vn_name": None, "tax_code": None, "address": None, "source": f"snippet:{urllib.parse.urlparse(url).netloc}"}
+        if not snippet: return data
+        
+        # Name
+        for pattern in self.VN_COMPANY_PATTERNS:
+            match = re.search(pattern, snippet, re.IGNORECASE)
+            if match:
+                name = match.group(0).strip()
+                name = re.sub(r'(?i)\s+tại\s+.*$', '', name)
+                name = re.sub(r'(?i)\s*-\s*.*$', '', name)
+                name = re.sub(r'(?i)\s+Mã số thuế.*$', '', name)
+                name = re.sub(r'(?i)\s+Địa chỉ.*$', '', name)
+                if len(name) > 10:
+                    data["vn_name"] = name.strip(',.- ')
+                    break
+
+        # MST
+        mst_match = re.search(r'\b\d{10}(?:-\d{3})?\b', snippet)
+        if mst_match:
+            data["tax_code"] = mst_match.group(0)
+
+        return data
+
+    def _scrape_and_extract_vn_data(self, url: str) -> dict:
+        data = {"vn_name": None, "tax_code": None, "address": None, "source": f"scrape:{urllib.parse.urlparse(url).netloc}"}
+        try:
+            headers = {"Authorization": f"Bearer {self.firecrawl_api_key}", "Content-Type": "application/json"}
+            body = {"url": url, "formats": ["markdown"], "timeout": 30000}
+            if self.rate_limiter:
+                self.rate_limiter.wait()
+            if self.connection_manager:
+                resp = self.connection_manager.post("https://api.firecrawl.dev/v1/scrape", json=body, request_type="scrape")
+            else:
+                resp = requests.post("https://api.firecrawl.dev/v1/scrape", headers=headers, json=body, timeout=35)
+            
+            if resp.status_code == 200:
+                if self.rate_limiter:
+                    self.rate_limiter.report_success()
+                res_json = resp.json()
+                if res_json.get("success"):
+                    md = res_json.get("data", {}).get("markdown", "")
+                    data_ext = self._extract_vn_data_from_snippet(md[:2000], url)
+                    data["vn_name"] = data_ext.get("vn_name")
+                    data["tax_code"] = data_ext.get("tax_code")
+                    data["address"] = data_ext.get("address")
+            elif resp.status_code == 429 and self.rate_limiter:
+                self.rate_limiter.report_error(429)
+        except Exception as e:
+            logger.warning(f"Failed to scrape legal URL {url}: {e}")
+        return data
+
+    def _update_company_vn_data(self, company_id: int, data: dict):
+        updates = {}
+        if data.get("vn_name"): updates["vietnamese_name"] = data["vn_name"]
+        if data.get("tax_code"): updates["tax_code"] = data["tax_code"]
+        if data.get("address"): updates["address"] = data["address"]
+        if data.get("source"): updates["vn_data_source"] = data["source"]
+        if updates:
+            self.db.update_company(company_id, **updates)
+
+    def _count_qualified(self, company_name: str, vn_name: str, results: List[Dict]) -> int:
+        if not self.config.EARLY_STOP_COUNT:
+            return 0
+        scored = self.filter_module.score_urls_batch(results, company_name, vn_name=vn_name)
+        return sum(1 for item in scored if item["relevance_score"] >= self.config.EARLY_STOP_SCORE)
 
     def search_batch(
         self, company_ids: List[int], delay_seconds: float = 2.0
@@ -365,7 +330,7 @@ class SearchModule:
                 results = self.search_company(cid)
                 total_results += len(results)
                 success_count += 1
-            except FirecrawlCreditExhausted:
+            except CriticalError:
                 fail_count += 1
                 print("⚠️  Firecrawl credits exhausted. Stopping batch.")
                 break
@@ -708,13 +673,9 @@ class SearchModule:
         for rank, item in enumerate(results, start=1):
             url = item.get("url", "")
             title = item.get("title", "") or item.get("metadata", {}).get("title", "")
-            snippet = (
-                item.get("snippet", "")
-                or item.get("description", "")
-                or item.get("markdown", "")[:300]
-                if item.get("markdown")
-                else ""
-            )
+            snippet = item.get("snippet", "") or item.get("description", "")
+            if not snippet and item.get("markdown"):
+                snippet = item.get("markdown", "")[:300]
 
             row_id = self.db.insert_search_result(
                 company_id=company_id,

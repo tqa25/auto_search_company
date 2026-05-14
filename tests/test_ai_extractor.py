@@ -7,6 +7,7 @@ class TestAIExtractor(unittest.TestCase):
     @patch('src.ai_extractor.genai')
     def setUp(self, mock_genai):
         self.mock_db = MagicMock()
+        self.mock_db.get_company.return_value = {"original_name": "Test Company"}
         self.mock_logger = MagicMock()
         self.api_key = "fake_api_key"
         self.extractor = AIExtractor(self.mock_db, self.mock_logger, self.api_key)
@@ -17,7 +18,7 @@ class TestAIExtractor(unittest.TestCase):
         self.extractor.model.generate_content.return_value = mock_response
         
         self.mock_db.fetch_one.side_effect = [
-            {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "some text"}, # scraped_page
+            {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "test@test.com"}, # scraped_page
             None # existing extracted contact -> None means not extracted yet
         ]
         
@@ -34,7 +35,7 @@ class TestAIExtractor(unittest.TestCase):
         self.extractor.model.generate_content.return_value = mock_response
         
         self.mock_db.fetch_one.side_effect = [
-            {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "text"},
+            {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "test@test.com"},
             None
         ]
         
@@ -57,7 +58,7 @@ class TestAIExtractor(unittest.TestCase):
         self.extractor.model.generate_content.return_value = mock_response
         
         self.mock_db.fetch_one.side_effect = [
-            {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "text"},
+            {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "test@test.com"},
             None
         ]
         

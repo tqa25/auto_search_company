@@ -12,12 +12,12 @@ logger = logging.getLogger(__name__)
 class LinkFilter:
     # Domains that never contain phone numbers — score 0, never scrape.
     BLACKLISTED_DOMAINS = [
-        "masothue.com",
         "infocom.vn",
         "xinvoice.vn",
         "dauthau.info",
         "dauthau.net",
         "thuonghieuviet.info.vn",
+        "fiingate.vn",
     ]
 
     # News / social-aggregator domains — tracked as score 0, should_scrape=False.
@@ -35,9 +35,11 @@ class LinkFilter:
         "vietnamworks.com":    ("vietnamworks",     "job"),
         "topcv.vn":            ("topcv",            "job"),
         "vietcareer.vn":       ("vietcareer",       "job"),
+        "jobsgo.vn":           ("jobsgo",           "job"),
         "facebook.com":        ("facebook",         "social"),
         "linkedin.com":        ("linkedin",         "social"),
         "yellowpages.vn":      ("yellowpages",      "official"),
+        "masothue.com":        ("masothue",         "legal"),
     }
 
     # URL-path keywords → score category
@@ -53,6 +55,19 @@ class LinkFilter:
         self.config = config or default_config
         self.db = db
         self.logger = logger
+
+        # Dynamic blacklist/skip based on config toggles
+        self._blacklisted_domains = list(self.BLACKLISTED_DOMAINS)
+        self._skip_domains = list(self.SKIP_DOMAINS)
+
+        # masothue.com: toggle (default OFF = stays in blacklist)
+        if self.config.SCRAPE_MASOTHUE_ENABLED:
+            self._blacklisted_domains = [d for d in self._blacklisted_domains if d != "masothue.com"]
+
+        # LinkedIn: toggle (default OFF = add to skip)
+        if not self.config.SCRAPE_LINKEDIN_ENABLED:
+            if "linkedin.com" not in self._skip_domains:
+                self._skip_domains.append("linkedin.com")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -82,7 +97,8 @@ class LinkFilter:
 
         # Remove common stop words
         stop_words = ['co.', 'ltd', 'inc.', 'llc', 'corp.', 'corporation',
-                     'company', 'limited', 'cooperative', 'joint stock']
+                     'company', 'limited', 'cooperative', 'joint stock',
+                     'viet nam', 'vietnam', 'cong ty', 'tnhh', 'cp', 'tap doan', 'co phan']
         for stop in stop_words:
             normalized = re.sub(r'\b' + re.escape(stop) + r'\b', '', normalized)
 
@@ -117,26 +133,47 @@ class LinkFilter:
         return domain
 
     @staticmethod
-    def _check_name_match(normalized_domain: str, normalized_company: str, company_abbrev: str) -> bool:
+    def _get_best_partial_ratio(query: str, text: str) -> float:
+        import difflib
+        if not query or not text: return 0.0
+        if query in text: return 1.0
+        max_r = 0.0
+        for i in range(len(text) - len(query) + 1):
+            window = text[i:i+len(query)]
+            r = difflib.SequenceMatcher(None, query, window).ratio()
+            if r > max_r:
+                max_r = r
+        if len(text) < len(query):
+            max_r = max(max_r, difflib.SequenceMatcher(None, query, text).ratio())
+        return max_r
+
+    def _calculate_name_match_score(self, url: str, title: str, company_name: str, vn_name: str) -> float:
         """
-        Check if company name (or abbreviation) matches domain.
-        Returns True if any word from normalized company name or the abbreviation appears in domain.
+        Calculate % match between company names (EN/VN) and URL domain/path or title.
+        Returns bonus points: 0 if < 80%, up to 20 if 100%.
         """
-        if not normalized_domain:
-            return False
-
-        # Check abbreviation first (more specific match)
-        if company_abbrev and company_abbrev in normalized_domain:
-            return True
-
-        # Check individual words from normalized company name
-        if normalized_company:
-            words = normalized_company.split()
-            for word in words:
-                if word and word in normalized_domain:
-                    return True
-
-        return False
+        names = [n for n in [company_name, vn_name] if n]
+        normalized_names = [self._normalize_company_name(n)[0] for n in names]
+        
+        domain = self._normalize_domain(self._extract_domain(url))
+        import urllib.parse
+        path = urllib.parse.urlparse(url).path.lower().replace('-', ' ').replace('/', ' ')
+        title_norm = self._remove_accents(title).lower() if title else ""
+        
+        match_texts = [t for t in [domain, path, title_norm] if t]
+        
+        max_ratio = 0.0
+        for name in normalized_names:
+            if not name: continue
+            for text in match_texts:
+                ratio = self._get_best_partial_ratio(name, text)
+                if ratio > max_ratio:
+                    max_ratio = ratio
+                    
+        # Scale 80%~100% to 0~20 points
+        if max_ratio >= 0.8:
+            return (max_ratio - 0.8) * (20.0 / 0.2)
+        return 0.0
 
     @staticmethod
     def _extract_domain(url: str) -> str:
@@ -175,7 +212,7 @@ class LinkFilter:
     # Public API
     # ------------------------------------------------------------------
 
-    def classify_url(self, url: str, company_name: str, title: str = "") -> dict:
+    def classify_url(self, url: str, company_name: str, title: str = "", vn_name: str = "") -> dict:
         """
         Classify a single URL and return a dict with:
             source_type, should_scrape, reason, relevance_score, score_breakdown
@@ -194,7 +231,7 @@ class LinkFilter:
             }
 
             # 1. Blacklisted — score 0, never scrape.
-            if self._match_domain_list(domain, self.BLACKLISTED_DOMAINS):
+            if self._match_domain_list(domain, self._blacklisted_domains):
                 return {
                     "source_type": "blacklisted",
                     "should_scrape": False,
@@ -204,7 +241,7 @@ class LinkFilter:
                 }
 
             # 2. Skip (news / aggregator) — score 0, tracked but not scraped.
-            matched_skip = self._match_domain_list(domain, self.SKIP_DOMAINS)
+            matched_skip = self._match_domain_list(domain, self._skip_domains)
             if matched_skip:
                 return {
                     "source_type": "other",
@@ -231,30 +268,37 @@ class LinkFilter:
             if matched_known:
                 known_domain, src_type, score_category = matched_known
                 domain_score = float(self.config.DOMAIN_SCORES.get(score_category, 0))
+                
+                # If social, set score to -100 and don't scrape
+                if score_category == "social":
+                    return {
+                        "source_type": src_type,
+                        "should_scrape": False,
+                        "reason": f"Social media ignored: {known_domain}",
+                        "relevance_score": -100.0,
+                        "score_breakdown": breakdown,
+                    }
+                    
                 reason = f"Matched known domain: {known_domain} ({score_category})"
             else:
                 domain_score = float(self.config.DOMAIN_SCORES.get("official", 40))
                 reason = f"Possible official website: {domain}"
 
+            # TLD Bonus
+            for tld, bonus in getattr(self.config, "TLD_SCORES", {}).items():
+                if domain.endswith(tld):
+                    domain_score += float(bonus)
+                    reason += f" (TLD bonus {tld}: +{bonus})"
+                    break
+
             # Keyword bonuses
             keyword_bonuses = self._compute_keyword_bonuses(url)
             keyword_bonus_total = sum(keyword_bonuses.values())
 
-            # Normalization (needed for title and domain match)
-            normalized_company, company_abbrev = self._normalize_company_name(company_name)
-
-            # 1. Title matching
-            if title:
-                normalized_title = self._remove_accents(title).lower()
-                if (normalized_company and normalized_company in normalized_title) or \
-                   (company_abbrev and company_abbrev in normalized_title):
-                    name_match_bonus = float(self.config.DOMAIN_SCORES.get("name_match", 15))
-
-            # 2. Name match in domain (if not already matched via title)
-            if name_match_bonus == 0:
-                normalized_domain = self._normalize_domain(domain)
-                if self._check_name_match(normalized_domain, normalized_company, company_abbrev):
-                    name_match_bonus = float(self.config.DOMAIN_SCORES.get("name_match", 15))
+            # Name match bonus (fuzzy match 80-100% -> 0-20 points)
+            name_match_bonus = self._calculate_name_match_score(url, title, company_name, vn_name)
+            if name_match_bonus > 0:
+                reason += f" (Name match bonus: +{name_match_bonus:.1f})"
 
             total = domain_score + keyword_bonus_total + name_match_bonus
 
@@ -285,7 +329,7 @@ class LinkFilter:
                 },
             }
 
-    def score_urls_batch(self, urls: list[dict], company_name: str) -> list[dict]:
+    def score_urls_batch(self, urls: list[dict], company_name: str, vn_name: str = "") -> list[dict]:
         """
         Inline score a batch of URLs without saving to DB.
         Validates each scored link before returning.
@@ -297,7 +341,8 @@ class LinkFilter:
             if not url:
                 continue
 
-            classification = self.classify_url(url, company_name, title=title)
+            # Note: We need vn_name for new fuzzy logic. We pass it down from arguments.
+            classification = self.classify_url(url, company_name, title=title, vn_name=vn_name)
             scored_item = {
                 "url": url,
                 "source_type": classification["source_type"],
@@ -343,7 +388,8 @@ class LinkFilter:
             for result in search_results:
                 url = result["url"]
                 title = result.get("title", "")
-                classification = self.classify_url(url, company_name, title=title)
+                vn_name = company.get("vietnamese_name", "")
+                classification = self.classify_url(url, company_name, title=title, vn_name=vn_name)
 
                 self.logger.log_event("score_calculated", company_id, {
                     "url": url,

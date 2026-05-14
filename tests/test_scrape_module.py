@@ -60,7 +60,8 @@ def test_scrape_url_402_abort(mock_post, setup_db):
     mock_resp.status_code = 402
     mock_post.return_value = mock_resp
     
-    with pytest.raises(RuntimeError) as excinfo:
+    from src.errors import CriticalError
+    with pytest.raises(CriticalError) as excinfo:
         scraper.scrape_url(1)
         
     assert "Insufficient credits" in str(excinfo.value)

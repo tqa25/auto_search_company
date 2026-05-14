@@ -226,7 +226,7 @@ class ScrapeModule:
                     raise SkippableError(error_msg)
 
             except Exception as e:
-                if isinstance(e, RuntimeError):
+                if isinstance(e, (RuntimeError, CriticalError)):
                     raise
 
                 error_msg = str(e)
@@ -285,7 +285,7 @@ class ScrapeModule:
                         pass
                     else:
                         time.sleep(delay)
-            except RuntimeError as e:
+            except (RuntimeError, CriticalError) as e:
                 self.logger.logger.error(f"Stopping immediately: {e}")
                 raise
             except Exception as e:

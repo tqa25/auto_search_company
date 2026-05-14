@@ -3,7 +3,7 @@ import os
 import json
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
 from src.search_module import SearchModule
@@ -12,7 +12,11 @@ from src.scrape_module import ScrapeModule
 from src.excel_handler import ExcelReader, ExcelWriter
 from src.ai_extractor import AIExtractor
 from src.result_aggregator import ResultAggregator
+from src.gemini_quick_search import GeminiQuickSearch
+from src.serper_search import SerperSearch
 from src.errors import PipelineError, RetryableError, SkippableError, CriticalError
+
+VN_TZ = timezone(timedelta(hours=7))
 
 class Pipeline:
     """Pipeline orchestrator with resume, checkpoint, and graceful shutdown support."""
@@ -58,6 +62,10 @@ class Pipeline:
         self.filter_module = LinkFilter(self.db, self.logger, config=self.cfg)
         self.scrape_module = ScrapeModule(self.db, self.logger, self.firecrawl_api_key, config=self.cfg)
 
+        # New modules for 4-step pipeline
+        self.gemini_quick = GeminiQuickSearch(self.db, self.logger, config=self.cfg)
+        self.serper = SerperSearch(self.db, self.logger, config=self.cfg)
+
         self.gemini_api_key = config.get("gemini_api_key")
 
         # We handle AIExtractor gracefully if GEMINI API KEY doesn't exist yet for legacy scripts
@@ -66,6 +74,9 @@ class Pipeline:
             self.ai_extractor = AIExtractor(self.db, self.logger, self.gemini_api_key)
 
         self.result_aggregator = ResultAggregator(self.db)
+
+        # Batch statistics for summary report
+        self._batch_stats = self._init_batch_stats()
 
         self.excel_reader = ExcelReader()
         self.excel_writer = ExcelWriter()
@@ -210,34 +221,111 @@ class Pipeline:
 
                 while retry_count < max_retries:
                     try:
-                        # 1. SEARCH (skip if already searched/scraped)
+                        # ====== BƯỚC 1: GEMINI QUICK SEARCH ======
+                        gemini_result = None
+                        if self._should_do_step(next_step, 'search') and not replay_mode:
+                            print("  -> Bước 1: Gemini Quick Search...")
+                            self.db.update_company(company_id, status='gemini_quick')
+                            quick = self.gemini_quick.search(company_id)
+                            gemini_result = quick.get("result", {})
+                            self._batch_stats["gemini_tokens_in"] += quick.get("input_tokens", 0)
+                            self._batch_stats["gemini_tokens_out"] += quick.get("output_tokens", 0)
+
+                            if quick.get("is_sufficient"):
+                                self._batch_stats["step1_success"] += 1
+                                self.db.update_company(company_id, status='done')
+                                print(f"  -> ✅ Bước 1 đủ dữ liệu! {company_name}")
+                                success_count += 1
+                                break
+                            elif not self._company_has_no_phone(company_id):
+                                # Found phone but confidence was low (is_sufficient=False)
+                                self._batch_stats["step1_success"] += 1
+                                self.db.update_company(company_id, status='done')
+                                print(f"  -> ✅ Bước 1 tìm được phone (độ tin cậy thấp), dừng sớm! {company_name}")
+                                success_count += 1
+                                break
+                            else:
+                                reason = quick.get("fallback_reason", "unknown")
+                                print(f"  -> Bước 1: thiếu dữ liệu ({reason}), tiếp tục...")
+
+                        # ====== BƯỚC 2: GOOGLE MAPS (Serper Places) ======
+                        if self._should_do_step(next_step, 'search') and not replay_mode:
+                            maps_query = (gemini_result or {}).get("core_name_vi") or \
+                                         (gemini_result or {}).get("core_name") or company_name
+                            print(f"  -> Bước 2: Google Maps ({maps_query[:40]})...")
+                            maps_result = self.serper.search_places(company_id, maps_query)
+                            self._batch_stats["serper_credits"] += maps_result.get("serper_credits_used", 0)
+
+                            if maps_result.get("phone"):
+                                # Save Maps result as contact
+                                self._save_maps_contact(company_id, maps_result, gemini_result)
+                                self._batch_stats["step2_success"] += 1
+                                self.db.update_company(company_id, status='done')
+                                print(f"  -> ✅ Bước 2 Google Maps có phone! {company_name}")
+                                success_count += 1
+                                break
+                            else:
+                                # If Maps returned website, add to scrape targets later
+                                maps_website = maps_result.get("website")
+                                if maps_website:
+                                    self.db.execute_query(
+                                        """INSERT OR IGNORE INTO filtered_links 
+                                           (company_id, url, source_type, should_scrape, reason, relevance_score) 
+                                           VALUES (?, ?, 'google_maps', 1, 'maps_website_discovery', 15)""",
+                                        (company_id, maps_website)
+                                    )
+                                    print(f"  -> Bước 2: không có phone, đã thêm website {maps_website} vào scrape queue")
+                                else:
+                                    print(f"  -> Bước 2: không có phone, không có website")
+
+                        # ====== BƯỚC 3: DEEP SEARCH (Serper + Filter + Firecrawl + Extract) ======
                         if self._should_do_step(next_step, 'search'):
                             if not replay_mode:
-                                print("  -> Searching...")
-                                self.search_module.search_company(company_id)
-                                # Checkpoint: mark as searched
+                                print("  -> Bước 3: Deep Search...")
+                                # Build smart queries from Gemini result
+                                if gemini_result:
+                                    queries = self.serper.build_fallback_queries(gemini_result)
+                                    gemini_sources = set(quick.get("grounding_sources", []) if 'quick' in dir() else [])
+
+                                    all_search_results = []
+                                    for q in queries:
+                                        results = self.serper.search(company_id, q["query"])
+                                        self._batch_stats["serper_credits"] += (2 if len(results) > 10 else 1)
+                                        # Dedup against Gemini sources
+                                        deduped = SerperSearch.dedup_results(results, gemini_sources)
+                                        self._batch_stats["urls_deduped"] += len(results) - len(deduped)
+                                        # Save to search_results table
+                                        for rank, r in enumerate(deduped):
+                                            self.db.execute_query(
+                                                "INSERT INTO search_results (company_id, search_query, search_type, result_rank, url, title, snippet) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                                (company_id, q["query"], q["type"], rank+1, r["url"], r["title"], r["snippet"])
+                                            )
+                                        all_search_results.extend(deduped)
+                                else:
+                                    # No Gemini result — use legacy search
+                                    print("  -> (Legacy search fallback)")
+                                    self.search_module.search_company(company_id)
+
                                 self.db.update_company(company_id, status='searched')
                                 time.sleep(self.delay_seconds)
                             else:
                                 print(f"  -> [REPLAY] Skipping search for company {company_id}")
 
-                        # 2. FILTER (idempotent, can always rerun)
+                        # FILTER
                         if self._should_do_step(next_step, 'filter'):
                             print("  -> Filtering...")
                             self.filter_module.filter_company_links(company_id)
-                            # Note: filter doesn't change status (fast, no credits)
 
-                        # 3. SCRAPE
+                        # SCRAPE
                         if self._should_do_step(next_step, 'scrape'):
                             if not replay_mode:
                                 print("  -> Scraping...")
                                 self.scrape_module.scrape_company(company_id, self.delay_seconds)
-                                # Checkpoint: mark as scraped
                                 self.db.update_company(company_id, status='scraped')
                             else:
                                 print(f"  -> [REPLAY] Skipping scrape for company {company_id}")
 
-                        # 4. AI EXTRACT
+                        # AI EXTRACT
                         if self._should_do_step(next_step, 'ai_extract'):
                             if not replay_mode and self.ai_extractor:
                                 print("  -> AI Extracting...")
@@ -251,27 +339,42 @@ class Pipeline:
                                 print(f"  -> [REPLAY] Skipping AI extract for company {company_id}")
                                 self.db.update_company(company_id, status='ai_done')
 
-                        # 5. CONTACT PAGE DISCOVERY (only if no phone found after AI extract)
-                        if self._should_do_step(next_step, 'contact_discovery') and self.cfg.CONTACT_DISCOVERY_ENABLED:
-                            if self._company_has_no_phone(company_id):
-                                print("  -> No phone found, trying Contact Page Discovery...")
-                                new_pages = self.scrape_module.discover_contact_pages(company_id, self.delay_seconds)
-                                if new_pages and self.ai_extractor:
-                                    # Re-run AI extract on newly scraped contact pages only
-                                    new_page_ids = []
-                                    for page_result in new_pages:
-                                        if page_result.get('status') == 'success':
-                                            # Find the scraped_page id for this company's newest pages
-                                            recent = self.db.fetch_all(
-                                                "SELECT id FROM scraped_pages WHERE company_id = ? AND source_type = 'contact_page' ORDER BY id DESC LIMIT 5",
-                                                (company_id,)
-                                            )
-                                            new_page_ids.extend([p['id'] for p in recent])
-                                    for page_id in set(new_page_ids):
-                                        self.ai_extractor.extract_from_page(page_id)
+                            # Early Stop Check after AI Extract
+                            if not self._company_has_no_phone(company_id):
+                                self._batch_stats["step3_success"] += 1
+                                self.db.update_company(company_id, status='done')
+                                print(f"  -> ✅ Bước 3 tìm được phone sau extract, dừng pipeline! {company_name}")
+                                success_count += 1
+                                break
+
+                        # ====== BƯỚC 4: FACEBOOK LAST RESORT ======
+                        if self._company_has_no_phone(company_id):
+                            self._batch_stats["step3_fallback"] += 1
+                            # Check for Facebook URLs in search results
+                            fb_links = self.db.fetch_all(
+                                "SELECT url FROM search_results WHERE company_id = ? AND url LIKE '%facebook.com%'",
+                                (company_id,)
+                            )
+                            if fb_links:
+                                print(f"  -> Bước 4: Facebook Last Resort ({len(fb_links)} links)...")
+                                for fb in fb_links[:3]:
+                                    # Save as filtered link for scraping
+                                    self.db.execute_query(
+                                        "INSERT OR IGNORE INTO filtered_links (company_id, url, source_type, should_scrape, reason) VALUES (?, ?, 'facebook', 1, 'facebook_last_resort')",
+                                        (company_id, fb["url"])
+                                    )
+                                self.scrape_module.scrape_company(company_id, self.delay_seconds)
+                                if self.ai_extractor:
+                                    self.ai_extractor.extract_for_company(company_id, self.delay_seconds)
+                        else:
+                            self._batch_stats["step3_success"] += 1
 
                         self.db.update_company(company_id, status='done')
-                        print(f"  -> SUCCESS: Processed {company_name}")
+                        if self._company_has_no_phone(company_id):
+                            self._batch_stats["no_phone"] += 1
+                            print(f"  -> ⚠️  Hoàn tất nhưng không tìm được phone: {company_name}")
+                        else:
+                            print(f"  -> ✅ SUCCESS: {company_name}")
                         success_count += 1
                         break  # Exit retry loop on success
 
@@ -317,11 +420,91 @@ class Pipeline:
             if force_refresh:
                 self.cfg.FORCE_REFRESH = False
 
-        print("\n=== PIPELINE EXECUTION COMPLETED ===")
-        print(f"Total: {total_to_process} | Success: {success_count} | Failed: {fail_count} | Skipped: {skip_count}")
+        # Print detailed batch summary report
+        self._batch_stats["total"] = total_to_process
+        self._batch_stats["success"] = success_count
+        self._batch_stats["failed"] = fail_count
+        self._batch_stats["skipped"] = skip_count
+        self._print_batch_summary()
 
         if self._shutdown_requested:
             print("⚠️  Pipeline đã dừng an toàn do nhận tín hiệu. Chạy lại với --resume để tiếp tục.")
+
+    # ------------------------------------------------------------------
+    # Batch stats & summary report
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _init_batch_stats() -> dict:
+        return {
+            "total": 0, "success": 0, "failed": 0, "skipped": 0,
+            "step1_success": 0, "step2_success": 0,
+            "step3_success": 0, "step3_fallback": 0,
+            "no_phone": 0,
+            "gemini_tokens_in": 0, "gemini_tokens_out": 0,
+            "serper_credits": 0, "firecrawl_credits": 0,
+            "urls_deduped": 0,
+        }
+
+    def _print_batch_summary(self):
+        s = self._batch_stats
+        today = datetime.now(VN_TZ).strftime("%Y-%m-%d")
+
+        # Get daily quota used
+        quota_row = self.db.fetch_one(
+            "SELECT gemini_grounding_used, serper_used FROM daily_quota WHERE date = ?",
+            (today,)
+        )
+        gemini_used = quota_row["gemini_grounding_used"] if quota_row else 0
+        serper_used = quota_row["serper_used"] if quota_row else 0
+
+        processed = s["total"] - s["skipped"]
+        print(f"""
+═══════════════════════════════════════════
+  BÁO CÁO PIPELINE - {today}
+═══════════════════════════════════════════
+  Tổng công ty xử lý:            {processed}
+  Bước 1 thành công (Gemini):     {s['step1_success']} ({s['step1_success']/max(processed,1)*100:.0f}%)
+  Bước 2 thành công (Maps):       {s['step2_success']}
+  Bước 3 thành công (Deep):       {s['step3_success']}
+  Bước 4 Facebook fallback:       {s['step3_fallback']}
+  Không tìm được phone:           {s['no_phone']}
+  Thất bại (lỗi):                 {s['failed']}
+  ─────────────────────────────────────────
+  Gemini Grounding requests:      {gemini_used} / {self.cfg.GEMINI_DAILY_LIMIT}
+  Gemini tokens (input):          {s['gemini_tokens_in']:,}
+  Gemini tokens (output):         {s['gemini_tokens_out']:,}
+  Serper credits (hôm nay):       {serper_used}
+  URLs trùng lặp đã loại:         {s['urls_deduped']}
+═══════════════════════════════════════════""")
+
+    def _save_maps_contact(self, company_id: int, maps_result: dict, gemini_result: dict = None):
+        """Save Google Maps contact to extracted_contacts and update company."""
+        self.db.execute_query(
+            """INSERT INTO extracted_contacts
+               (company_id, source_type, source_url, address, phone, email, website,
+                fax, representative, raw_ai_response, confidence_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (company_id, "google_maps", "serper_places_api",
+             maps_result.get("address"), maps_result.get("phone"),
+             (gemini_result or {}).get("email"),
+             maps_result.get("website"),
+             (gemini_result or {}).get("fax"),
+             (gemini_result or {}).get("representative"),
+             json.dumps(maps_result, ensure_ascii=False),
+             0.85)  # Google Maps typically has high accuracy
+        )
+        # Update company table with info
+        updates = {}
+        if maps_result.get("address"):
+            updates["address"] = maps_result["address"]
+        if gemini_result:
+            if gemini_result.get("core_name_vi"):
+                updates["vietnamese_name"] = gemini_result["core_name_vi"]
+            if gemini_result.get("tax_code"):
+                updates["tax_code"] = gemini_result["tax_code"]
+        if updates:
+            self.db.update_company(company_id, **updates)
 
     # ------------------------------------------------------------------
     # Manual step execution

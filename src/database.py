@@ -55,6 +55,16 @@ class DatabaseManager:
             )
         """)
 
+        # Safe migration: add address and vn_data_source to existing companies table
+        try:
+            cursor.execute("ALTER TABLE companies ADD COLUMN address TEXT")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE companies ADD COLUMN vn_data_source TEXT")
+        except Exception:
+            pass
+
         # 2. search_results
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS search_results (
@@ -175,6 +185,44 @@ class DatabaseManager:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_pipeline_logs_company_step
             ON pipeline_logs(company_id, step)
+        """)
+
+        # 9. gemini_quick_results — Bước 1 Gemini Quick Search results
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gemini_quick_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER REFERENCES companies(id),
+                core_name TEXT,
+                core_name_vi TEXT,
+                abbreviation TEXT,
+                address TEXT,
+                phone TEXT,
+                email TEXT,
+                website TEXT,
+                tax_code TEXT,
+                fax TEXT,
+                representative TEXT,
+                confidence REAL,
+                sources_json TEXT,
+                grounding_sources_json TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                duration_seconds REAL,
+                is_sufficient BOOLEAN,
+                fallback_reason TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 10. daily_quota — Track daily API usage to avoid charges
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS daily_quota (
+                date TEXT PRIMARY KEY,
+                gemini_grounding_used INTEGER DEFAULT 0,
+                serper_used INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
         """)
 
         conn.commit()

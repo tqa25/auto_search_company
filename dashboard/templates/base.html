@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Dashboard{% endblock %} — Pipeline Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <div class="logo">⚡</div>
+        <div class="title">Pipeline</div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="/" class="nav-item {{ 'active' if active_page == 'monitor' }}">
+          <i data-lucide="activity"></i> Monitor
+        </a>
+        <a href="/companies" class="nav-item {{ 'active' if active_page == 'companies' }}">
+          <i data-lucide="building-2"></i> Companies
+        </a>
+        <a href="/runner" class="nav-item {{ 'active' if active_page == 'runner' }}">
+          <i data-lucide="play-circle"></i> Runner
+        </a>
+
+        <div class="nav-divider"></div>
+
+        <a href="/settings" class="nav-item {{ 'active' if active_page == 'settings' }}">
+          <i data-lucide="settings"></i> Settings
+        </a>
+        <a href="/logs" class="nav-item {{ 'active' if active_page == 'logs' }}">
+          <i data-lucide="file-text"></i> Raw Logs
+        </a>
+      </nav>
+
+      <!-- Quota Widget -->
+      <div class="sidebar-quota" id="quotaWidget">
+        <div class="quota-bar">
+          <div class="label">
+            <span>Gemini</span>
+            <span id="geminiQuotaText">—/{{ gemini_limit }}</span>
+          </div>
+          <div class="quota-track">
+            <div class="quota-fill ok" id="geminiQuotaFill" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="quota-bar">
+          <div class="label">
+            <span>Serper</span>
+            <span id="serperQuotaText">—/2,500</span>
+          </div>
+          <div class="quota-track">
+            <div class="quota-fill ok" id="serperQuotaFill" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- Import Preview Modal -->
+  <div class="modal-overlay" id="importModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">📂 Import Preview</h3>
+        <button class="btn-ghost" onclick="closeModal('importModal')">✕</button>
+      </div>
+      <div id="importPreviewContent"></div>
+      <div class="flex-between mt-2">
+        <span id="importCount" class="text-muted"></span>
+        <div class="flex gap-1">
+          <button class="btn btn-outline" onclick="closeModal('importModal')">Cancel</button>
+          <button class="btn btn-primary" id="importConfirmBtn" onclick="confirmImport()">Import</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+  {% block scripts %}{% endblock %}
+
+  <script>
+    // Init Lucide icons
+    lucide.createIcons();
+    // Init quota widget
+    refreshQuota();
+    setInterval(refreshQuota, 30000);
+  </script>
+</body>
+</html>

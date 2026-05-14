@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Process Runner{% endblock %}
+
+{% block content %}
+<h1>⚡ Process Runner</h1>
+
+<div class="runner-layout">
+  <!-- Left Panel: Controls -->
+  <div>
+    <!-- Company Select -->
+    <div class="card">
+      <div class="card-title mb-1">Select Company</div>
+      <select class="form-select" id="companySelect">
+        <option value="">— Choose a company —</option>
+        {% for c in companies %}
+        <option value="{{ c.id }}" data-name="{{ c.original_name }}">{{ c.id }} — {{ c.original_name }}</option>
+        {% endfor %}
+      </select>
+      <div id="selectedCompanyInfo" class="mt-1 text-muted" style="font-size:12px"></div>
+    </div>
+
+    <!-- Mode -->
+    <div class="card">
+      <div class="card-title mb-1">Mode</div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:6px;cursor:pointer">
+        <input type="radio" name="mode" value="manual" checked onchange="setMode('manual')"> Manual (step-by-step)
+      </label>
+      <label style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer">
+        <input type="radio" name="mode" value="auto" onchange="setMode('auto')"> Auto (full pipeline)
+      </label>
+    </div>
+
+    <!-- Pipeline Steps (Manual Mode) -->
+    <div class="card" id="stepsPanel">
+      <div class="card-title mb-1">Pipeline Steps</div>
+      <div class="pipeline-flow">
+        <div class="step-card" id="step-gemini" onclick="runStep('gemini_quick')">
+          <div class="step-number">1</div>
+          <div><div style="font-size:13px;font-weight:600">Gemini Quick</div><div class="text-muted" style="font-size:11px">Search Grounding</div></div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-card" id="step-maps" onclick="runStep('google_maps')">
+          <div class="step-number">2</div>
+          <div><div style="font-size:13px;font-weight:600">Google Maps</div><div class="text-muted" style="font-size:11px">Serper Places</div></div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-card" id="step-search" onclick="runStep('serper_search')">
+          <div class="step-number">3</div>
+          <div><div style="font-size:13px;font-weight:600">Deep Search</div><div class="text-muted" style="font-size:11px">Serper + Filter</div></div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-card" id="step-scrape" onclick="runStep('scrape')">
+          <div class="step-number">4</div>
+          <div><div style="font-size:13px;font-weight:600">Scrape</div><div class="text-muted" style="font-size:11px">Firecrawl</div></div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-card" id="step-extract" onclick="runStep('ai_extract')">
+          <div class="step-number">5</div>
+          <div><div style="font-size:13px;font-weight:600">AI Extract</div><div class="text-muted" style="font-size:11px">Gemini Parse</div></div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-card" id="step-facebook" onclick="runStep('facebook')">
+          <div class="step-number">6</div>
+          <div><div style="font-size:13px;font-weight:600">Facebook</div><div class="text-muted" style="font-size:11px">Last Resort</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Auto Mode Actions -->
+    <div class="card hidden" id="autoPanel">
+      <div class="card-title mb-1">Actions</div>
+      <button class="btn btn-success" style="width:100%;margin-bottom:8px" onclick="startAuto()" id="startBtn">▶ Start Pipeline</button>
+      <button class="btn btn-outline" style="width:100%" onclick="stopAuto()" id="stopBtn" disabled>⏹ Stop</button>
+    </div>
+
+    <!-- Export -->
+    <div class="card">
+      <div class="card-title mb-1">Export</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="btn btn-outline btn-sm" onclick="exportLog('jsonl')">📄 JSONL (AI Agent)</button>
+        <button class="btn btn-outline btn-sm" onclick="exportLog('csv')">📊 CSV (Excel)</button>
+        <button class="btn btn-outline btn-sm" onclick="exportLog('markdown')">📝 Markdown (Report)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Panel: Output -->
+  <div>
+    <!-- Step Result -->
+    <div class="card" id="stepResultCard" style="display:none">
+      <div class="card-header">
+        <span class="card-title" id="stepResultTitle">Step Result</span>
+        <div class="flex gap-1">
+          <span id="stepDuration" class="text-muted" style="font-size:12px"></span>
+          <button class="btn btn-ghost btn-sm" onclick="copyStepResult()">📋 Copy</button>
+        </div>
+      </div>
+
+      <!-- Step metrics -->
+      <div class="stat-grid mb-1" id="stepMetrics" style="grid-template-columns:repeat(4,1fr)"></div>
+
+      <!-- JSON response -->
+      <div class="collapsible-header" onclick="this.nextElementSibling.classList.toggle('open')">
+        ▸ Raw JSON Response
+      </div>
+      <div class="collapsible-body">
+        <div class="json-viewer" id="stepJsonViewer"></div>
+      </div>
+    </div>
+
+    <!-- Live Log Output -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title"><i data-lucide="terminal" style="width:16px;height:16px"></i> Log Output</span>
+        <button class="btn btn-ghost btn-sm" onclick="clearRunnerLog()">Clear</button>
+      </div>
+      <div class="log-container" id="runnerLogContainer" style="min-height:300px">
+        <div class="text-muted" style="text-align:center;padding:40px">Select a company and run a step to see output...</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/runner.js"></script>
+{% endblock %}

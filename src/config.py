@@ -67,26 +67,44 @@ class Config:
     def __init__(self) -> None:
         # --- Search group ---
         self.SEARCH_LIMIT: int = _parse_int(
-            os.getenv("SEARCH_LIMIT"), default=20
+            os.getenv("SEARCH_LIMIT"), default=100
         )
         self.EARLY_STOP_COUNT: int = _parse_int(
-            os.getenv("EARLY_STOP_COUNT"), default=5
+            os.getenv("EARLY_STOP_COUNT"), default=10
         )
         self.EARLY_STOP_SCORE: int = _parse_int(
-            os.getenv("EARLY_STOP_SCORE"), default=40
+            os.getenv("EARLY_STOP_SCORE"), default=35
         )
         self.FB_FALLBACK_THRESHOLD: int = _parse_int(
             os.getenv("FB_FALLBACK_THRESHOLD"), default=3
+        )
+        self.INFER_MAX_SCRAPE: int = _parse_int(
+            os.getenv("INFER_MAX_SCRAPE"), default=2
+        )
+        
+        # --- Vietnamese name inference ---
+        self.VN_LEGAL_DOMAINS: list = _parse_str_list(
+            os.getenv("VN_LEGAL_DOMAINS"),
+            default=["masothue.com", "thuvienphapluat.vn", "yellowpages.vn", "hosocongty.vn", "dangkykinhdoanh.gov.vn"],
         )
 
         # --- Scoring group (JSON dicts) ---
         self.DOMAIN_SCORES: dict = _parse_json_dict(
             os.getenv("DOMAIN_SCORES"),
-            default={"official": 40, "legal": 30, "job": 20, "social": 10, "name_match": 15},
+            default={"official": 15, "legal": 30, "job": 30, "social": -100, "name_match": 15},
         )
         self.KEYWORD_SCORES: dict = _parse_json_dict(
             os.getenv("KEYWORD_SCORES"),
             default={"contact": 10, "admin": 10, "recruitment": 5},
+        )
+        
+        self.TLD_SCORES: dict = _parse_json_dict(
+            os.getenv("TLD_SCORES"),
+            default={
+                ".vn": 5, ".com.vn": 5, ".com": 5, ".net": 5, ".org": 5, ".org.vn": 5,
+                ".info": 2, ".biz": 2,
+                ".top": 2, ".xyz": 2, ".club": 2, ".tk": 2, ".ml": 2, ".ga": 2
+            }
         )
 
         # --- Scrape group ---
@@ -143,6 +161,39 @@ class Config:
             os.getenv("MIN_CONFIDENCE_THRESHOLD"), default=0.3
         )
 
+        # --- Gemini Quick Search (Bước 1) ---
+        self.GEMINI_QUICK_ENABLED: bool = _parse_bool(
+            os.getenv("GEMINI_QUICK_ENABLED"), default=True
+        )
+        self.GEMINI_QUICK_MODEL: str = os.getenv(
+            "GEMINI_QUICK_MODEL", "gemini-1.5-flash"
+        )
+        self.GEMINI_QUICK_CONFIDENCE_THRESHOLD: float = _parse_float(
+            os.getenv("GEMINI_QUICK_CONFIDENCE_THRESHOLD"), default=0.7
+        )
+        self.GEMINI_DAILY_LIMIT: int = _parse_int(
+            os.getenv("GEMINI_DAILY_LIMIT"), default=1450
+        )
+        self.GEMINI_DAILY_WARN_PERCENT: float = _parse_float(
+            os.getenv("GEMINI_DAILY_WARN_PERCENT"), default=0.9
+        )
+
+        # --- Serper API (Bước 2 Maps + Bước 3 Search) ---
+        self.SERPER_ENABLED: bool = _parse_bool(
+            os.getenv("SERPER_ENABLED"), default=True
+        )
+        self.SERPER_NUM_RESULTS: int = _parse_int(
+            os.getenv("SERPER_NUM_RESULTS"), default=10
+        )
+
+        # --- Source toggles ---
+        self.SCRAPE_LINKEDIN_ENABLED: bool = _parse_bool(
+            os.getenv("SCRAPE_LINKEDIN_ENABLED"), default=False
+        )
+        self.SCRAPE_MASOTHUE_ENABLED: bool = _parse_bool(
+            os.getenv("SCRAPE_MASOTHUE_ENABLED"), default=False
+        )
+
     def __repr__(self) -> str:
         return (
             f"Config("
@@ -165,7 +216,9 @@ class Config:
             f"EXECUTION_MODE={self.EXECUTION_MODE!r}, "
             f"BATCH_SIZE={self.BATCH_SIZE!r}, "
             f"ABBREVIATION_STOP_WORDS={self.ABBREVIATION_STOP_WORDS!r}, "
-            f"MIN_CONFIDENCE_THRESHOLD={self.MIN_CONFIDENCE_THRESHOLD!r}"
+            f"MIN_CONFIDENCE_THRESHOLD={self.MIN_CONFIDENCE_THRESHOLD!r}, "
+            f"INFER_MAX_SCRAPE={self.INFER_MAX_SCRAPE!r}, "
+            f"VN_LEGAL_DOMAINS={self.VN_LEGAL_DOMAINS!r}"
             f")"
         )
 

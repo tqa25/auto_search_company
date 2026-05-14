@@ -1,33 +1,23 @@
 #!/usr/bin/env python3
-"""Launch the pipeline dashboard.
-
-Usage:
-    python dashboard/run.py
-    python dashboard/run.py --port 8080
+"""Start the Pipeline Control Center dashboard.
+Run from project root: python dashboard/run.py
 """
-import sys
 import os
-import argparse
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+import sys
 import uvicorn
 
-
-def main():
-    parser = argparse.ArgumentParser(description="Pipeline Dashboard Server")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
-    parser.add_argument("--reload", action="store_true", help="Enable auto-reload on code changes")
-    args = parser.parse_args()
-
-    uvicorn.run(
-        "dashboard.app:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-    )
-
+# Ensure project root is on path
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _PROJECT_ROOT)
 
 if __name__ == "__main__":
-    main()
+    # Change to project root so uvicorn can find the dashboard module
+    os.chdir(_PROJECT_ROOT)
+    uvicorn.run(
+        "dashboard.app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_dirs=[os.path.join(_PROJECT_ROOT, "dashboard")],
+        log_level="info",
+    )

@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Workflow Presentation</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Noto+Sans+KR:wght@300;400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: radial-gradient(circle at top right, #1e293b 0%, #020617 100%);
+            color: #f8fafc;
+            font-family: 'Inter', 'Noto Sans KR', sans-serif;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        .layout {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        /* --- LEFT PANE (3D SCENE) --- */
+        .left-pane {
+            flex: 3;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            position: absolute;
+            top: 50px;
+            left: 50px;
+            z-index: 10;
+        }
+
+        .header h1 {
+            font-size: 36px;
+            font-weight: 800;
+            margin: 0 0 12px 0;
+            background: linear-gradient(135deg, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 10px 30px rgba(56, 189, 248, 0.2);
+        }
+
+        .header p {
+            color: #94a3b8;
+            font-size: 16px;
+            margin: 0;
+            max-width: 400px;
+            line-height: 1.5;
+        }
+
+        .lang-toggle {
+            position: absolute;
+            top: 50px;
+            right: 0px; /* Aligned relative to left-pane */
+            display: flex;
+            gap: 12px;
+            z-index: 10;
+        }
+
+        .lang-toggle button {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #cbd5e1;
+            padding: 10px 20px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            backdrop-filter: blur(10px);
+            font-family: 'Inter', 'Noto Sans KR', sans-serif;
+        }
+
+        .lang-toggle button:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .lang-toggle button.active {
+            background: rgba(56, 189, 248, 0.15);
+            border-color: #38bdf8;
+            color: #38bdf8;
+            box-shadow: 0 0 20px rgba(56, 189, 248, 0.2);
+        }
+
+        .scene-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            perspective: 2000px;
+        }
+
+        .board {
+            position: relative;
+            width: 600px; 
+            height: 120px;
+            transform: rotateX(60deg) rotateZ(-45deg);
+            transform-style: preserve-3d;
+            transition: transform 0.1s linear; /* for parallax */
+        }
+
+        /* The glowing wire connecting steps */
+        .wire {
+            position: absolute;
+            top: 58px;
+            left: 60px;
+            width: 480px;
+            height: 4px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 2px;
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.3);
+            transform: translateZ(5px);
+        }
+
+        /* Animated data packets traveling on wire */
+        .data-packet {
+            position: absolute;
+            top: -2px; 
+            left: 0;
+            width: 8px; 
+            height: 8px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 0 20px 5px #38bdf8, 0 0 40px 10px #818cf8;
+            animation: travel 4s infinite cubic-bezier(0.4, 0, 0.2, 1);
+            opacity: 0;
+        }
+
+        @keyframes travel {
+            0% { transform: translateX(0); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { transform: translateX(480px); opacity: 0; }
+        }
+
+        /* 3D Glass Panels */
+        .glass-panel {
+            position: absolute;
+            top: 0;
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 24px;
+            transform-style: preserve-3d;
+            transform: translateZ(20px);
+            transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            cursor: pointer;
+            box-shadow: 20px 20px 50px rgba(0,0,0,0.6);
+        }
+
+        .step-1 { left: 0px; }
+        .step-2 { left: 160px; }
+        .step-3 { left: 320px; }
+        .step-4 { left: 480px; }
+
+        .glass-panel::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 24px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, transparent 100%);
+            opacity: 0.5;
+        }
+
+        .glass-panel:hover:not(.active) {
+            transform: translateZ(40px);
+            background: rgba(255, 255, 255, 0.08);
+            box-shadow: 30px 30px 60px rgba(0,0,0,0.7);
+        }
+
+        .glass-panel.active {
+            transform: translateZ(60px);
+            background: rgba(56, 189, 248, 0.15);
+            border: 1px solid rgba(56, 189, 248, 0.6);
+            box-shadow: 40px 40px 80px rgba(0,0,0,0.8), 0 0 40px rgba(56, 189, 248, 0.3);
+        }
+
+        /* Counter-rotated Icon */
+        .icon-wrapper {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+            color: #94a3b8;
+            transform-style: preserve-3d;
+            transform: translateZ(30px) rotateZ(45deg) rotateX(-60deg);
+            filter: drop-shadow(0 15px 15px rgba(0,0,0,0.6));
+            transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .glass-panel:hover .icon-wrapper {
+            color: #cbd5e1;
+            transform: translateZ(45px) rotateZ(45deg) rotateX(-60deg) scale(1.1);
+        }
+
+        .glass-panel.active .icon-wrapper {
+            color: #38bdf8;
+            transform: translateZ(60px) rotateZ(45deg) rotateX(-60deg) scale(1.3);
+            filter: drop-shadow(0 20px 20px rgba(56, 189, 248, 0.4));
+        }
+
+        /* Counter-rotated Label below panel */
+        .step-label {
+            position: absolute;
+            top: 140px;
+            left: 50%;
+            transform: translateX(-50%) rotateZ(45deg) rotateX(-60deg);
+            color: #94a3b8;
+            font-weight: 700;
+            font-size: 16px;
+            white-space: nowrap;
+            pointer-events: none;
+            transition: color 0.3s;
+            text-shadow: 0 4px 10px rgba(0,0,0,0.8);
+        }
+
+        .glass-panel.active .step-label {
+            color: #38bdf8;
+            text-shadow: 0 4px 15px rgba(56, 189, 248, 0.6);
+        }
+
+        /* --- RIGHT PANE (INFO PANEL) --- */
+        .right-pane {
+            flex: 2;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            background: rgba(15, 23, 42, 0.4);
+            border-left: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: -20px 0 50px rgba(0,0,0,0.5);
+            z-index: 5;
+        }
+
+        .glass-card {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 28px;
+            padding: 50px 40px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1);
+            width: 100%;
+            max-width: 480px;
+            transition: all 0.4s ease;
+        }
+
+        .step-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            background: rgba(56, 189, 248, 0.15);
+            color: #38bdf8;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 800;
+            margin-bottom: 24px;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .glass-card h2 {
+            font-size: 32px;
+            font-weight: 800;
+            margin: 0 0 20px 0;
+            color: #f8fafc;
+            line-height: 1.3;
+        }
+
+        .glass-card p {
+            font-size: 17px;
+            line-height: 1.7;
+            color: #cbd5e1;
+            margin: 0 0 35px 0;
+        }
+
+        .example-box {
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            padding: 24px;
+            display: flex;
+            align-items: flex-start;
+            gap: 18px;
+            box-shadow: inset 0 2px 10px rgba(0,0,0,0.2);
+        }
+
+        .example-box i {
+            color: #fbbf24;
+            font-size: 26px;
+            margin-top: 2px;
+            filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.4));
+        }
+
+        .example-box span {
+            color: #e2e8f0;
+            font-size: 16px;
+            line-height: 1.6;
+            font-weight: 500;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="layout">
+        <!-- LEFT 3D SCENE -->
+        <div class="left-pane">
+            
+            <div class="header">
+                <h1 id="main-title">Mô hình Hoạt động</h1>
+                <p id="sub-title">Nhấp vào các khối hình để xem chi tiết cách phần mềm tự động xử lý dữ liệu.</p>
+            </div>
+
+            <div class="lang-toggle">
+                <button id="btn-vn" class="active" onclick="setLanguage('vn')">🇻🇳 Tiếng Việt</button>
+                <button id="btn-kr" onclick="setLanguage('kr')">🇰🇷 한국어</button>
+            </div>
+
+            <div class="scene-container">
+                <div class="board" id="board">
+                    
+                    <!-- Connection Wire -->
+                    <div class="wire">
+                        <div class="data-packet" style="animation-delay: 0s"></div>
+                        <div class="data-packet" style="animation-delay: 1.3s"></div>
+                        <div class="data-packet" style="animation-delay: 2.6s"></div>
+                    </div>
+
+                    <!-- Step 1 -->
+                    <div class="glass-panel step-1 active" data-step="1" onclick="updateInfoPanel(1)">
+                        <div class="icon-wrapper"><i class="fas fa-file-upload"></i></div>
+                        <div class="step-label" id="label-step-1">Bước 1</div>
+                    </div>
+
+                    <!-- Step 2 -->
+                    <div class="glass-panel step-2" data-step="2" onclick="updateInfoPanel(2)">
+                        <div class="icon-wrapper"><i class="fas fa-id-card"></i></div>
+                        <div class="step-label" id="label-step-2">Bước 2</div>
+                    </div>
+
+                    <!-- Step 3 -->
+                    <div class="glass-panel step-3" data-step="3" onclick="updateInfoPanel(3)">
+                        <div class="icon-wrapper"><i class="fas fa-network-wired"></i></div>
+                        <div class="step-label" id="label-step-3">Bước 3</div>
+                    </div>
+
+                    <!-- Step 4 -->
+                    <div class="glass-panel step-4" data-step="4" onclick="updateInfoPanel(4)">
+                        <div class="icon-wrapper"><i class="fas fa-file-excel"></i></div>
+                        <div class="step-label" id="label-step-4">Bước 4</div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT INFO PANEL -->
+        <div class="right-pane">
+            <div class="glass-card" id="info-card">
+                <div class="step-badge" id="step-badge">Bước 1 / 4</div>
+                <h2 id="info-title">Nhập liệu danh sách</h2>
+                <p id="info-desc">Chỉ cần tải lên hệ thống một danh sách tên công ty thô. Không cần thông tin chính xác tuyệt đối.</p>
+                <div class="example-box">
+                    <i class="fas fa-lightbulb"></i>
+                    <span id="info-example">Ví dụ: "VNG", "Vinamilk", "FPT"</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Data Configuration
+        const workflowData = [
+            {
+                step: 1,
+                vn: {
+                    title: "Nhập liệu danh sách",
+                    desc: "Chỉ cần tải lên hệ thống một danh sách tên công ty thô. Hệ thống cực kỳ thông minh nên sếp không cần chuẩn bị thông tin chính xác tuyệt đối.",
+                    example: "Ví dụ danh sách gửi vào: 'VNG', 'Vinamilk', 'Tập đoàn FPT'"
+                },
+                kr: {
+                    title: "초기 데이터 입력",
+                    desc: "정확하지 않아도 괜찮습니다. 가지고 있는 회사 이름 목록을 시스템에 업로드하기만 하면 됩니다. 시스템이 알아서 분석합니다.",
+                    example: "예시 입력 데이터: 'VNG', 'Vinamilk', 'FPT 그룹'"
+                }
+            },
+            {
+                step: 2,
+                vn: {
+                    title: "Định vị Pháp lý",
+                    desc: "Hệ thống đóng vai trò như một thám tử số, tự động đối chiếu cơ sở dữ liệu quốc gia để tìm ra 'tên khai sinh' chuẩn xác nhất trên giấy phép kinh doanh của công ty đó.",
+                    example: "Từ cụm từ 'VNG' ➔ Tìm ra chính xác 'Công ty Cổ phần VNG'"
+                },
+                kr: {
+                    title: "공식 법인명 식별",
+                    desc: "시스템이 디지털 탐정처럼 국가 데이터베이스를 대조하여 사업자 등록증상의 정확한 '공식 법인명'을 자동으로 찾아냅니다.",
+                    example: "검색어 'VNG' ➔ 'VNG 주식회사'로 자동 보정"
+                }
+            },
+            {
+                step: 3,
+                vn: {
+                    title: "Đào sâu & Thu thập",
+                    desc: "Sử dụng tên chuẩn pháp lý vừa tìm được, AI sẽ rà quét toàn bộ Internet, bản đồ Google, và Mạng xã hội để gom về các dữ liệu kinh doanh quan trọng như Website, Số điện thoại, Email.",
+                    example: "Thu hoạch được: vng.com.vn, SĐT: 028 3962 3888, ĐC: Tp.HCM"
+                },
+                kr: {
+                    title: "심층 검색 및 수집",
+                    desc: "확인된 법인명으로 인터넷 전체, 구글 지도, SNS를 스캔하여 웹사이트, 연락처, 이메일 등 핵심 비즈니스 데이터를 수집합니다.",
+                    example: "수집 완료: vng.com.vn, 028 3962 3888, 호치민시"
+                }
+            },
+            {
+                step: 4,
+                vn: {
+                    title: "Xuất Báo cáo Excel",
+                    desc: "Toàn bộ dữ liệu khổng lồ được sàng lọc, loại bỏ trùng lặp và đóng gói gọn gàng vào một file Excel chuyên nghiệp. Sếp chỉ việc tải về và sử dụng ngay!",
+                    example: "Kết quả cuối cùng: File Danh_sach_cong_ty_hoan_chinh.xlsx"
+                },
+                kr: {
+                    title: "엑셀 보고서 생성",
+                    desc: "방대한 데이터가 필터링 및 중복 제거되어 전문적인 엑셀 파일로 깔끔하게 포장됩니다. 다운로드하여 바로 비즈니스에 활용하세요!",
+                    example: "최종 결과물: 완벽한 Danh_sach_cong_ty.xlsx 파일"
+                }
+            }
+        ];
+
+        let currentLang = 'vn';
+        let currentStep = 1;
+
+        // UI Update Logic
+        function updateInfoPanel(stepId) {
+            currentStep = stepId;
+            const data = workflowData.find(d => d.step === stepId)[currentLang];
+            
+            const card = document.getElementById('info-card');
+            
+            // Fade out
+            card.style.opacity = 0;
+            card.style.transform = 'translateY(15px)';
+            
+            setTimeout(() => {
+                // Update text
+                document.getElementById('step-badge').innerText = currentLang === 'vn' ? `Bước ${stepId} / 4` : `${stepId} 단계 / 4`;
+                document.getElementById('info-title').innerText = data.title;
+                document.getElementById('info-desc').innerText = data.desc;
+                document.getElementById('info-example').innerText = data.example;
+                
+                // Fade in
+                card.style.opacity = 1;
+                card.style.transform = 'translateY(0)';
+            }, 300);
+
+            // Update 3D block active states
+            document.querySelectorAll('.glass-panel').forEach(el => {
+                if(parseInt(el.dataset.step) === stepId) {
+                    el.classList.add('active');
+                } else {
+                    el.classList.remove('active');
+                }
+            });
+        }
+
+        // Language Switch Logic
+        function setLanguage(lang) {
+            currentLang = lang;
+            document.getElementById('btn-vn').classList.toggle('active', lang === 'vn');
+            document.getElementById('btn-kr').classList.toggle('active', lang === 'kr');
+            
+            // Translate Header
+            document.getElementById('main-title').innerText = lang === 'vn' ? "Mô hình Hoạt động" : "시스템 작동 원리";
+            document.getElementById('sub-title').innerText = lang === 'vn' 
+                ? "Nhấp vào các khối hình để xem chi tiết cách phần mềm tự động xử lý dữ liệu." 
+                : "각 블록을 클릭하여 소프트웨어가 데이터를 자동 처리하는 과정을 확인하세요.";
+            
+            // Translate 3D block labels
+            for(let i=1; i<=4; i++) {
+                document.getElementById(`label-step-${i}`).innerText = lang === 'vn' ? `Bước ${i}` : `${i} 단계`;
+            }
+
+            // Refresh current panel
+            updateInfoPanel(currentStep);
+        }
+
+        // 3D Parallax Mouse Tracking
+        const board = document.getElementById('board');
+        let currentX = 0, currentY = 0;
+        let targetX = 0, targetY = 0;
+
+        document.addEventListener('mousemove', (e) => {
+            // Calculate rotation offsets based on mouse position
+            targetX = (window.innerWidth / 2 - e.pageX) / 80;
+            targetY = (window.innerHeight / 2 - e.pageY) / 80;
+        });
+
+        // Smooth animation loop for parallax
+        function animate() {
+            currentX += (targetX - currentX) * 0.1;
+            currentY += (targetY - currentY) * 0.1;
+            board.style.transform = `rotateX(${60 + currentY}deg) rotateZ(${-45 + currentX}deg)`;
+            requestAnimationFrame(animate);
+        }
+        animate();
+
+        // Initial setup
+        setLanguage('vn');
+
+    </script>
+</body>
+</html>

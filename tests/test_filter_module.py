@@ -1,16 +1,15 @@
 import unittest
-import urllib.parse
 from src.filter_module import LinkFilter
 
 class TestLinkFilter(unittest.TestCase):
     def setUp(self):
-        # We don't need a real DB or logger just to test classify_url
         self.filter = LinkFilter(db=None, logger=None)
 
     def test_classify_url_target_domain(self):
+        # masothue.com is now blacklisted completely
         result = self.filter.classify_url("https://masothue.com/1234", "Testing")
-        self.assertEqual(result["source_type"], "masothue")
-        self.assertTrue(result["should_scrape"])
+        self.assertEqual(result["source_type"], "blacklisted")
+        self.assertFalse(result["should_scrape"])
 
     def test_classify_url_target_domain_subdomain(self):
         result = self.filter.classify_url("https://m.facebook.com/testing", "Testing")
@@ -28,10 +27,10 @@ class TestLinkFilter(unittest.TestCase):
         self.assertTrue(result["should_scrape"])
 
     def test_classify_url_edge_cases(self):
-        # Should handle www correctly
+        # Should handle www correctly, and it's blacklisted
         result = self.filter.classify_url("https://www.masothue.com/", "Testing")
-        self.assertEqual(result["source_type"], "masothue")
-        self.assertTrue(result["should_scrape"])
+        self.assertEqual(result["source_type"], "blacklisted")
+        self.assertFalse(result["should_scrape"])
 
 if __name__ == '__main__':
     unittest.main()
