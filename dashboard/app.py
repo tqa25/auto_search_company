@@ -44,7 +44,7 @@ templates = Jinja2Templates(directory=os.path.join(_DASHBOARD_DIR, "templates"))
 # ---------------------------------------------------------------------------
 # Paths & Helpers
 # ---------------------------------------------------------------------------
-DB_PATH = os.path.join(_PROJECT_ROOT, os.getenv("DB_PATH", "data/company_data.db"))
+DB_PATH = os.path.join(_PROJECT_ROOT, os.getenv("DB_PATH", "data/db/company_data.db"))
 DOTENV_PATH = os.path.join(_PROJECT_ROOT, ".env")
 LOG_DIR = os.path.join(_PROJECT_ROOT, "output", "logs")
 

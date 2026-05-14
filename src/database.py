@@ -5,7 +5,7 @@ import threading
 class DatabaseManager:
     """Manages the SQLite database for the company data extraction pipeline."""
 
-    def __init__(self, db_path="data/company_data.db"):
+    def __init__(self, db_path="data/db/company_data.db"):
         """Initialize the DatabaseManager with the given database path."""
         self.db_path = db_path
         # Ensure the data directory exists

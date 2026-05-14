@@ -1,7 +1,0 @@
-{
-  "https://example.com/page?utm_source=google&utm_medium=cpc": "3641c5f2274c5471278ab5bf1df6d1858d8aa392d85c51301abed2122a3c634f",
-  "https://example.com/page?utm_source=facebook": "3641c5f2274c5471278ab5bf1df6d1858d8aa392d85c51301abed2122a3c634f",
-  "https://example.com/page": "3641c5f2274c5471278ab5bf1df6d1858d8aa392d85c51301abed2122a3c634f",
-  "https://EXAMPLE.COM/page/": "3641c5f2274c5471278ab5bf1df6d1858d8aa392d85c51301abed2122a3c634f",
-  "https://example.com/page?utm_source=test&other=param": "6eb17dbeecd4bb2623f52fdf2c8e0b42c025395ff4e24bc58485de89fa96a809"
-}
