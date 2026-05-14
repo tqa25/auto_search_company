@@ -282,29 +282,7 @@ class Pipeline:
                         if self._should_do_step(next_step, 'search'):
                             if not replay_mode:
                                 print("  -> Bước 3: Deep Search...")
-                                # Build smart queries from Gemini result
-                                if gemini_result:
-                                    queries = self.serper.build_fallback_queries(gemini_result)
-                                    gemini_sources = set(quick.get("grounding_sources", []) if 'quick' in dir() else [])
-
-                                    all_search_results = []
-                                    for q in queries:
-                                        results = self.serper.search(company_id, q["query"])
-                                        self._batch_stats["serper_credits"] += (2 if len(results) > 10 else 1)
-                                        # Dedup against Gemini sources
-                                        deduped = SerperSearch.dedup_results(results, gemini_sources)
-                                        self._batch_stats["urls_deduped"] += len(results) - len(deduped)
-                                        # Save to search_results table
-                                        for rank, r in enumerate(deduped):
-                                            self.db.execute_query(
-                                                "INSERT INTO search_results (company_id, search_query, search_type, result_rank, url, title, snippet) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                                (company_id, q["query"], q["type"], rank+1, r["url"], r["title"], r["snippet"])
-                                            )
-                                        all_search_results.extend(deduped)
-                                else:
-                                    # No Gemini result — use legacy search
-                                    print("  -> (Legacy search fallback)")
-                                    self.search_module.search_company(company_id)
+                                self.search_module.search_company(company_id)
 
                                 self.db.update_company(company_id, status='searched')
                                 time.sleep(self.delay_seconds)
@@ -347,27 +325,7 @@ class Pipeline:
                                 success_count += 1
                                 break
 
-                        # ====== BƯỚC 4: FACEBOOK LAST RESORT ======
-                        if self._company_has_no_phone(company_id):
-                            self._batch_stats["step3_fallback"] += 1
-                            # Check for Facebook URLs in search results
-                            fb_links = self.db.fetch_all(
-                                "SELECT url FROM search_results WHERE company_id = ? AND url LIKE '%facebook.com%'",
-                                (company_id,)
-                            )
-                            if fb_links:
-                                print(f"  -> Bước 4: Facebook Last Resort ({len(fb_links)} links)...")
-                                for fb in fb_links[:3]:
-                                    # Save as filtered link for scraping
-                                    self.db.execute_query(
-                                        "INSERT OR IGNORE INTO filtered_links (company_id, url, source_type, should_scrape, reason) VALUES (?, ?, 'facebook', 1, 'facebook_last_resort')",
-                                        (company_id, fb["url"])
-                                    )
-                                self.scrape_module.scrape_company(company_id, self.delay_seconds)
-                                if self.ai_extractor:
-                                    self.ai_extractor.extract_for_company(company_id, self.delay_seconds)
-                        else:
-                            self._batch_stats["step3_success"] += 1
+
 
                         self.db.update_company(company_id, status='done')
                         if self._company_has_no_phone(company_id):
