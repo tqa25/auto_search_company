@@ -227,6 +227,10 @@ class DatabaseManager:
 
         conn.commit()
 
+        # Run pending schema migrations
+        from src.migrations import run_migrations
+        run_migrations(self)
+
     # Generic method for inserting/updating to avoid redundant code
     def execute_query(self, query, params=()):
         """Execute a general query that doesn't return rows (INSERT/UPDATE/DELETE)."""

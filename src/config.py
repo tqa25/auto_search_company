@@ -56,6 +56,13 @@ def _parse_str_list(value: str, default: list) -> list:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _validate_api_key(key_name: str, value: str | None, min_length: int = 10) -> str | None:
+    """Validate API key format. Returns stripped key or None if invalid/missing."""
+    if not value or len(value.strip()) < min_length:
+        return None
+    return value.strip()
+
+
 class Config:
     """
     Configuration container for the extraction pipeline.
@@ -65,6 +72,17 @@ class Config:
     """
 
     def __init__(self) -> None:
+        # --- API Keys (validated) ---
+        self.FIRECRAWL_API_KEY: str | None = _validate_api_key(
+            "FIRECRAWL_API_KEY", os.getenv("FIRECRAWL_API_KEY")
+        )
+        self.GEMINI_API_KEY: str | None = _validate_api_key(
+            "GEMINI_API_KEY", os.getenv("GEMINI_API_KEY")
+        )
+        self.SERPER_API_KEY: str | None = _validate_api_key(
+            "SERPER_API_KEY", os.getenv("SERPER_API_KEY")
+        )
+
         # --- Search group ---
         self.SEARCH_LIMIT: int = _parse_int(
             os.getenv("SEARCH_LIMIT"), default=100
@@ -186,6 +204,16 @@ class Config:
             os.getenv("SERPER_NUM_RESULTS"), default=10
         )
 
+        # --- Google Maps (Optional — default OFF) ---
+        self.GOOGLE_MAPS_ENABLED: bool = _parse_bool(
+            os.getenv("GOOGLE_MAPS_ENABLED"), default=False
+        )
+
+        # --- AI Extractor ---
+        self.AI_EXTRACTOR_MODEL: str = os.getenv(
+            "AI_EXTRACTOR_MODEL", "gemini-2.0-flash"
+        )
+
         # --- Source toggles ---
         self.SCRAPE_LINKEDIN_ENABLED: bool = _parse_bool(
             os.getenv("SCRAPE_LINKEDIN_ENABLED"), default=False
@@ -218,7 +246,9 @@ class Config:
             f"ABBREVIATION_STOP_WORDS={self.ABBREVIATION_STOP_WORDS!r}, "
             f"MIN_CONFIDENCE_THRESHOLD={self.MIN_CONFIDENCE_THRESHOLD!r}, "
             f"INFER_MAX_SCRAPE={self.INFER_MAX_SCRAPE!r}, "
-            f"VN_LEGAL_DOMAINS={self.VN_LEGAL_DOMAINS!r}"
+            f"VN_LEGAL_DOMAINS={self.VN_LEGAL_DOMAINS!r}, "
+            f"GOOGLE_MAPS_ENABLED={self.GOOGLE_MAPS_ENABLED!r}, "
+            f"AI_EXTRACTOR_MODEL={self.AI_EXTRACTOR_MODEL!r}"
             f")"
         )
 
