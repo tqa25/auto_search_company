@@ -2,8 +2,8 @@ import os
 import json
 import time
 import re
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
+from google import genai
+from google.genai import types
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
 from src.errors import RetryableError, CriticalError, SkippableError, PipelineError
@@ -13,14 +13,13 @@ class AIExtractor:
     def __init__(self, db: DatabaseManager, logger: PipelineLogger, gemini_api_key: str):
         self.db = db
         self.logger = logger
+        self.config = Config()
         
         # Initialize Google Gemini client
         if not gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not provided.")
             
-        genai.configure(api_key=gemini_api_key)
-        # Using a valid model name (gemini-3-flash-preview)
-        self.model = genai.GenerativeModel('gemini-3-flash-preview') 
+        self.client = genai.Client(api_key=gemini_api_key)
 
     EXTRACTION_PROMPT_TEMPLATE = """
     Bạn đang trích xuất thông tin liên hệ của công ty: {company_name}
@@ -231,14 +230,13 @@ class AIExtractor:
                 self.logger.logger.info(f"Calling Gemini API for page ID {scraped_page_id}...")
                 
                 # Gemini free tier might strictly parse response_mime_type if correctly set
-                generation_config = genai.types.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1
-                )
-                
-                response = self.model.generate_content(
-                    prompt, 
-                    generation_config=generation_config
+                response = self.client.models.generate_content(
+                    model=self.config.AI_EXTRACTOR_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1
+                    )
                 )
                 
                 raw_response = response.text
@@ -283,13 +281,13 @@ class AIExtractor:
                     confidence = 0.0
 
                 # Check low confidence threshold
-                if confidence < Config().MIN_CONFIDENCE_THRESHOLD:
-                    self.logger.logger.warning(f"Low confidence extraction for page {scraped_page_id}: confidence={confidence} < threshold={Config().MIN_CONFIDENCE_THRESHOLD}")
+                if confidence < self.config.MIN_CONFIDENCE_THRESHOLD:
+                    self.logger.logger.warning(f"Low confidence extraction for page {scraped_page_id}: confidence={confidence} < threshold={self.config.MIN_CONFIDENCE_THRESHOLD}")
                     low_conf_data = {
                         "page_id": scraped_page_id,
                         "source_type": source_type,
                         "confidence": confidence,
-                        "threshold": Config().MIN_CONFIDENCE_THRESHOLD
+                        "threshold": self.config.MIN_CONFIDENCE_THRESHOLD
                     }
                     self.logger.log_event("low_confidence_extraction", company_id, low_conf_data)
 
@@ -397,14 +395,13 @@ class AIExtractor:
             try:
                 self.logger.logger.info(f"Calling Gemini API for batch of {len(batch_pages)} pages...")
 
-                generation_config = genai.types.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1
-                )
-
-                response = self.model.generate_content(
-                    prompt,
-                    generation_config=generation_config
+                response = self.client.models.generate_content(
+                    model=self.config.AI_EXTRACTOR_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1
+                    )
                 )
 
                 raw_response = response.text
@@ -440,13 +437,13 @@ class AIExtractor:
 
                 first_page = batch_pages[0]
                 # Check low confidence threshold
-                if confidence < Config().MIN_CONFIDENCE_THRESHOLD:
-                    self.logger.logger.warning(f"Low confidence extraction for batch: confidence={confidence} < threshold={Config().MIN_CONFIDENCE_THRESHOLD}")
+                if confidence < self.config.MIN_CONFIDENCE_THRESHOLD:
+                    self.logger.logger.warning(f"Low confidence extraction for batch: confidence={confidence} < threshold={self.config.MIN_CONFIDENCE_THRESHOLD}")
                     low_conf_data = {
                         "page_ids": [p['id'] for p in batch_pages],
                         "source_type": first_page.get('source_type', 'batch'),
                         "confidence": confidence,
-                        "threshold": Config().MIN_CONFIDENCE_THRESHOLD
+                        "threshold": self.config.MIN_CONFIDENCE_THRESHOLD
                     }
                     self.logger.log_event("low_confidence_extraction", company_id, low_conf_data)
 
