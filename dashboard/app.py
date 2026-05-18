@@ -10,6 +10,7 @@ import csv
 import io
 import asyncio
 import threading
+import base64
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
@@ -33,6 +34,29 @@ load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
 VN_TZ = timezone(timedelta(hours=7))
 
 app = FastAPI(title="Pipeline Control Center")
+
+# ---------------------------------------------------------------------------
+# Auth & Locking
+# ---------------------------------------------------------------------------
+_pipeline_lock = threading.Lock()
+_pipeline_running = False
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    user = os.getenv("DASHBOARD_USER", "admin")
+    password = os.getenv("DASHBOARD_PASS")
+    if password:
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Basic "):
+            return Response("Unauthorized", status_code=401, headers={"WWW-Authenticate": "Basic"})
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+            u, p = decoded.split(":", 1)
+            if u != user or p != password:
+                return Response("Unauthorized", status_code=401, headers={"WWW-Authenticate": "Basic"})
+        except Exception:
+            return Response("Unauthorized", status_code=401, headers={"WWW-Authenticate": "Basic"})
+    return await call_next(request)
 
 # ---------------------------------------------------------------------------
 # Static files & Templates
@@ -298,6 +322,13 @@ def runner_page(request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, saved: str = None):
     cfg = _cfg()
+    
+    # Mask API keys
+    for k in ["FIRECRAWL_API_KEY", "GEMINI_API_KEY", "SERPER_API_KEY"]:
+        val = getattr(cfg, k, None)
+        if val and len(val) > 6:
+            setattr(cfg, k, val[:4] + "***" + val[-2:])
+            
     return templates.TemplateResponse(request, "settings.html", context={
         "active_page": "settings",
         "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
@@ -312,6 +343,8 @@ async def settings_save(request: Request):
     for key in form:
         val = form.get(key)
         if val is not None:
+            if "***" in str(val):
+                continue
             set_key(DOTENV_PATH, key, str(val))
     # Reload environment to reflect changes immediately
     load_dotenv(DOTENV_PATH, override=True)
@@ -426,15 +459,19 @@ async def api_import(request: Request):
 # API: Runner — Step execution
 # ---------------------------------------------------------------------------
 @app.post("/api/runner/step")
-async def api_runner_step(request: Request):
+async def run_step_api(request: Request):
     data = await request.json()
     company_id = data.get("company_id")
     step = data.get("step")
 
-    from starlette.concurrency import run_in_threadpool
+    VALID_STEPS = {"gemini_quick", "google_maps", "serper_search", "filter", "scrape", "ai_extract", "facebook", "full"}
+    
+    if not isinstance(company_id, int) or company_id <= 0:
+        return JSONResponse({"error": "Invalid company_id"}, status_code=400)
+    if step not in VALID_STEPS:
+        return JSONResponse({"error": f"Invalid step: {step}. Valid: {VALID_STEPS}"}, status_code=400)
 
-    if not company_id or not step:
-        return JSONResponse({"error": "Missing company_id or step"}, status_code=400)
+    from starlette.concurrency import run_in_threadpool
 
     def _sync_logic():
         db = _db()
@@ -518,12 +555,21 @@ async def api_runner_step(request: Request):
             })
 
         elif step == "full":
-            # Run full pipeline in background
+            global _pipeline_running
+            if _pipeline_running:
+                return JSONResponse({"error": "Pipeline already running"}, status_code=409)
+
             def run_pipeline():
-                p = Pipeline(_pipeline_config())
-                db_inner = _db()
-                db_inner.update_company(company_id, status="pending")
-                p.run(resume=False, company_ids=[company_id])
+                global _pipeline_running
+                _pipeline_running = True
+                try:
+                    with _pipeline_lock:
+                        p = Pipeline(_pipeline_config())
+                        db_inner = _db()
+                        db_inner.update_company(company_id, status="pending")
+                        p.run(resume=False, company_ids=[company_id])
+                finally:
+                    _pipeline_running = False
 
             thread = threading.Thread(target=run_pipeline, daemon=True)
             thread.start()
@@ -549,12 +595,22 @@ async def api_runner_start(request: Request):
     if not company_ids:
         return JSONResponse({"error": "No company IDs provided"}, status_code=400)
 
+    global _pipeline_running
+    if _pipeline_running:
+        return JSONResponse({"error": "Pipeline already running"}, status_code=409)
+
     def run_batch():
-        db_inner = _db()
-        for cid in company_ids:
-            db_inner.update_company(cid, status="pending")
-        p = Pipeline(_pipeline_config())
-        p.run(resume=False, company_ids=company_ids)
+        global _pipeline_running
+        _pipeline_running = True
+        try:
+            with _pipeline_lock:
+                db_inner = _db()
+                for cid in company_ids:
+                    db_inner.update_company(cid, status="pending")
+                p = Pipeline(_pipeline_config())
+                p.run(resume=False, company_ids=company_ids)
+        finally:
+            _pipeline_running = False
 
     thread = threading.Thread(target=run_batch, daemon=True)
     thread.start()
