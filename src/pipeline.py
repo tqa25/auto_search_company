@@ -21,18 +21,20 @@ VN_TZ = timezone(timedelta(hours=7))
 class Pipeline:
     """Pipeline orchestrator with resume, checkpoint, and graceful shutdown support."""
 
-    # Status progression: pending → searched → scraped → ai_done → done
+    # Status progression: pending → gemini_quick_done → searched → scraped → ai_done → done
     # Failed states: failed, permanently_failed
     STATUS_FLOW = {
-        'pending':              'search',
-        'searching':            'search',           # interrupted during search
+        'pending':              'gemini_quick',
+        'gemini_quick':         'gemini_quick',     # interrupted during gemini quick
+        'gemini_quick_done':    'deep_search',      # gemini done → deep search
+        'searching':            'deep_search',      # interrupted during deep search
         'searched':             'filter',
         'scraping':             'filter',           # interrupted during scrape — redo filter+scrape
         'scraped':              'ai_extract',
         'extracting':           'ai_extract',       # interrupted during extraction
         'ai_done':              'contact_discovery', # check if phone missing → maybe discover
         'contact_discovering':  'contact_discovery',
-        'failed':               'search',           # retry from beginning
+        'failed':               'gemini_quick',     # retry from beginning
     }
 
     def __init__(self, config: dict, pipeline_config=None):
@@ -123,10 +125,10 @@ class Pipeline:
     def _should_do_step(self, next_step: str, target_step: str) -> bool:
         """Check if a given target_step should be executed given the next_step.
 
-        Pipeline order: search → filter → scrape → ai_extract → contact_discovery
-        If next_step is 'filter', we skip search but do filter, scrape, ai_extract, contact_discovery.
+        Pipeline order: gemini_quick → deep_search → filter → scrape → ai_extract → contact_discovery
+        If next_step is 'filter', we skip gemini_quick and deep_search but do filter, scrape, etc.
         """
-        step_order = ['search', 'filter', 'scrape', 'ai_extract', 'contact_discovery']
+        step_order = ['gemini_quick', 'deep_search', 'filter', 'scrape', 'ai_extract', 'contact_discovery']
         if next_step not in step_order or target_step not in step_order:
             return True
         return step_order.index(target_step) >= step_order.index(next_step)
@@ -221,9 +223,10 @@ class Pipeline:
 
                 while retry_count < max_retries:
                     try:
-                        # ====== BƯỚC 1: GEMINI QUICK SEARCH ======
+                        # ====== BƯỚC 1: GEMINI QUICK SEARCH (no early-stop) ======
                         gemini_result = None
-                        if self._should_do_step(next_step, 'search') and not replay_mode:
+                        quick = None
+                        if self._should_do_step(next_step, 'gemini_quick') and not replay_mode:
                             print("  -> Bước 1: Gemini Quick Search...")
                             self.db.update_company(company_id, status='gemini_quick')
                             quick = self.gemini_quick.search(company_id)
@@ -231,41 +234,32 @@ class Pipeline:
                             self._batch_stats["gemini_tokens_in"] += quick.get("input_tokens", 0)
                             self._batch_stats["gemini_tokens_out"] += quick.get("output_tokens", 0)
 
+                            # Record result quality but ALWAYS continue to deep search
                             if quick.get("is_sufficient"):
                                 self._batch_stats["step1_success"] += 1
-                                self.db.update_company(company_id, status='done')
-                                print(f"  -> ✅ Bước 1 đủ dữ liệu! {company_name}")
-                                success_count += 1
-                                break
+                                print(f"  -> Bước 1 đủ dữ liệu, tiếp tục deep search để bổ sung...")
                             elif not self._company_has_no_phone(company_id):
-                                # Found phone but confidence was low (is_sufficient=False)
                                 self._batch_stats["step1_success"] += 1
-                                self.db.update_company(company_id, status='done')
-                                print(f"  -> ✅ Bước 1 tìm được phone (độ tin cậy thấp), dừng sớm! {company_name}")
-                                success_count += 1
-                                break
+                                print(f"  -> Bước 1 tìm được phone (độ tin cậy thấp), tiếp tục deep search...")
                             else:
                                 reason = quick.get("fallback_reason", "unknown")
                                 print(f"  -> Bước 1: thiếu dữ liệu ({reason}), tiếp tục...")
 
-                        # ====== BƯỚC 2: GOOGLE MAPS (Serper Places) ======
-                        if self._should_do_step(next_step, 'search') and not replay_mode:
+                            self.db.update_company(company_id, status='gemini_quick_done')
+
+                        # ====== GOOGLE MAPS (OPTIONAL — gated by config) ======
+                        if self.cfg.GOOGLE_MAPS_ENABLED and self._should_do_step(next_step, 'deep_search') and not replay_mode:
                             maps_query = (gemini_result or {}).get("core_name_vi") or \
                                          (gemini_result or {}).get("core_name") or company_name
-                            print(f"  -> Bước 2: Google Maps ({maps_query[:40]})...")
+                            print(f"  -> [Optional] Google Maps ({maps_query[:40]})...")
                             maps_result = self.serper.search_places(company_id, maps_query)
                             self._batch_stats["serper_credits"] += maps_result.get("serper_credits_used", 0)
 
                             if maps_result.get("phone"):
-                                # Save Maps result as contact
                                 self._save_maps_contact(company_id, maps_result, gemini_result)
-                                self._batch_stats["step2_success"] += 1
-                                self.db.update_company(company_id, status='done')
-                                print(f"  -> ✅ Bước 2 Google Maps có phone! {company_name}")
-                                success_count += 1
-                                break
+                                self._batch_stats["optional_maps_success"] += 1
+                                print(f"  -> [Optional] Google Maps có phone, đã lưu (tiếp tục deep search)")
                             else:
-                                # If Maps returned website, add to scrape targets later
                                 maps_website = maps_result.get("website")
                                 if maps_website:
                                     self.db.execute_query(
@@ -274,18 +268,18 @@ class Pipeline:
                                            VALUES (?, ?, 'google_maps', 1, 'maps_website_discovery', 15)""",
                                         (company_id, maps_website)
                                     )
-                                    print(f"  -> Bước 2: không có phone, đã thêm website {maps_website} vào scrape queue")
+                                    print(f"  -> [Optional] Maps: không có phone, đã thêm website {maps_website} vào scrape queue")
                                 else:
-                                    print(f"  -> Bước 2: không có phone, không có website")
+                                    print(f"  -> [Optional] Maps: không có phone, không có website")
 
-                        # ====== BƯỚC 3: DEEP SEARCH (Serper + Filter + Firecrawl + Extract) ======
-                        if self._should_do_step(next_step, 'search'):
+                        # ====== BƯỚC 2: DEEP SEARCH (Serper + Filter + Firecrawl + Extract) ======
+                        if self._should_do_step(next_step, 'deep_search'):
                             if not replay_mode:
-                                print("  -> Bước 3: Deep Search...")
+                                print("  -> Bước 2: Deep Search...")
                                 # Build smart queries from Gemini result
                                 if gemini_result:
                                     queries = self.serper.build_fallback_queries(gemini_result)
-                                    gemini_sources = set(quick.get("grounding_sources", []) if 'quick' in dir() else [])
+                                    gemini_sources = set(quick.get("grounding_sources", []) if quick else [])
 
                                     all_search_results = []
                                     for q in queries:
@@ -341,13 +335,13 @@ class Pipeline:
 
                             # Early Stop Check after AI Extract
                             if not self._company_has_no_phone(company_id):
-                                self._batch_stats["step3_success"] += 1
+                                self._batch_stats["step2_success"] += 1
                                 self.db.update_company(company_id, status='done')
-                                print(f"  -> ✅ Bước 3 tìm được phone sau extract, dừng pipeline! {company_name}")
+                                print(f"  -> ✅ Bước 2 tìm được phone sau extract, dừng pipeline! {company_name}")
                                 success_count += 1
                                 break
 
-                        # ====== BƯỚC 4: FACEBOOK LAST RESORT ======
+                        # ====== BƯỚC 3: FACEBOOK LAST RESORT ======
                         if self._company_has_no_phone(company_id):
                             self._batch_stats["step3_fallback"] += 1
                             # Check for Facebook URLs in search results
@@ -356,7 +350,7 @@ class Pipeline:
                                 (company_id,)
                             )
                             if fb_links:
-                                print(f"  -> Bước 4: Facebook Last Resort ({len(fb_links)} links)...")
+                                print(f"  -> Bước 3: Facebook Last Resort ({len(fb_links)} links)...")
                                 for fb in fb_links[:3]:
                                     # Save as filtered link for scraping
                                     self.db.execute_query(
@@ -367,7 +361,7 @@ class Pipeline:
                                 if self.ai_extractor:
                                     self.ai_extractor.extract_for_company(company_id, self.delay_seconds)
                         else:
-                            self._batch_stats["step3_success"] += 1
+                            self._batch_stats["step2_success"] += 1
 
                         self.db.update_company(company_id, status='done')
                         if self._company_has_no_phone(company_id):
@@ -439,7 +433,8 @@ class Pipeline:
         return {
             "total": 0, "success": 0, "failed": 0, "skipped": 0,
             "step1_success": 0, "step2_success": 0,
-            "step3_success": 0, "step3_fallback": 0,
+            "step3_fallback": 0,
+            "optional_maps_success": 0,
             "no_phone": 0,
             "gemini_tokens_in": 0, "gemini_tokens_out": 0,
             "serper_credits": 0, "firecrawl_credits": 0,
@@ -459,15 +454,15 @@ class Pipeline:
         serper_used = quota_row["serper_used"] if quota_row else 0
 
         processed = s["total"] - s["skipped"]
+        maps_line = f"\n  [Optional] Maps thành công:      {s['optional_maps_success']}" if s['optional_maps_success'] > 0 else ""
         print(f"""
 ═══════════════════════════════════════════
   BÁO CÁO PIPELINE - {today}
 ═══════════════════════════════════════════
   Tổng công ty xử lý:            {processed}
   Bước 1 thành công (Gemini):     {s['step1_success']} ({s['step1_success']/max(processed,1)*100:.0f}%)
-  Bước 2 thành công (Maps):       {s['step2_success']}
-  Bước 3 thành công (Deep):       {s['step3_success']}
-  Bước 4 Facebook fallback:       {s['step3_fallback']}
+  Bước 2 thành công (Deep):       {s['step2_success']}{maps_line}
+  Bước 3 Facebook fallback:       {s['step3_fallback']}
   Không tìm được phone:           {s['no_phone']}
   Thất bại (lỗi):                 {s['failed']}
   ─────────────────────────────────────────
