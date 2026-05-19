@@ -222,22 +222,16 @@ class ExcelWriter:
         ws_details.title = "Kết quả thu thập"
         
         # Write headers for details sheet
-        for col_idx, header in enumerate(self.headers + ["Độ tin cậy"], start=1):
-            if header == "Ngày thu thập":
-                # Ensure the order is "Độ tin cậy", "Ngày thu thập" as requested
-                continue
+        custom_headers = self.headers[:-1] + ["Độ tin cậy", "Trạng thái Pipeline", "Ngày thu thập"]
+        for col_idx, header in enumerate(custom_headers, start=1):
             cell = ws_details.cell(row=1, column=col_idx, value=header)
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
             cell.alignment = Alignment(horizontal="center", vertical="center")
             ws_details.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
             
-        # Write the last header
-        cell = ws_details.cell(row=1, column=len(self.headers)+1, value="Ngày thu thập")
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        ws_details.column_dimensions[openpyxl.utils.get_column_letter(len(self.headers)+1)].width = 20
+            if header == "Trạng thái Pipeline":
+                ws_details.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 40
             
         ws_details.freeze_panes = "A2"
         thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
@@ -252,9 +246,10 @@ class ExcelWriter:
             collection_date = company.get("collection_date", "")
             
             if not has_data:
+                pipeline_status = company.get("pipeline_status_summary", "—")
                 row_data = [
                     stt, company_name, tax_code, "(không tìm thấy)",
-                    "—", "—", "—", "—", "—", "—", "—", collection_date
+                    "—", "—", "—", "—", "—", "—", "—", pipeline_status, collection_date
                 ]
                 for col_idx, val in enumerate(row_data, start=1):
                     cell = ws_details.cell(row=row_idx, column=col_idx, value=val)
@@ -267,6 +262,7 @@ class ExcelWriter:
                     display_tax_code = tax_code if i == 0 else ""
                     display_company_name = company_name if i == 0 else ""
                     confidence = source.get("confidence")
+                    pipeline_status = company.get("pipeline_status_summary", "") if i == 0 else ""
                     
                     row_data = [
                         stt if i == 0 else "",
@@ -280,6 +276,7 @@ class ExcelWriter:
                         source.get("fax", "—") or "—",
                         source.get("representative", "—") or "—",
                         confidence if confidence is not None else "—",
+                        pipeline_status,
                         collection_date if i == 0 else ""
                     ]
                     
@@ -302,6 +299,18 @@ class ExcelWriter:
                             else:
                                 cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
                                 cell.font = Font(color="9C0006")
+                                
+                        # Conditional formatting for pipeline status column (12)
+                        if col_idx == 12 and isinstance(val, str):
+                            if "❌" in val:
+                                cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                                cell.font = Font(color="9C0006")
+                            elif "⏭️" in val:
+                                cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+                                cell.font = Font(color="9C6500")
+                            elif "✅" in val:
+                                cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                                cell.font = Font(color="006100")
                     row_idx += 1
             stt += 1
             

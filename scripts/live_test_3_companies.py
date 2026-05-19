@@ -90,6 +90,25 @@ def main():
         quick_logs = db.fetch_all("SELECT * FROM pipeline_logs WHERE company_id = ? AND step = 'gemini_quick' ORDER BY id DESC LIMIT 1", (cid,))
         quick_res = db.fetch_all("SELECT * FROM gemini_quick_results WHERE company_id = ? ORDER BY id DESC LIMIT 1", (cid,))
         
+        # Pipeline status
+        steps = ['gemini_quick', 'serper_search', 'filter', 'scrape', 'AI_EXT'] # Keep serper_search for now until we replace it
+        status_parts = []
+        for step in steps:
+            logs = db.fetch_all(
+                "SELECT status, error_message FROM pipeline_logs "
+                "WHERE company_id = ? AND step = ? ORDER BY id DESC LIMIT 1",
+                (cid, step)
+            )
+            if logs:
+                s = logs[0]['status']
+                if s in ('FAILED', 'failed', 'error'):
+                    status_parts.append(f"❌ {step}: {(logs[0].get('error_message') or '')[:50]}")
+                else:
+                    status_parts.append(f"✅ {step}")
+            else:
+                status_parts.append(f"⏭️ {step}")
+        pipeline_status = " | ".join(status_parts)
+        
         core_name = ""
         core_name_vi = ""
         if quick_res:
@@ -106,7 +125,8 @@ def main():
             "Input": f"Full Name: {company_name}",
             "Output": f"Core: {core_name} | Core VI: {core_name_vi}",
             "Score / Decision": quick_logs[0]['status'] if quick_logs else "N/A",
-            "Details": quick_logs[0]['metadata_json'] if quick_logs else ""
+            "Details": quick_logs[0]['metadata_json'] if quick_logs else "",
+            "Pipeline Status": pipeline_status
         })
         
         # Deep Search Logs to aggregate duration
@@ -134,7 +154,8 @@ def main():
                 "Input": f"Query: {sr['search_query']}",
                 "Output": url,
                 "Score / Decision": f"Score: {score} | {decision}",
-                "Details": sr['title']
+                "Details": sr['title'],
+                "Pipeline Status": pipeline_status
             })
             
             # Scrape info
@@ -151,7 +172,8 @@ def main():
                     "Input": url,
                     "Output": f"Content Length: {scrape_row['content_length']}",
                     "Score / Decision": scrape_row['scrape_status'],
-                    "Details": scrape_row['error_message'] or "Success"
+                    "Details": scrape_row['error_message'] or "Success",
+                    "Pipeline Status": pipeline_status
                 })
                 
                 # AI Extract info
@@ -168,7 +190,8 @@ def main():
                         "Input": f"Scraped Page ID: {scrape_row['id']}",
                         "Output": f"Phone: {extract_row['phone']} | Email: {extract_row['email']}",
                         "Score / Decision": f"Confidence: {extract_row['confidence_score']}",
-                        "Details": f"Address: {extract_row['address']}"
+                        "Details": f"Address: {extract_row['address']}",
+                        "Pipeline Status": pipeline_status
                     })
     
     # Save to Excel
