@@ -29,8 +29,8 @@ def main():
     
     # 2. Insert the 2 target companies
     target_companies = [
-        "anh binh production co., ltd",
-        "asia best investment co., ltd"
+        "công ty tnhh tm dv anh phuoc",
+        "công ty tnhh tm công nghiệp giấy vĩnh thịnh"
     ]
     
     company_ids = []
@@ -63,7 +63,7 @@ def main():
     pipeline.filter_module.db = db
     pipeline.scrape_module.db = db
     pipeline.gemini_quick.db = db
-    pipeline.serper.db = db
+    pipeline.deep_search.db = db
     if pipeline.ai_extractor:
         pipeline.ai_extractor.db = db
     pipeline.result_aggregator.db = db
@@ -91,7 +91,7 @@ def main():
         quick_res = db.fetch_all("SELECT * FROM gemini_quick_results WHERE company_id = ? ORDER BY id DESC LIMIT 1", (cid,))
         
         # Pipeline status
-        steps = ['gemini_quick', 'serper_search', 'filter', 'scrape', 'AI_EXT'] # Keep serper_search for now until we replace it
+        steps = ['gemini_quick', 'firecrawl_search', 'filter', 'scrape', 'AI_EXT']
         status_parts = []
         for step in steps:
             logs = db.fetch_all(
@@ -130,7 +130,7 @@ def main():
         })
         
         # Deep Search Logs to aggregate duration
-        search_logs = db.fetch_all("SELECT * FROM pipeline_logs WHERE company_id = ? AND step = 'serper_search'", (cid,))
+        search_logs = db.fetch_all("SELECT * FROM pipeline_logs WHERE company_id = ? AND step = 'firecrawl_search'", (cid,))
         total_search_duration = sum([log['duration_seconds'] for log in search_logs if log['duration_seconds']])
         
         # Deep Search & Filter (URLs)

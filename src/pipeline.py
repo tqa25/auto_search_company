@@ -13,7 +13,7 @@ from src.excel_handler import ExcelReader, ExcelWriter
 from src.ai_extractor import AIExtractor
 from src.result_aggregator import ResultAggregator
 from src.gemini_quick_search import GeminiQuickSearch
-from src.serper_search import SerperSearch
+from src.firecrawl_deep_search import FirecrawlDeepSearch
 from src.errors import PipelineError, RetryableError, SkippableError, CriticalError
 
 VN_TZ = timezone(timedelta(hours=7))
@@ -67,7 +67,7 @@ class Pipeline:
 
         # New modules for 4-step pipeline
         self.gemini_quick = GeminiQuickSearch(self.db, self.logger, config=self.cfg)
-        self.serper = SerperSearch(self.db, self.logger, config=self.cfg)
+        self.deep_search = FirecrawlDeepSearch(self.db, self.logger, config=self.cfg)
 
         self.gemini_api_key = config.get("gemini_api_key")
 
@@ -250,47 +250,22 @@ class Pipeline:
 
                             self.db.update_company(company_id, status='gemini_quick_done')
 
-                        # ====== GOOGLE MAPS (OPTIONAL — gated by config) ======
-                        if self.cfg.GOOGLE_MAPS_ENABLED and self._should_do_step(next_step, 'deep_search') and not replay_mode:
-                            maps_query = (gemini_result or {}).get("core_name_vi") or \
-                                         (gemini_result or {}).get("core_name") or company_name
-                            print(f"  -> [Optional] Google Maps ({maps_query[:40]})...")
-                            maps_result = self.serper.search_places(company_id, maps_query)
-                            self._batch_stats["serper_credits"] += maps_result.get("serper_credits_used", 0)
-
-                            if maps_result.get("phone"):
-                                self._save_maps_contact(company_id, maps_result, gemini_result)
-                                self._batch_stats["optional_maps_success"] += 1
-                                print(f"  -> [Optional] Google Maps có phone, đã lưu (tiếp tục deep search)")
-                            else:
-                                maps_website = maps_result.get("website")
-                                if maps_website:
-                                    self.db.execute_query(
-                                        """INSERT OR IGNORE INTO filtered_links 
-                                           (company_id, url, source_type, should_scrape, reason, relevance_score) 
-                                           VALUES (?, ?, 'google_maps', 1, 'maps_website_discovery', 15)""",
-                                        (company_id, maps_website)
-                                    )
-                                    print(f"  -> [Optional] Maps: không có phone, đã thêm website {maps_website} vào scrape queue")
-                                else:
-                                    print(f"  -> [Optional] Maps: không có phone, không có website")
-
-                        # ====== BƯỚC 2: DEEP SEARCH (Serper + Filter + Firecrawl + Extract) ======
+                        # ====== BƯỚC 2: DEEP SEARCH (Firecrawl + Filter + Extract) ======
                         if self._should_do_step(next_step, 'deep_search'):
                             if not replay_mode:
                                 print("  -> Bước 2: Deep Search...")
-                                # Build smart queries from Gemini result
+                                        # Build smart queries from Gemini result
                                 if gemini_result:
-                                    queries = self.serper.build_fallback_queries(gemini_result)
+                                    queries = self.deep_search.build_fallback_queries(gemini_result, company_name)
                                     gemini_sources = set(quick.get("grounding_sources", []) if quick else [])
 
                                     all_search_results = []
                                     for q_idx, q in enumerate(queries):
                                         print(f"    - Query {q_idx+1}: {q['query']}")
-                                        results = self.serper.search(company_id, q["query"])
-                                        self._batch_stats["serper_credits"] += (2 if len(results) > 10 else 1)
+                                        results = self.deep_search.search(company_id, q["query"], limit=self.cfg.SEARCH_LIMIT)
+                                        
                                         # Dedup against Gemini sources
-                                        deduped = SerperSearch.dedup_results(results, gemini_sources)
+                                        deduped = FirecrawlDeepSearch.dedup_results(results, gemini_sources)
                                         self._batch_stats["urls_deduped"] += len(results) - len(deduped)
                                         # Save to search_results table
                                         for rank, r in enumerate(deduped):
