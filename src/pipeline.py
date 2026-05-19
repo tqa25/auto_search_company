@@ -335,27 +335,7 @@ class Pipeline:
                                 success_count += 1
                                 break
 
-                        # ====== BƯỚC 3: FACEBOOK LAST RESORT ======
-                        if self._company_has_no_phone(company_id):
-                            self._batch_stats["step3_fallback"] += 1
-                            # Check for Facebook URLs in search results
-                            fb_links = self.db.fetch_all(
-                                "SELECT url FROM search_results WHERE company_id = ? AND url LIKE '%facebook.com%'",
-                                (company_id,)
-                            )
-                            if fb_links:
-                                print(f"  -> Bước 3: Facebook Last Resort ({len(fb_links)} links)...")
-                                for fb in fb_links[:3]:
-                                    # Save as filtered link for scraping
-                                    self.db.execute_query(
-                                        "INSERT OR IGNORE INTO filtered_links (company_id, url, source_type, should_scrape, reason) VALUES (?, ?, 'facebook', 1, 'facebook_last_resort')",
-                                        (company_id, fb["url"])
-                                    )
-                                self.scrape_module.scrape_company(company_id, self.delay_seconds)
-                                if self.ai_extractor:
-                                    self.ai_extractor.extract_for_company(company_id, self.delay_seconds)
-                        else:
-                            self._batch_stats["step2_success"] += 1
+                        self._batch_stats["step2_success"] += 1
 
                         self.db.update_company(company_id, status='done')
                         if self._company_has_no_phone(company_id):
@@ -432,7 +412,6 @@ class Pipeline:
         return {
             "total": 0, "success": 0, "failed": 0, "skipped": 0,
             "step1_success": 0, "step2_success": 0,
-            "step3_fallback": 0,
             "optional_maps_success": 0,
             "no_phone": 0,
             "gemini_tokens_in": 0, "gemini_tokens_out": 0,
@@ -461,7 +440,6 @@ class Pipeline:
   Tổng công ty xử lý:            {processed}
   Bước 1 thành công (Gemini):     {s['step1_success']} ({s['step1_success']/max(processed,1)*100:.0f}%)
   Bước 2 thành công (Deep):       {s['step2_success']}{maps_line}
-  Bước 3 Facebook fallback:       {s['step3_fallback']}
   Không tìm được phone:           {s['no_phone']}
   Thất bại (lỗi):                 {s['failed']}
   ─────────────────────────────────────────
