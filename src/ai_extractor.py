@@ -2,6 +2,7 @@ import os
 import json
 import time
 import re
+import requests
 from google import genai
 from google.genai import types
 from src.database import DatabaseManager
@@ -10,16 +11,19 @@ from src.errors import RetryableError, CriticalError, SkippableError, PipelineEr
 from src.config import Config
 
 class AIExtractor:
-    def __init__(self, db: DatabaseManager, logger: PipelineLogger, gemini_api_key: str):
+    def __init__(self, db: DatabaseManager, logger: PipelineLogger, config=None):
         self.db = db
         self.logger = logger
-        self.config = Config()
         
-        # Initialize Google Gemini client
-        if not gemini_api_key:
-            raise ValueError("GEMINI_API_KEY is not provided.")
+        if config is not None:
+            self.config = config
+        else:
+            self.config = Config()
             
-        self.client = genai.Client(api_key=gemini_api_key)
+        # Verify Gemini API key for Gemma 4 extraction
+        if not self.config.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY is not provided.")
+        self.client = genai.Client(api_key=self.config.GEMINI_API_KEY)
 
     EXTRACTION_PROMPT_TEMPLATE = """
     Bạn đang trích xuất thông tin liên hệ của công ty: {company_name}
@@ -210,9 +214,9 @@ class AIExtractor:
             return {"status": "skipped", "reason": "no_contact_signals"}
 
         # Long content safeguard
-        if len(markdown_content) > 30000:
-            self.logger.logger.warning(f"Markdown content too long for scraped_page_id {scraped_page_id}, truncating to 30,000 chars.")
-            markdown_content = markdown_content[:30000]
+        if len(markdown_content) > 15000:
+            self.logger.logger.warning(f"Markdown content too long for scraped_page_id {scraped_page_id}, truncating to 15,000 chars.")
+            markdown_content = markdown_content[:15000]
 
         prompt = self.EXTRACTION_PROMPT_TEMPLATE.replace(
             "{company_name}", company_name
@@ -226,19 +230,16 @@ class AIExtractor:
         max_retries = 3
         while attempt < max_retries:
             try:
-                # Setting generation config to try enforcing JSON format
-                self.logger.logger.info(f"Calling Gemini API for page ID {scraped_page_id}...")
+                self.logger.logger.info(f"Calling Gemini API (gemini-2.5-flash-lite) for page ID {scraped_page_id}...")
                 
-                # Gemini free tier might strictly parse response_mime_type if correctly set
                 response = self.client.models.generate_content(
-                    model=self.config.AI_EXTRACTOR_MODEL,
+                    model="models/gemini-2.5-flash-lite",
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1
+                        temperature=0.1,
+                        response_mime_type="application/json"
                     )
                 )
-                
                 raw_response = response.text
                 
                 # Parse JSON
@@ -335,20 +336,24 @@ class AIExtractor:
                 
             except Exception as e:
                 error_msg = str(e)
-                if "429" in error_msg:
+                # 1. Critical cases: 429 / Quota exceeded
+                if "429" in error_msg or "quota exceeded" in error_msg.lower():
+                    self.logger.logger.error("Gemini API Rate Limit/Quota Exceeded (429/Quota)! Stop processing.")
+                    self.logger.log_step_end(log_id, "FAILED", error_message="Rate Limit/Quota Exceeded", error_category="critical")
+                    raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
+
+                # 2. Transient/Retryable cases: 503 / Unavailable / experiencing high demand
+                if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
                     attempt += 1
                     if attempt < max_retries:
-                        self.logger.logger.warning(f"Rate limit exceeded (429). Retrying in 60s... (Attempt {attempt}/{max_retries})")
+                        self.logger.logger.warning(f"Gemini API experiencing high demand (503/Unavailable). Retrying in 60s... (Attempt {attempt}/{max_retries})")
                         time.sleep(60)
                         continue
                     else:
-                        self.logger.log_step_end(log_id, "FAILED", error_message="Rate limit exceeded after retries")
-                        raise RetryableError(f"Rate limit exceeded (429) after {max_retries} retries")
-                elif "quota exceeded" in error_msg.lower():
-                    self.logger.logger.error("Gemini API Quota Exceeded! Stop processing.")
-                    self.logger.log_step_end(log_id, "FAILED", error_message="Quota Exceeded", error_category="critical")
-                    raise CriticalError("Gemini API quota exceeded. Stop pipeline.")
+                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 retries exhausted", error_category="retryable")
+                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries")
 
+                # 3. Other unknown errors: skip this company
                 self.logger.logger.error(f"Gemini API error: {error_msg}")
                 category = e.category if isinstance(e, PipelineError) else "unknown"
                 self.logger.log_step_end(log_id, "FAILED", error_message=error_msg[:100], error_category=category)
@@ -393,17 +398,16 @@ class AIExtractor:
         max_retries = 3
         while attempt < max_retries:
             try:
-                self.logger.logger.info(f"Calling Gemini API for batch of {len(batch_pages)} pages...")
+                self.logger.logger.info(f"Calling Gemini API (gemini-2.5-flash-lite) for batch of {len(batch_pages)} pages...")
 
                 response = self.client.models.generate_content(
-                    model=self.config.AI_EXTRACTOR_MODEL,
+                    model="models/gemini-2.5-flash-lite",
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1
+                        temperature=0.1,
+                        response_mime_type="application/json"
                     )
                 )
-
                 raw_response = response.text
 
                 # Parse JSON
@@ -500,20 +504,24 @@ class AIExtractor:
 
             except Exception as e:
                 error_msg = str(e)
-                if "429" in error_msg:
+                # 1. Critical cases: 429 / Quota exceeded
+                if "429" in error_msg or "quota exceeded" in error_msg.lower():
+                    self.logger.logger.error("Gemini API Rate Limit/Quota Exceeded (429/Quota)! Stop processing.")
+                    self.logger.log_step_end(log_id, "FAILED", error_message="Rate Limit/Quota Exceeded", error_category="critical")
+                    raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
+
+                # 2. Transient/Retryable cases: 503 / Unavailable / experiencing high demand
+                if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
                     attempt += 1
                     if attempt < max_retries:
-                        self.logger.logger.warning(f"Rate limit exceeded (429). Retrying in 60s... (Attempt {attempt}/{max_retries})")
+                        self.logger.logger.warning(f"Gemini API experiencing high demand (503/Unavailable). Retrying in 60s... (Attempt {attempt}/{max_retries})")
                         time.sleep(60)
                         continue
                     else:
-                        self.logger.log_step_end(log_id, "FAILED", error_message="Rate limit exceeded after retries")
-                        raise RetryableError(f"Rate limit exceeded (429) after {max_retries} retries")
-                elif "quota exceeded" in error_msg.lower():
-                    self.logger.logger.error("Gemini API Quota Exceeded! Stop processing.")
-                    self.logger.log_step_end(log_id, "FAILED", error_message="Quota Exceeded", error_category="critical")
-                    raise CriticalError("Gemini API quota exceeded. Stop pipeline.")
+                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 retries exhausted", error_category="retryable")
+                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries")
 
+                # 3. Other unknown errors: skip this company
                 self.logger.logger.error(f"Gemini API error: {error_msg}")
                 category = e.category if isinstance(e, PipelineError) else "unknown"
                 self.logger.log_step_end(log_id, "FAILED", error_message=error_msg[:100], error_category=category)

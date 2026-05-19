@@ -38,7 +38,7 @@ class GeminiQuickSearch:
     PROMPT_TEMPLATE = """Tìm thông tin công ty "{company_name}" tại Việt Nam. 
 CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
 {{
-  "core_name": "Tên định danh",
+  "core_name": "Tên thương hiệu cốt lõi (LOẠI BỎ hoàn toàn hậu tố như co.,ltd, corp, jsc, llc. VD: 'king freight int\\'l vn co.,ltd' -> 'king freight int\\'l vn')",
   "core_name_vi": "Tên tiếng Việt pháp lý",
   "abbreviation": "Viết tắt",
   "address": "Địa chỉ",
@@ -46,6 +46,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
   "email": "Email",
   "website": "Website",
   "tax_code": "MST",
+  "representative": "Người đại diện",
   "sources": ["url1", "url2"],
   "confidence": 0.95
 }}"""
@@ -56,10 +57,10 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
         self.db = db
         self.pipeline_logger = pipeline_logger
 
-        api_key = os.getenv("GEMINI_API_KEY", "")
+        api_key = self.config.GEMINI_API_KEY
         if not api_key:
             logger.warning("GEMINI_API_KEY not set. Gemini Quick Search will be disabled.")
-        self.client = genai.Client(api_key=api_key) if api_key else None
+        self.client = genai.Client(api_key=api_key, http_options={'timeout': 600000}) if api_key else None
 
     # ------------------------------------------------------------------
     # Quota management
@@ -141,7 +142,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
         log_id = self.pipeline_logger.log_step_start(
             company_id, "gemini_quick",
             source_name=f"gemini_quick: {company_name}",
-            raw_request={"company_name": company_name, "model": self.config.GEMINI_QUICK_MODEL}
+            raw_request={"company_name": company_name, "model": self.config.AI_GROUNDING_MODEL}
         )
 
         started_at = datetime.now(VN_TZ)
@@ -154,7 +155,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             # Call Gemini with Search Grounding
             try:
                 response = self.client.models.generate_content(
-                    model=self.config.GEMINI_QUICK_MODEL,
+                    model=self.config.AI_GROUNDING_MODEL,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         tools=[{"google_search": {}}],
@@ -163,10 +164,21 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
                     )
                 )
             except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg or "quota exceeded" in error_msg.lower():
+                    logger.error(f"[{company_id}] Gemini API Rate Limit/Quota Exceeded (429)! Stop processing.")
+                    from src.errors import CriticalError
+                    raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
+                    
+                if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
+                    logger.warning(f"[{company_id}] Gemini API experiencing high demand (503/Unavailable). Stop grounding fallback, raise RetryableError.")
+                    from src.errors import RetryableError
+                    raise RetryableError("Gemini API 503 unavailable during grounding search.")
+                    
                 logger.warning(f"[{company_id}] Gemini grounding failed ({e}). Retrying without grounding...")
                 # Fallback without grounding
                 response = self.client.models.generate_content(
-                    model=self.config.GEMINI_QUICK_MODEL,
+                    model=self.config.AI_GROUNDING_MODEL,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.0,
@@ -231,7 +243,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
                 credits_used=0,
                 data_saved=True,
                 network_latency_ms=duration * 1000,
-                raw_response_summary={"model": self.config.GEMINI_QUICK_MODEL},
+                raw_response_summary={"model": self.config.AI_GROUNDING_MODEL},
                 metadata={
                     "started_at": started_at.isoformat(),
                     "finished_at": finished_at.isoformat(),
@@ -267,10 +279,29 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             }
 
         except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "quota exceeded" in error_msg.lower():
+                logger.error(f"[{company_id}] Gemini API Rate Limit/Quota Exceeded (429)! Stop processing.")
+                self.pipeline_logger.log_step_end(
+                    log_id, status="error", error_message="Rate Limit/Quota Exceeded",
+                    metadata={"error_category": "critical"}
+                )
+                from src.errors import CriticalError
+                raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
+                
+            if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
+                logger.error(f"[{company_id}] Gemini API transient error (503) caught in quick search!")
+                self.pipeline_logger.log_step_end(
+                    log_id, status="error", error_message="Service Unavailable (503)",
+                    metadata={"error_category": "retryable"}
+                )
+                from src.errors import RetryableError
+                raise RetryableError("Gemini API 503 unavailable during quick search.")
+                
             duration = time.time() - start_time
             logger.error(f"[{company_id}] Gemini Quick Search error: {e}")
             self.pipeline_logger.log_step_end(
-                log_id, status="error", error_message=str(e),
+                log_id, status="error", error_message=error_msg,
                 network_latency_ms=duration * 1000,
                 metadata={"duration_seconds": round(duration, 2)}
             )

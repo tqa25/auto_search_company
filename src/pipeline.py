@@ -21,7 +21,7 @@ VN_TZ = timezone(timedelta(hours=7))
 class Pipeline:
     """Pipeline orchestrator with resume, checkpoint, and graceful shutdown support."""
 
-    # Status progression: pending → gemini_quick_done → searched → scraped → ai_done → done
+    # Status progression: pending → gemini_quick_done → searched → scraped → ai_extract_pending → ai_done → done
     # Failed states: failed, permanently_failed
     STATUS_FLOW = {
         'pending':              'gemini_quick',
@@ -31,6 +31,7 @@ class Pipeline:
         'searched':             'filter',
         'scraping':             'filter',           # interrupted during scrape — redo filter+scrape
         'scraped':              'ai_extract',
+        'ai_extract_pending':   'ai_extract',       # ★ CHECKPOINT: scraped done, AI not yet run → skip scrape on resume
         'extracting':           'ai_extract',       # interrupted during extraction
         'ai_done':              'contact_discovery', # check if phone missing → maybe discover
         'contact_discovering':  'contact_discovery',
@@ -40,7 +41,7 @@ class Pipeline:
     def __init__(self, config: dict, pipeline_config=None):
         # existing dict-based config stays for backward compat
         self.config = config
-        self.firecrawl_api_key = config.get("firecrawl_api_key")
+        self.firecrawl_api_key = config.get("firecrawl_api_key") or os.getenv("FIRECRAWL_API_KEY", "")
         self.input_excel_path = config.get("input_excel_path")
         self.output_dir = config.get("output_dir", "output")
         self.delay_seconds = config.get("delay_seconds", 3.0)
@@ -70,10 +71,12 @@ class Pipeline:
 
         self.gemini_api_key = config.get("gemini_api_key")
 
-        # We handle AIExtractor gracefully if GEMINI API KEY doesn't exist yet for legacy scripts
+        self.openrouter_api_key = self.cfg.OPENROUTER_API_KEY
+        
+        # We handle AIExtractor gracefully if OPENROUTER API KEY doesn't exist yet for legacy scripts
         self.ai_extractor = None
-        if self.gemini_api_key:
-            self.ai_extractor = AIExtractor(self.db, self.logger, self.gemini_api_key)
+        if self.openrouter_api_key:
+            self.ai_extractor = AIExtractor(self.db, self.logger, config=self.cfg)
 
         self.result_aggregator = ResultAggregator(self.db)
 
@@ -282,7 +285,8 @@ class Pipeline:
                                     gemini_sources = set(quick.get("grounding_sources", []) if quick else [])
 
                                     all_search_results = []
-                                    for q in queries:
+                                    for q_idx, q in enumerate(queries):
+                                        print(f"    - Query {q_idx+1}: {q['query']}")
                                         results = self.serper.search(company_id, q["query"])
                                         self._batch_stats["serper_credits"] += (2 if len(results) > 10 else 1)
                                         # Dedup against Gemini sources
@@ -295,6 +299,18 @@ class Pipeline:
                                                 (company_id, q["query"], q["type"], rank+1, r["url"], r["title"], r["snippet"])
                                             )
                                         all_search_results.extend(deduped)
+
+                                        # Check early stop condition
+                                        good_pages = 0
+                                        for r in all_search_results:
+                                            # Quick in-memory classification
+                                            score_res = self.filter_module.classify_url(r["url"], company_name)
+                                            if score_res['relevance_score'] >= self.cfg.EARLY_STOP_SCORE and score_res['should_scrape']:
+                                                good_pages += 1
+                                                
+                                        if good_pages >= self.cfg.EARLY_STOP_COUNT:
+                                            print(f"    -> Đã tìm đủ {good_pages} URLs chất lượng (score >= {self.cfg.EARLY_STOP_SCORE}). Dừng các query tiếp theo.")
+                                            break
                                 else:
                                     # No Gemini result — use legacy search
                                     print("  -> (Legacy search fallback)")
@@ -315,7 +331,10 @@ class Pipeline:
                             if not replay_mode:
                                 print("  -> Scraping...")
                                 self.scrape_module.scrape_company(company_id, self.delay_seconds)
-                                self.db.update_company(company_id, status='scraped')
+                                # ★ CHECKPOINT: all scraping done → mark ai_extract_pending
+                                # On resume, pipeline will skip scrape and go straight to AI extract
+                                self.db.update_company(company_id, status='ai_extract_pending')
+                                print("  -> ✓ Checkpoint: scraped data saved (ai_extract_pending)")
                             else:
                                 print(f"  -> [REPLAY] Skipping scrape for company {company_id}")
 
@@ -395,7 +414,12 @@ class Pipeline:
 
                     except CriticalError as e:
                         error_msg = str(e)
-                        print(f"  -> CRITICAL: {error_msg}")
+                        print(f"  -> ⛔ CRITICAL: {error_msg}")
+                        # If scraping was already done, preserve that checkpoint
+                        current_status = self.db.get_company(company_id)
+                        if current_status and current_status['status'] in ('ai_extract_pending', 'extracting'):
+                            self.db.update_company(company_id, status='ai_extract_pending')
+                            print(f"  -> Checkpoint bảo toàn: status='ai_extract_pending' — dữ liệu đã cào được giữ lại.")
                         print("  -> Stopping entire pipeline.")
                         self._restore_signal_handlers()
                         raise

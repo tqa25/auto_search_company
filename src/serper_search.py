@@ -297,48 +297,40 @@ class SerperSearch:
         queries = []
         core_name = gemini_result.get("core_name", "")
         core_name_vi = gemini_result.get("core_name_vi", "")
-        website = gemini_result.get("website", "")
         tax_code = gemini_result.get("tax_code", "")
 
-        # Query 1 (REQUIRED): Vietnamese name + contact keywords
-        if core_name_vi:
+        name_vi = core_name_vi if core_name_vi else core_name
+        name_en = core_name if core_name else core_name_vi
+
+        # Query 1: "{core_name}" ("số điện thoại" OR "liên hệ" OR "contact" OR "Zalo")
+        if name_en:
             queries.append({
-                "query": f'"{core_name_vi}" ("số điện thoại" OR "liên hệ" OR "hotline" OR "Zalo")',
-                "type": "vn_contact",
-                "required": True,
-            })
-        elif core_name:
-            queries.append({
-                "query": f'"{core_name}" ("liên hệ" OR "contact" OR "phone")',
-                "type": "en_contact",
+                "query": f'"{name_en}" ("số điện thoại" OR "liên hệ" OR "contact" OR "Zalo")',
+                "type": "contact_search",
                 "required": True,
             })
 
-        # Query 2: Site-specific search (if website found)
-        if website:
-            domain = urlparse(website if website.startswith("http") else f"http://{website}").netloc
-            if domain:
-                domain = domain.replace("www.", "")
-                queries.append({
-                    "query": f'site:{domain} ("liên hệ" OR "contact" OR "about")',
-                    "type": "site_search",
-                    "required": False,
-                })
-
-        # Query 3: Tax code search (skip masothue)
-        if tax_code:
+        # Query 2: "{core_name}" tuyển dụng
+        if name_en:
             queries.append({
-                "query": f'"{tax_code}" -site:masothue.com',
-                "type": "tax_code",
+                "query": f'"{name_en}" tuyển dụng',
+                "type": "recruitment_search",
                 "required": False,
             })
 
-        # Query 4: Recruitment search
-        search_name = core_name_vi or core_name
-        if search_name:
+        # Query 3: "{tax_code}"
+        if tax_code:
             queries.append({
-                "query": f'"{search_name}" tuyển dụng',
-                "type": "recruitment",
+                "query": f'"{tax_code}"',
+                "type": "tax_code_search",
+                "required": False,
+            })
+
+        # Query 4: "{core_name}"
+        if name_en:
+            queries.append({
+                "query": f'"{name_en}"',
+                "type": "general_search",
                 "required": False,
             })
 

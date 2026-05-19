@@ -170,10 +170,28 @@ class LinkFilter:
                 if ratio > max_ratio:
                     max_ratio = ratio
                     
-        # Scale 80%~100% to 0~20 points
+        # Calculate initial score (Scale 80%~100% to 0~20 points)
+        final_score = 0.0
         if max_ratio >= 0.8:
-            return (max_ratio - 0.8) * (20.0 / 0.2)
-        return 0.0
+            final_score = (max_ratio - 0.8) * (20.0 / 0.2)
+            
+        # OVERMATCH PENALTY
+        # If the domain contains the core name but is significantly longer, it's likely a different company.
+        penalty = 0.0
+        domain_clean = domain.replace("-", "").replace(".", "")
+        
+        for name in normalized_names:
+            if not name: continue
+            core_clean = name.replace(" ", "")
+            if len(core_clean) < 4: continue # Skip penalty for very short acronyms/names
+            
+            if core_clean in domain_clean and len(domain_clean) > len(core_clean) + 3:
+                excess_ratio = (len(domain_clean) - len(core_clean)) / len(core_clean)
+                current_penalty = min(15.0, excess_ratio * 25.0)
+                if current_penalty > penalty:
+                    penalty = current_penalty
+                    
+        return final_score - penalty
 
     @staticmethod
     def _extract_domain(url: str) -> str:
@@ -295,10 +313,12 @@ class LinkFilter:
             keyword_bonuses = self._compute_keyword_bonuses(url)
             keyword_bonus_total = sum(keyword_bonuses.values())
 
-            # Name match bonus (fuzzy match 80-100% -> 0-20 points)
+            # Name match bonus (fuzzy match 80-100% -> 0-20 points) with possible overmatch penalty
             name_match_bonus = self._calculate_name_match_score(url, title, company_name, vn_name)
             if name_match_bonus > 0:
                 reason += f" (Name match bonus: +{name_match_bonus:.1f})"
+            elif name_match_bonus < 0:
+                reason += f" (Overmatch penalty: {name_match_bonus:.1f})"
 
             total = domain_score + keyword_bonus_total + name_match_bonus
 

@@ -7,6 +7,9 @@ Import `default_config` for a ready-to-use instance, or instantiate `Config()` d
 
 import json
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def _parse_bool(value: str, default: bool) -> bool:
@@ -78,6 +81,9 @@ class Config:
         )
         self.GEMINI_API_KEY: str | None = _validate_api_key(
             "GEMINI_API_KEY", os.getenv("GEMINI_API_KEY")
+        )
+        self.OPENROUTER_API_KEY: str | None = _validate_api_key(
+            "OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY")
         )
         self.SERPER_API_KEY: str | None = _validate_api_key(
             "SERPER_API_KEY", os.getenv("SERPER_API_KEY")
@@ -183,8 +189,8 @@ class Config:
         self.GEMINI_QUICK_ENABLED: bool = _parse_bool(
             os.getenv("GEMINI_QUICK_ENABLED"), default=True
         )
-        self.GEMINI_QUICK_MODEL: str = os.getenv(
-            "GEMINI_QUICK_MODEL", "gemini-1.5-flash"
+        self.AI_GROUNDING_MODEL: str = os.getenv(
+            "AI_GROUNDING_MODEL", os.getenv("GEMINI_QUICK_MODEL", "gemini-1.5-flash")
         )
         self.GEMINI_QUICK_CONFIDENCE_THRESHOLD: float = _parse_float(
             os.getenv("GEMINI_QUICK_CONFIDENCE_THRESHOLD"), default=0.7
@@ -212,6 +218,9 @@ class Config:
         # --- AI Extractor ---
         self.AI_EXTRACTOR_MODEL: str = os.getenv(
             "AI_EXTRACTOR_MODEL", "gemini-2.0-flash"
+        )
+        self.OPENROUTER_MODEL: str = os.getenv(
+            "OPENROUTER_MODEL", "openrouter/free"
         )
 
         # --- Source toggles ---

@@ -22,6 +22,7 @@ from src.pipeline import Pipeline
 from src.health_monitor import HealthMonitor
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
+from src.errors import CriticalError
 
 
 def parse_args():
@@ -141,7 +142,13 @@ def main():
         _confirm_run(len(resumable), estimates)
 
         company_ids = [c["company_id"] for c in resumable]
-        pipeline.run(company_ids=company_ids)
+        try:
+            pipeline.run(company_ids=company_ids)
+        except CriticalError as e:
+            print(f"\n⛔ DỪNG KHẨN CẤP: {e}")
+            print("   -> Dữ liệu đã xử lý được bảo toàn trong cơ sở dữ liệu.")
+            print("   -> Bạn có thể chạy lại với --resume sau khi khắc phục sự cố.")
+        
         _print_final_summary(pipeline, health, args)
         return
 
@@ -175,7 +182,13 @@ def main():
     estimates = health.estimate_completion_time(len(company_ids))
     _confirm_run(len(company_ids), estimates)
 
-    pipeline.run(company_ids=company_ids)
+    try:
+        pipeline.run(company_ids=company_ids)
+    except CriticalError as e:
+        print(f"\n⛔ DỪNG KHẨN CẤP: {e}")
+        print("   -> Dữ liệu đã xử lý được bảo toàn trong cơ sở dữ liệu.")
+        print("   -> Bạn có thể chạy lại với --resume sau khi khắc phục sự cố.")
+
     _print_final_summary(pipeline, health, args)
 
 
