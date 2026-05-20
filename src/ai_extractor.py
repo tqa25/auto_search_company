@@ -570,41 +570,14 @@ class AIExtractor:
                 res = self.extract_from_page(page['id'])
                 results.append(res)
                 processed_count += 1
-                i = processed_count - 1 # for early stop logic compat
+                i = processed_count - 1
             else:
                 res = self._extract_batch(batch, company_id, company_name)
                 results.append(res)
                 processed_count += len(batch)
-                i = processed_count - 1 # for early stop logic compat
+                i = processed_count - 1
 
-            # Sub-task B: Early stop extraction
-            if res.get('status') == 'success':
-                extracted_fields = res.get('extracted_fields', {})
-                confidence = res.get('confidence', 0.0)
 
-                # Count non-null fields (phone, email, address)
-                fields_found = []
-                if extracted_fields.get('phone'):
-                    fields_found.append('phone')
-                if extracted_fields.get('email'):
-                    fields_found.append('email')
-                if extracted_fields.get('address'):
-                    fields_found.append('address')
-
-                # Early stop if >= 3 fields and confidence >= 0.8
-                if len(fields_found) >= 3 and confidence >= 0.8:
-                    pages_skipped = len(scraped_pages) - i - 1
-                    early_stop_event = {
-                        "event": "early_stop_extraction",
-                        "company_id": company_id,
-                        "fields_found": fields_found,
-                        "confidence": confidence,
-                        "pages_processed": i + 1,
-                        "pages_skipped": pages_skipped
-                    }
-                    self.logger.log_event("early_stop_extraction", company_id, early_stop_event)
-                    self.logger.logger.info(f"Early stop extraction for company {company_id}: {early_stop_event}")
-                    break
 
             # Since Gemini free tier is 15 RPM, we need to respect the delay between calls
             if i < len(scraped_pages) - 1 and res.get('status') == 'success':
