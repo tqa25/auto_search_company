@@ -252,6 +252,7 @@ class Pipeline:
 
                         # ====== BƯỚC 2: DEEP SEARCH (Firecrawl + Filter + Extract) ======
                         if self._should_do_step(next_step, 'deep_search'):
+                            filter_already_completed = False
                             if not replay_mode:
                                 print("  -> Bước 2: Deep Search...")
                                         # Build smart queries from Gemini result
@@ -259,6 +260,8 @@ class Pipeline:
                                     queries = self.deep_search.build_fallback_queries(gemini_result, company_name)
                                     gemini_sources = set(quick.get("grounding_sources", []) if quick else [])
 
+                                    seen_domains = set()
+                                    good_pages_total = 0
                                     all_search_results = []
                                     for q_idx, q in enumerate(queries):
                                         print(f"    - Query {q_idx+1}: {q['query']}")
@@ -267,25 +270,38 @@ class Pipeline:
                                         # Dedup against Gemini sources
                                         deduped = FirecrawlDeepSearch.dedup_results(results, gemini_sources)
                                         self._batch_stats["urls_deduped"] += len(results) - len(deduped)
-                                        # Save to search_results table
+                                        
+                                        # Save to search_results table and collect IDs
+                                        urls_to_filter = []
                                         for rank, r in enumerate(deduped):
-                                            self.db.execute_query(
+                                            sr_id = self.db.execute_query(
                                                 "INSERT INTO search_results (company_id, search_query, search_type, result_rank, url, title, snippet) VALUES (?, ?, ?, ?, ?, ?, ?)",
                                                 (company_id, q["query"], q["type"], rank+1, r["url"], r["title"], r["snippet"])
                                             )
+                                            urls_to_filter.append({
+                                                "search_result_id": sr_id,
+                                                "url": r["url"],
+                                                "title": r.get("title", ""),
+                                                "snippet": r.get("snippet", "")
+                                            })
                                         all_search_results.extend(deduped)
 
-                                        # Check early stop condition
-                                        good_pages = 0
-                                        for r in all_search_results:
-                                            # Quick in-memory classification
-                                            score_res = self.filter_module.classify_url(r["url"], company_name)
-                                            if score_res['relevance_score'] >= self.cfg.EARLY_STOP_SCORE and score_res['should_scrape']:
-                                                good_pages += 1
-                                                
-                                        if good_pages >= self.cfg.EARLY_STOP_COUNT:
-                                            print(f"    -> Đã tìm đủ {good_pages} URLs chất lượng (score >= {self.cfg.EARLY_STOP_SCORE}). Dừng các query tiếp theo.")
+                                        # Run incremental filter immediately
+                                        vn_name = gemini_result.get("vietnamese_name", "") if isinstance(gemini_result, dict) else ""
+                                        batch_filtered, batch_good = self.filter_module.filter_urls_incremental(
+                                            company_id=company_id,
+                                            urls=urls_to_filter,
+                                            seen_domains=seen_domains,
+                                            company_name=company_name,
+                                            vn_name=vn_name
+                                        )
+                                        good_pages_total += batch_good
+
+                                        if good_pages_total >= self.cfg.EARLY_STOP_COUNT:
+                                            print(f"    -> Đã tìm đủ {good_pages_total} URLs chất lượng thực tế (score >= {self.cfg.EARLY_STOP_SCORE}). Dừng các query tiếp theo.")
                                             break
+                                    
+                                    filter_already_completed = True
                                 else:
                                     # No Gemini result — use legacy search
                                     print("  -> (Legacy search fallback)")
@@ -298,8 +314,11 @@ class Pipeline:
 
                         # FILTER
                         if self._should_do_step(next_step, 'filter'):
-                            print("  -> Filtering...")
-                            self.filter_module.filter_company_links(company_id)
+                            if not filter_already_completed:
+                                print("  -> Filtering...")
+                                self.filter_module.filter_company_links(company_id)
+                            else:
+                                print("  -> Filtering already completed incrementally during search.")
 
                         # SCRAPE
                         if self._should_do_step(next_step, 'scrape'):

@@ -381,6 +381,89 @@ class LinkFilter:
 
         return scored_urls
 
+    def filter_urls_incremental(
+        self,
+        company_id: int,
+        urls: list[dict],
+        seen_domains: set,
+        company_name: str,
+        vn_name: str = ""
+    ) -> tuple[list[dict], int]:
+        """
+        Classify and persist a batch of new search result URLs for a company.
+        Updates seen_domains set in-place.
+        Returns: (filtered_results, good_count_above_threshold)
+        """
+        filtered_results = []
+        good_count = 0
+
+        for r in urls:
+            search_result_id = r.get("search_result_id")
+            url = r["url"]
+            title = r.get("title", "")
+
+            classification = self.classify_url(url, company_name, title=title, vn_name=vn_name)
+
+            self.logger.log_event("score_calculated", company_id, {
+                "url": url,
+                "source_type": classification["source_type"],
+                "relevance_score": classification["relevance_score"],
+                "should_scrape": classification["should_scrape"],
+                "breakdown": classification.get("score_breakdown", {}),
+                "reason": classification.get("reason", "")
+            })
+
+            # Dedup by domain.
+            try:
+                domain = self._extract_domain(url) or "unknown"
+            except Exception:
+                domain = "unknown"
+
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+
+            # Validate scored link before persisting
+            scored_link_dict = {
+                "url": url,
+                "source_type": classification["source_type"],
+                "relevance_score": classification["relevance_score"],
+                "should_scrape": classification["should_scrape"],
+                "breakdown": classification.get("score_breakdown", {}),
+                "reason": classification.get("reason", "")
+            }
+            try:
+                validate_scored_link(scored_link_dict)
+            except ValueError as e:
+                logger.warning(f"Skipping invalid scored link: {e}")
+                continue
+
+            # Persist the link.
+            link_id = self.db.insert_filtered_link(
+                search_result_id=search_result_id,
+                company_id=company_id,
+                url=url,
+                source_type=classification["source_type"],
+                should_scrape=classification["should_scrape"],
+                reason=classification["reason"],
+            )
+
+            # Update the score column.
+            score = classification["relevance_score"]
+            self.db.update_filtered_link_score(link_id, score)
+
+            filtered_results.append({
+                "search_result_id": search_result_id,
+                "url": url,
+                "early_stop": False,
+                **classification,
+            })
+
+            if classification["should_scrape"] and score >= self.config.EARLY_STOP_SCORE:
+                good_count += 1
+
+        return filtered_results, good_count
+
     def filter_company_links(self, company_id: int) -> list[dict]:
         """
         Classify and persist filtered links for a company.
