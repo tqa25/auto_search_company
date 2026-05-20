@@ -15,7 +15,7 @@ from src.errors import CriticalError
 
 def main():
     print("==================================================")
-    print("    LIVE TEST: 3 COMPANIES (OPENROUTER EXTRACT)   ")
+    print("    LIVE TEST: 3 COMPANIES (GEMINI EXTRACT)       ")
     print("==================================================")
     
     # 1. Setup Live Test DB with dynamic timestamp to preserve logs
@@ -27,10 +27,10 @@ def main():
     db = DatabaseManager(db_path)
     db.init_db()
     
-    # 2. Insert the 2 target companies
     target_companies = [
-        "công ty tnhh tm dv anh phuoc",
-        "công ty tnhh tm công nghiệp giấy vĩnh thịnh"
+        "CÔNG TY CỔ PHẦN ĐẦU TƯ & QUẢN LÝ TÀI SẢN Á CHÂU",
+        "CÔNG TY TNHH GIAO NHẬN ĐẠI ĐỒNG",
+        "CÔNG TY TNHH THƯƠNG PHẨM ATLANTIC VIỆT NAM"
     ]
     
     company_ids = []
@@ -184,9 +184,9 @@ def main():
                     
                     report_data.append({
                         "Company": company_name,
-                        "Step": "5. AI Extraction (OpenRouter)",
+                        "Step": "5. AI Extraction (Gemini)",
                         "Duration (s)": round(extract_duration, 2),
-                        "Logic / Processing Method": "OpenRouter LLM Extract",
+                        "Logic / Processing Method": "Gemini LLM Extract",
                         "Input": f"Scraped Page ID: {scrape_row['id']}",
                         "Output": f"Phone: {extract_row['phone']} | Email: {extract_row['email']}",
                         "Score / Decision": f"Confidence: {extract_row['confidence_score']}",

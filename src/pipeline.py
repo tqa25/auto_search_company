@@ -33,8 +33,7 @@ class Pipeline:
         'scraped':              'ai_extract',
         'ai_extract_pending':   'ai_extract',       # ★ CHECKPOINT: scraped done, AI not yet run → skip scrape on resume
         'extracting':           'ai_extract',       # interrupted during extraction
-        'ai_done':              'contact_discovery', # check if phone missing → maybe discover
-        'contact_discovering':  'contact_discovery',
+        'ai_done':              'done',
         'failed':               'gemini_quick',     # retry from beginning
     }
 
@@ -71,11 +70,9 @@ class Pipeline:
 
         self.gemini_api_key = config.get("gemini_api_key")
 
-        self.openrouter_api_key = self.cfg.OPENROUTER_API_KEY
-        
-        # We handle AIExtractor gracefully if OPENROUTER API KEY doesn't exist yet for legacy scripts
+        # We handle AIExtractor gracefully if GEMINI_API_KEY doesn't exist yet for legacy scripts
         self.ai_extractor = None
-        if self.openrouter_api_key:
+        if self.cfg.GEMINI_API_KEY:
             self.ai_extractor = AIExtractor(self.db, self.logger, config=self.cfg)
 
         self.result_aggregator = ResultAggregator(self.db)
@@ -128,10 +125,12 @@ class Pipeline:
     def _should_do_step(self, next_step: str, target_step: str) -> bool:
         """Check if a given target_step should be executed given the next_step.
 
-        Pipeline order: gemini_quick → deep_search → filter → scrape → ai_extract → contact_discovery
+        Pipeline order: gemini_quick → deep_search → filter → scrape → ai_extract
         If next_step is 'filter', we skip gemini_quick and deep_search but do filter, scrape, etc.
         """
-        step_order = ['gemini_quick', 'deep_search', 'filter', 'scrape', 'ai_extract', 'contact_discovery']
+        if next_step == 'done':
+            return False
+        step_order = ['gemini_quick', 'deep_search', 'filter', 'scrape', 'ai_extract']
         if next_step not in step_order or target_step not in step_order:
             return True
         return step_order.index(target_step) >= step_order.index(next_step)
@@ -505,7 +504,7 @@ class Pipeline:
         """Run a single pipeline step for one company. For manual/debug use.
 
         Args:
-            step: One of 'search', 'filter', 'scrape', 'ai_extract', 'contact_discovery'
+            step: One of 'search', 'filter', 'scrape', 'ai_extract'
             company_id: Company to process
             **kwargs: Step-specific overrides (e.g. delay_seconds)
         """
@@ -524,18 +523,8 @@ class Pipeline:
                 self.db.update_company(company_id, status='extracting')
                 self.ai_extractor.extract_for_company(company_id, delay)
                 self.db.update_company(company_id, status='ai_done')
-        elif step == 'contact_discovery':
-            pages = self.scrape_module.discover_contact_pages(company_id, delay)
-            if pages and self.ai_extractor:
-                recent = self.db.fetch_all(
-                    "SELECT id FROM scraped_pages WHERE company_id = ? AND source_type = 'contact_page' ORDER BY id DESC LIMIT 5",
-                    (company_id,)
-                )
-                for p in recent:
-                    self.ai_extractor.extract_from_page(p['id'])
-            self.db.update_company(company_id, status='done')
         else:
-            raise ValueError(f"Unknown step: {step}. Valid: search, filter, scrape, ai_extract, contact_discovery")
+            raise ValueError(f"Unknown step: {step}. Valid: search, filter, scrape, ai_extract")
 
     # ------------------------------------------------------------------
     # Manual URL injection

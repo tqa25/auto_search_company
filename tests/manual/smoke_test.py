@@ -360,7 +360,6 @@ SCRAPE MODULE — URL DEDUP
 ════════════════════════════════════════════════════════════════
 
 CÁC METHOD MỚI:
-  - discover_contact_pages(): {hasattr(scrape_module, 'discover_contact_pages')}
   - _normalize_url_and_hash(): {hasattr(scrape_module, '_normalize_url_and_hash')}
 
 URL HASH TEST (utm params bị loại bỏ):
@@ -437,7 +436,6 @@ EXPECTED STEP SEQUENCE:
   2. filter (+ scoring)
   3. scrape (top N by score)
   4. ai_extract
-  5. contact_discovery (if no phone)
   → done
 
 MANUAL MODE USAGE:
@@ -577,7 +575,7 @@ Output Directory: {OUTPUT_DIR}
    - run(force_refresh=True) parameter added
    - run_step(step, company_id) manual execution method
    - inject_search_results() test method
-   - STATUS_FLOW updated (5 steps + contact_discovery)
+   - STATUS_FLOW updated (4 steps)
    - _company_has_no_phone() helper method
 
 ✅ BƯỚC 8: FastAPI Dashboard

@@ -82,9 +82,6 @@ class Config:
         self.GEMINI_API_KEY: str | None = _validate_api_key(
             "GEMINI_API_KEY", os.getenv("GEMINI_API_KEY")
         )
-        self.OPENROUTER_API_KEY: str | None = _validate_api_key(
-            "OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY")
-        )
         self.SERPER_API_KEY: str | None = _validate_api_key(
             "SERPER_API_KEY", os.getenv("SERPER_API_KEY")
         )
@@ -134,13 +131,6 @@ class Config:
         # --- Scrape group ---
         self.TOP_N: int = _parse_int(
             os.getenv("TOP_N"), default=10
-        )
-        self.CONTACT_DISCOVERY_ENABLED: bool = _parse_bool(
-            os.getenv("CONTACT_DISCOVERY_ENABLED"), default=True
-        )
-        self.CONTACT_PATHS: list = _parse_str_list(
-            os.getenv("CONTACT_PATHS"),
-            default=["/contact", "/lien-he", "/about"],
         )
 
         # --- Dedup group ---
@@ -219,9 +209,6 @@ class Config:
         self.AI_EXTRACTOR_MODEL: str = os.getenv(
             "AI_EXTRACTOR_MODEL", "gemini-2.0-flash"
         )
-        self.OPENROUTER_MODEL: str = os.getenv(
-            "OPENROUTER_MODEL", "openrouter/free"
-        )
 
         # --- Source toggles ---
         self.SCRAPE_LINKEDIN_ENABLED: bool = _parse_bool(
@@ -241,8 +228,6 @@ class Config:
             f"DOMAIN_SCORES={self.DOMAIN_SCORES!r}, "
             f"KEYWORD_SCORES={self.KEYWORD_SCORES!r}, "
             f"TOP_N={self.TOP_N!r}, "
-            f"CONTACT_DISCOVERY_ENABLED={self.CONTACT_DISCOVERY_ENABLED!r}, "
-            f"CONTACT_PATHS={self.CONTACT_PATHS!r}, "
             f"ENABLE_QUERY_DEDUP={self.ENABLE_QUERY_DEDUP!r}, "
             f"ENABLE_URL_DEDUP={self.ENABLE_URL_DEDUP!r}, "
             f"ENABLE_GLOBAL_CACHE={self.ENABLE_GLOBAL_CACHE!r}, "
