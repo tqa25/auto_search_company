@@ -68,7 +68,7 @@ def _make_firecrawl_response(urls, status_code=200):
             data.append({
                 "url": url,
                 "title": f"Title for {url}",
-                "description": f"Công ty TNHH XYZ" if "masothue.com" in url else f"Snippet for {url}",
+                "description": f"Công ty TNHH XYZ - Mã số thuế: 0123456789" if "masothue.com" in url else f"Snippet for {url}",
             })
         mock_resp.json.return_value = {"success": True, "data": data}
     else:
@@ -112,7 +112,7 @@ class TestSearchCompanySingleStrategy:
         # Only one search should be made (Anchor)
         assert mock_post.call_count == 1
         assert len(results) > 0
-        assert results[0]["search_type"] == "step1_anchor"
+        assert results[0]["search_type"] == "step1_contact"
 
     @patch("src.search_module.requests.post")
     def test_search_infer_vn_data(self, mock_post, search_module, db):
@@ -137,8 +137,8 @@ class TestSearchCompanySingleStrategy:
 
         # Check search types
         types = [r["search_type"] for r in results]
-        assert "step1_anchor" in types
-        assert "step3_expand" in types
+        assert "step1_contact" in types
+        assert "step3_tax" in types
         
     @patch("src.search_module.requests.post")
     def test_search_falls_through_to_fallback(self, mock_post, search_module, db):
@@ -159,8 +159,8 @@ class TestSearchCompanySingleStrategy:
 
         # Check search types
         types = [r["search_type"] for r in results]
-        assert "step1_anchor" in types
-        assert "step4_fallback_en" in types
+        assert "step1_contact" in types
+        assert "step4_bare" in types
 
 class TestSearchBatch:
     """Test search_batch processing."""

@@ -61,8 +61,9 @@ class LinkFilter:
         self._skip_domains = list(self.SKIP_DOMAINS)
 
         # masothue.com: toggle (default OFF = stays in blacklist)
-        if self.config.SCRAPE_MASOTHUE_ENABLED:
-            self._blacklisted_domains = [d for d in self._blacklisted_domains if d != "masothue.com"]
+        if not self.config.SCRAPE_MASOTHUE_ENABLED:
+            if "masothue.com" not in self._blacklisted_domains:
+                self._blacklisted_domains.append("masothue.com")
 
         # LinkedIn: toggle (default OFF = add to skip)
         if not self.config.SCRAPE_LINKEDIN_ENABLED:

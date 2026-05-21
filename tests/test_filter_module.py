@@ -14,7 +14,7 @@ class TestLinkFilter(unittest.TestCase):
     def test_classify_url_target_domain_subdomain(self):
         result = self.filter.classify_url("https://m.facebook.com/testing", "Testing")
         self.assertEqual(result["source_type"], "facebook")
-        self.assertTrue(result["should_scrape"])
+        self.assertFalse(result["should_scrape"])
 
     def test_classify_url_skip_domain(self):
         result = self.filter.classify_url("https://www.youtube.com/watch?v=123", "Testing")

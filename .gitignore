@@ -7,4 +7,5 @@
 data/*.db
 output/
 __pycache__/
-*.xlsxresults/report/.~lock.*
+*.xlsx
+results/report/.~lock.*

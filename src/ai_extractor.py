@@ -16,12 +16,19 @@ class AIExtractor:
         self.logger = logger
         
         if config is not None:
-            self.config = config
+            if isinstance(config, str):
+                self.config = Config()
+                self.config.GEMINI_API_KEY = config
+            elif isinstance(config, dict):
+                self.config = Config()
+                self.config.GEMINI_API_KEY = config.get("gemini_api_key")
+            else:
+                self.config = config
         else:
             self.config = Config()
             
         # Verify Gemini API key for Gemma 4 extraction
-        if not self.config.GEMINI_API_KEY:
+        if not getattr(self.config, 'GEMINI_API_KEY', None):
             raise ValueError("GEMINI_API_KEY is not provided.")
         self.client = genai.Client(api_key=self.config.GEMINI_API_KEY)
 

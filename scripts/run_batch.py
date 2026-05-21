@@ -19,7 +19,6 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.pipeline import Pipeline
-from src.health_monitor import HealthMonitor
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
 from src.errors import CriticalError
@@ -86,7 +85,7 @@ def main():
 
     args = parse_args()
 
-    # 2. Initialize Pipeline + HealthMonitor
+    # 2. Initialize Pipeline
     config = {
         "firecrawl_api_key": firecrawl_key,
         "gemini_api_key": gemini_key,
@@ -95,12 +94,8 @@ def main():
     }
 
     pipeline = Pipeline(config)
-    health = HealthMonitor(pipeline.db, pipeline.logger)
 
-    # 3. Print dashboard
-    health.print_dashboard()
-
-    # 4. Handle --retry-failed
+    # 3. Handle --retry-failed
     if args.retry_failed:
         if args.dry_run:
             failed = pipeline.db.fetch_all("SELECT * FROM companies WHERE status = 'failed'")
@@ -112,10 +107,10 @@ def main():
             return
 
         pipeline.retry_failed()
-        _print_final_summary(pipeline, health, args)
+        _print_final_summary(pipeline, args)
         return
 
-    # 5. Handle --resume
+    # 4. Handle --resume
     if args.resume:
         resumable = pipeline.get_resumable_companies()
         if not resumable:
@@ -132,14 +127,10 @@ def main():
                 print(f"  - ID {item['company_id']}: status={item['status']}, next_step={item['next_step']}")
             if len(resumable) > 10:
                 print(f"  ... and {len(resumable) - 10} more")
-            
-            estimates = health.estimate_completion_time(len(resumable))
-            print(f"\n⏱️  Estimated: ~{estimates['estimated_hours']:.1f} hours, ~{estimates['estimated_credits_needed']} credits")
             return
 
         # Confirm before running
-        estimates = health.estimate_completion_time(len(resumable))
-        _confirm_run(len(resumable), estimates)
+        _confirm_run(len(resumable))
 
         company_ids = [c["company_id"] for c in resumable]
         try:
@@ -149,10 +140,10 @@ def main():
             print("   -> Dữ liệu đã xử lý được bảo toàn trong cơ sở dữ liệu.")
             print("   -> Bạn có thể chạy lại với --resume sau khi khắc phục sự cố.")
         
-        _print_final_summary(pipeline, health, args)
+        _print_final_summary(pipeline, args)
         return
 
-    # 6. Normal batch run
+    # 5. Normal batch run
     all_companies = pipeline.db.get_all_companies()
     
     if args.offset > 0:
@@ -172,15 +163,11 @@ def main():
             print(f"  - ID {c['id']}: {c['original_name']} (status: {c['status']})")
         if len(all_companies) > 10:
             print(f"  ... and {len(all_companies) - 10} more")
-
-        estimates = health.estimate_completion_time(len(company_ids))
-        print(f"\n⏱️  Estimated: ~{estimates['estimated_hours']:.1f} hours, ~{estimates['estimated_credits_needed']} credits")
         print(f"   Delay: {args.delay}s between requests")
         return
 
     # Confirm before running
-    estimates = health.estimate_completion_time(len(company_ids))
-    _confirm_run(len(company_ids), estimates)
+    _confirm_run(len(company_ids))
 
     try:
         pipeline.run(company_ids=company_ids)
@@ -189,20 +176,19 @@ def main():
         print("   -> Dữ liệu đã xử lý được bảo toàn trong cơ sở dữ liệu.")
         print("   -> Bạn có thể chạy lại với --resume sau khi khắc phục sự cố.")
 
-    _print_final_summary(pipeline, health, args)
+    _print_final_summary(pipeline, args)
 
 
-def _confirm_run(num_companies: int, estimates: dict):
+def _confirm_run(num_companies: int):
     """Ask user for confirmation before running the pipeline."""
-    print(f"\n🔔 Sẽ xử lý {num_companies} công ty, ước tính ~{estimates['estimated_credits_needed']} credits.")
-    print(f"   Thời gian ước tính: ~{estimates['estimated_hours']:.1f} giờ")
+    print(f"\n🔔 Sẽ xử lý {num_companies} công ty.")
     user_input = input("   Tiếp tục? (y/n): ").strip().lower()
     if user_input != 'y':
         print("❌ Cancelled.")
         sys.exit(0)
 
 
-def _print_final_summary(pipeline, health, args):
+def _print_final_summary(pipeline, args):
     """Print final summary after pipeline execution."""
     print("\n" + "=" * 60)
     print("  📊 KẾT QUẢ CHẠY BATCH")
@@ -224,10 +210,6 @@ def _print_final_summary(pipeline, health, args):
     
     print(f"\n  📄 Report: {report_path}")
     print(f"  📄 Log: {log_path}")
-
-    # Show updated dashboard
-    print()
-    health.print_dashboard()
 
 
 if __name__ == "__main__":

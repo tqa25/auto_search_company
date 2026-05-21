@@ -228,6 +228,7 @@ class Pipeline:
                         # ====== BƯỚC 1: GEMINI QUICK SEARCH (no early-stop) ======
                         gemini_result = None
                         quick = None
+                        filter_already_completed = False
                         if self._should_do_step(next_step, 'gemini_quick') and not replay_mode:
                             print("  -> Bước 1: Gemini Quick Search...")
                             self.db.update_company(company_id, status='gemini_quick')
@@ -251,7 +252,6 @@ class Pipeline:
 
                         # ====== BƯỚC 2: DEEP SEARCH (Firecrawl + Filter + Extract) ======
                         if self._should_do_step(next_step, 'deep_search'):
-                            filter_already_completed = False
                             if not replay_mode:
                                 print("  -> Bước 2: Deep Search...")
                                         # Build smart queries from Gemini result

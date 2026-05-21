@@ -15,7 +15,7 @@ class TestAIExtractor(unittest.TestCase):
     def test_extract_from_page_handles_json_properly(self):
         mock_response = MagicMock()
         mock_response.text = '{"address": "123 Main St", "phone": "123-456", "email": "test@test.com", "website": "example.com", "fax": null, "representative": "John Doe", "confidence": 0.9}'
-        self.extractor.model.generate_content.return_value = mock_response
+        self.extractor.client.models.generate_content.return_value = mock_response
         
         self.mock_db.fetch_one.side_effect = [
             {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "test@test.com"}, # scraped_page
@@ -32,7 +32,7 @@ class TestAIExtractor(unittest.TestCase):
     def test_extract_from_page_handles_markdown_json(self):
         mock_response = MagicMock()
         mock_response.text = "```json\n{\"address\": \"123 Main\"}\n```"
-        self.extractor.model.generate_content.return_value = mock_response
+        self.extractor.client.models.generate_content.return_value = mock_response
         
         self.mock_db.fetch_one.side_effect = [
             {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "test@test.com"},
@@ -55,7 +55,7 @@ class TestAIExtractor(unittest.TestCase):
     def test_json_parse_error_saves_raw_text(self):
         mock_response = MagicMock()
         mock_response.text = "Sorry I can't do this"
-        self.extractor.model.generate_content.return_value = mock_response
+        self.extractor.client.models.generate_content.return_value = mock_response
         
         self.mock_db.fetch_one.side_effect = [
             {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "test@test.com"},

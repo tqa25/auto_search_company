@@ -24,7 +24,6 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJECT_ROOT)
 
 from src.database import DatabaseManager
-from src.health_monitor import HealthMonitor
 from src.logger import PipelineLogger
 from src.config import Config
 from src.pipeline import Pipeline
