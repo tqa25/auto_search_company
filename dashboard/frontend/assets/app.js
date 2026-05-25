@@ -38,20 +38,24 @@ function setConnection(state, label) {
   el.innerHTML = `<span></span>${label}`;
 }
 
-async function updateQuota() {
-  try {
-    const data = await api("/api/spa/status");
-    const q = data.quota || {};
-    const geminiLimit = q.gemini_limit || 1;
-    const firecrawlTotal = q.firecrawl_total || 1;
-    document.getElementById("quota-gemini").textContent = `${q.gemini_used || 0}/${geminiLimit}`;
-    document.getElementById("quota-firecrawl").textContent = `${q.firecrawl_used || 0}/${firecrawlTotal}`;
-    document.getElementById("quota-gemini-fill").style.width = `${Math.min(100, ((q.gemini_used || 0) / geminiLimit) * 100)}%`;
-    document.getElementById("quota-firecrawl-fill").style.width = `${Math.min(100, ((q.firecrawl_used || 0) / firecrawlTotal) * 100)}%`;
-  } catch {
-    setConnection("offline", "Offline");
-  }
-}
+let _quotaTimer = null;
+const updateQuota = () => {
+  clearTimeout(_quotaTimer);
+  _quotaTimer = setTimeout(async () => {
+    try {
+      const data = await api("/api/spa/status");
+      const q = data.quota || {};
+      const geminiLimit = q.gemini_limit || 1;
+      const firecrawlTotal = q.firecrawl_total || 1;
+      document.getElementById("quota-gemini").textContent = `${q.gemini_used || 0}/${geminiLimit}`;
+      document.getElementById("quota-firecrawl").textContent = `${q.firecrawl_used || 0}/${firecrawlTotal}`;
+      document.getElementById("quota-gemini-fill").style.width = `${Math.min(100, ((q.gemini_used || 0) / geminiLimit) * 100)}%`;
+      document.getElementById("quota-firecrawl-fill").style.width = `${Math.min(100, ((q.firecrawl_used || 0) / firecrawlTotal) * 100)}%`;
+    } catch {
+      setConnection("offline", "Offline");
+    }
+  }, 1000);
+};
 
 async function renderDashboard() {
   setRouteActive("dashboard");
@@ -114,6 +118,7 @@ async function renderCompanies(patch = {}) {
     <div class="page-title">
       <div><h1>Companies</h1><div class="subtitle">${p.total || 0} companies, server-side pagination</div></div>
       <div class="toolbar">
+        <button class="btn success" id="exportExcelBtn"><i data-lucide="file-spreadsheet"></i>Export Excel</button>
         <button class="btn" id="exportLogs"><i data-lucide="download"></i>Export Logs</button>
         <button class="btn primary" id="importBtn"><i data-lucide="upload"></i>Import</button>
         <input type="file" id="importInput" accept=".csv,.txt" hidden>
@@ -126,6 +131,7 @@ async function renderCompanies(patch = {}) {
       ${chip("Failed", "failed", counts.failed)}
       <span class="spacer"></span>
       <button class="btn primary" id="runSelected" ${companiesState.selected.size ? "" : "style='display:none'"}><i data-lucide="play"></i>Run Selected</button>
+      <button class="btn danger" id="deleteSelected" ${companiesState.selected.size ? "" : "style='display:none'"}><i data-lucide="trash-2"></i>Delete Selected</button>
       <input class="input" id="search" value="${escapeHtml(companiesState.search)}" placeholder="Search companies...">
     </div>
     <div class="table-wrap fixed">
@@ -160,7 +166,7 @@ function companyRow(c) {
       <td class="mono">${c.checkpoint || "pipeline_init"}</td>
       <td>${c.has_phone ? '<span class="success">phone</span>' : '<span class="muted">phone</span>'} · ${c.has_email ? '<span class="success">email</span>' : '<span class="muted">email</span>'}</td>
       <td class="muted">${c.updated_at || ""}</td>
-      <td><button class="btn ghost run-one" data-id="${c.id}" title="Run"><i data-lucide="play"></i></button><button class="btn ghost" onclick="location.hash='#/company/${c.id}'" title="Open"><i data-lucide="eye"></i></button></td>
+      <td><button class="btn ghost run-one" data-id="${c.id}" title="Run"><i data-lucide="play"></i></button><button class="btn ghost" onclick="location.hash='#/company/${c.id}'" title="Open"><i data-lucide="eye"></i></button><button class="btn ghost danger-text delete-one" data-id="${c.id}" title="Delete"><i data-lucide="trash-2"></i></button></td>
     </tr>
   `;
 }
@@ -180,7 +186,10 @@ function bindCompanyEvents(companies, pagination) {
   });
   const updateSelectedUI = () => {
     const runBtn = document.getElementById("runSelected");
-    if (runBtn) runBtn.style.display = companiesState.selected.size ? "" : "none";
+    const delBtn = document.getElementById("deleteSelected");
+    const show = companiesState.selected.size ? "" : "none";
+    if (runBtn) runBtn.style.display = show;
+    if (delBtn) delBtn.style.display = show;
   };
   document.getElementById("selectPage").addEventListener("change", (event) => {
     const isChecked = event.target.checked;
@@ -200,9 +209,12 @@ function bindCompanyEvents(companies, pagination) {
     updateSelectedUI();
   }));
   document.querySelectorAll(".run-one").forEach((button) => button.addEventListener("click", () => runCompanies([Number(button.dataset.id)])));
+  document.querySelectorAll(".delete-one").forEach((button) => button.addEventListener("click", () => deleteCompanies([Number(button.dataset.id)])));
   document.getElementById("runSelected").addEventListener("click", () => runCompanies([...companiesState.selected]));
+  document.getElementById("deleteSelected").addEventListener("click", () => deleteCompanies([...companiesState.selected]));
   document.getElementById("prevPage").addEventListener("click", () => renderCompanies({ page: Math.max(1, companiesState.page - 1) }));
   document.getElementById("nextPage").addEventListener("click", () => renderCompanies({ page: Math.min(pagination.total_pages || 1, companiesState.page + 1) }));
+  document.getElementById("exportExcelBtn").addEventListener("click", () => window.open("/api/export/final-excel", "_blank"));
   document.getElementById("exportLogs").addEventListener("click", () => window.open("/api/export/logs?format=csv", "_blank"));
   document.getElementById("importBtn").addEventListener("click", () => document.getElementById("importInput").click());
   document.getElementById("importInput").addEventListener("change", (event) => importCompanies(event.target.files[0]));
@@ -218,6 +230,26 @@ async function runCompanies(ids) {
   companiesState.selected.clear();
   alert(`Started: ${result.started.length}. Skipped: ${result.skipped.length}.`);
   location.hash = "#/monitor";
+}
+
+async function deleteCompanies(ids) {
+  if (!ids.length) return;
+  const msg = ids.length === 1
+    ? `Bạn có chắc chắn muốn xóa công ty #${ids[0]}?\nToàn bộ dữ liệu liên quan sẽ bị xóa vĩnh viễn.`
+    : `Bạn có chắc chắn muốn xóa ${ids.length} công ty?\nToàn bộ dữ liệu liên quan sẽ bị xóa vĩnh viễn.`;
+  if (!confirm(msg)) return;
+  try {
+    const result = await api("/api/spa/companies/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ company_ids: ids }),
+    });
+    companiesState.selected.clear();
+    alert(`Đã xóa ${result.deleted} công ty thành công.`);
+    renderCompanies();
+  } catch (err) {
+    alert("Lỗi khi xóa: " + err.message);
+  }
 }
 
 async function importCompanies(file) {

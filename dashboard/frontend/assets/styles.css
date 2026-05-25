@@ -142,6 +142,7 @@ button, input, select { font: inherit; }
 .btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; font-weight: 600; }
 .btn:hover, .icon-button:hover { border-color: var(--accent); color: var(--accent); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+.btn.success { background: var(--success); border-color: var(--success); color: white; }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: white; }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); padding: 6px 8px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }

@@ -315,6 +315,126 @@ class PipelineLogger:
 
         wb.save(output_path)
 
+    def export_data_to_csv(self, output_path: str):
+        """Export combined company data to CSV, with one row per URL according to ADR 0001."""
+        companies = self.db.get_all_companies()
+        
+        fieldnames = [
+            # Business Columns
+            "Timestamp", "Company Name", "Tax Code", "URL", "Data Scope", "Source Type", 
+            "Phone", "Email", "Address", "Website", "Representative",
+            "Confidence Score", "Relevance Score", "Score Reason", "Status/Note",
+            # Technical Columns
+            "search_query", "result_rank", "search_snippet",
+            "credits_used", "duration_seconds",
+            "input_tokens", "output_tokens", "total_tokens",
+            "raw_ai_response", "error_message", "fallback_reason"
+        ]
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for company in companies:
+                cid = company['id']
+                c_name = company['original_name']
+                t_code = company.get('tax_code', '')
+                
+                # 1. Process Gemini Quick Results
+                gemini_results = self.db.get_gemini_quick_results_for_company(cid)
+                for gr in gemini_results:
+                    sources = []
+                    if gr.get('grounding_sources_json'):
+                        try:
+                            sources = json.loads(gr['grounding_sources_json'])
+                        except json.JSONDecodeError:
+                            pass
+                    elif gr.get('sources_json'):
+                        try:
+                            sources = json.loads(gr['sources_json'])
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    if not sources:
+                        sources = [""] # Create an empty row if no source
+                        
+                    for src_url in sources:
+                        # Extract URL from dict if it's structured, else assume string
+                        url_val = src_url
+                        if isinstance(src_url, dict) and 'url' in src_url:
+                            url_val = src_url['url']
+                            
+                        writer.writerow({
+                            "Timestamp": gr.get('created_at', ''),
+                            "Company Name": c_name,
+                            "Tax Code": t_code,
+                            "URL": url_val,
+                            "Data Scope": "Company-Level",
+                            "Source Type": "Gemini Quick Search",
+                            "Phone": gr.get('phone', ''),
+                            "Email": gr.get('email', ''),
+                            "Address": gr.get('address', ''),
+                            "Website": gr.get('website', ''),
+                            "Representative": gr.get('representative', ''),
+                            "Confidence Score": gr.get('confidence', ''),
+                            "Relevance Score": "",
+                            "Score Reason": "",
+                            "Status/Note": "Thành công" if gr.get('is_sufficient') else "Không đủ thông tin",
+                            # Tech
+                            "credits_used": 0, 
+                            "duration_seconds": gr.get('duration_seconds', ''),
+                            "input_tokens": gr.get('input_tokens', ''),
+                            "output_tokens": gr.get('output_tokens', ''),
+                            "total_tokens": gr.get('total_tokens', ''),
+                            "raw_ai_response": "", 
+                            "error_message": "",
+                            "fallback_reason": gr.get('fallback_reason', '')
+                        })
+
+                # 2. Process Deep Scrape Results
+                scrape_data = self.db.get_deep_scrape_export_data_for_company(cid)
+                for row in scrape_data:
+                    status_note = ""
+                    if row.get('scrape_status') == 'success':
+                        status_note = "Thành công"
+                    elif row.get('should_scrape') == 0:
+                        status_note = "Bỏ qua (Lọc)"
+                    elif row.get('scrape_status') == 'failed':
+                        status_note = "Lỗi trang"
+                    else:
+                        status_note = "Chưa scrape"
+
+                    writer.writerow({
+                        "Timestamp": row.get('timestamp', ''),
+                        "Company Name": c_name,
+                        "Tax Code": t_code,
+                        "URL": row.get('search_url', ''),
+                        "Data Scope": "URL-Level",
+                        "Source Type": "Deep Scrape",
+                        "Phone": row.get('phone', ''),
+                        "Email": row.get('email', ''),
+                        "Address": row.get('address', ''),
+                        "Website": row.get('website', ''),
+                        "Representative": row.get('representative', ''),
+                        "Confidence Score": row.get('confidence_score', ''),
+                        "Relevance Score": row.get('relevance_score', ''),
+                        "Score Reason": row.get('filter_reason', ''),
+                        "Status/Note": status_note,
+                        # Tech
+                        "search_query": row.get('search_query', ''),
+                        "result_rank": row.get('result_rank', ''),
+                        "search_snippet": row.get('search_snippet', ''),
+                        "credits_used": (row.get('search_credits') or 0) + (row.get('scrape_credits') or 0),
+                        "duration_seconds": "",
+                        "input_tokens": "",
+                        "output_tokens": "",
+                        "total_tokens": "",
+                        "raw_ai_response": row.get('raw_ai_response', ''),
+                        "error_message": row.get('error_message', ''),
+                        "fallback_reason": ""
+                    })
+
     def get_last_processed_company_id(self) -> int:
         """Trả về company_id cuối cùng đã xử lý xong (dùng cho resume)"""
         row = self.db.fetch_one("SELECT company_id FROM pipeline_logs ORDER BY id DESC LIMIT 1")

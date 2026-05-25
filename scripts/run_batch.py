@@ -204,12 +204,22 @@ def _print_final_summary(pipeline, args):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = os.path.join("output", f"batch_report_{timestamp}.xlsx")
     log_path = os.path.join("output", f"batch_log_{timestamp}.csv")
+    final_excel_path = os.path.join("output", f"final_results_{timestamp}.xlsx")
 
     pipeline.generate_report(report_path)
     pipeline.logger.export_log_to_csv(log_path)
     
-    print(f"\n  📄 Report: {report_path}")
-    print(f"  📄 Log: {log_path}")
+    # Auto-export the new consolidated 2-Sheet report
+    try:
+        from src.excel_handler import ExcelWriter
+        writer = ExcelWriter()
+        writer.write_consolidated_report(pipeline.db, final_excel_path)
+        print(f"  📄 Consolidated Report (2-Sheets): {final_excel_path}")
+    except Exception as e:
+        print(f"  ⚠️ Warning: Could not auto-generate consolidated report: {e}")
+    
+    print(f"  📄 Report (Merged/Sources): {report_path}")
+    print(f"  📄 Log (Pipeline): {log_path}")
 
 
 if __name__ == "__main__":

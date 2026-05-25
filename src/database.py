@@ -301,6 +301,32 @@ class DatabaseManager:
         params = list(kwargs.values()) + [company_id]
         self.execute_query(query, params)
 
+    def delete_companies(self, company_ids):
+        """Delete multiple companies and all their associated data across all tables."""
+        if not company_ids: return
+        placeholders = ",".join(["?"] * len(company_ids))
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Delete in order of dependencies (child to parent)
+            cursor.execute(f"DELETE FROM extracted_contacts WHERE company_id IN ({placeholders})", company_ids)
+            cursor.execute(f"DELETE FROM scraped_pages WHERE company_id IN ({placeholders})", company_ids)
+            cursor.execute(f"DELETE FROM filtered_links WHERE company_id IN ({placeholders})", company_ids)
+            cursor.execute(f"DELETE FROM search_results WHERE company_id IN ({placeholders})", company_ids)
+            cursor.execute(f"DELETE FROM pipeline_logs WHERE company_id IN ({placeholders})", company_ids)
+            cursor.execute(f"DELETE FROM query_cache WHERE company_id IN ({placeholders})", company_ids)
+            cursor.execute(f"DELETE FROM pipeline_jobs WHERE company_id IN ({placeholders})", company_ids)
+            cursor.execute(f"DELETE FROM gemini_quick_results WHERE company_id IN ({placeholders})", company_ids)
+            cursor.execute(f"DELETE FROM companies WHERE id IN ({placeholders})", company_ids)
+            
+            conn.commit()
+            return cursor.rowcount  # Number of companies actually deleted
+        except Exception as e:
+            conn.rollback()
+            raise e
+
     # --- Search Results ---
     def insert_search_result(self, company_id, search_query, search_type, result_rank, url, title, snippet, credits_used=0):
         """Insert a search result."""
@@ -418,3 +444,40 @@ class DatabaseManager:
             "SELECT * FROM filtered_links WHERE company_id = ? AND should_scrape = 1 ORDER BY relevance_score DESC LIMIT ?",
             (company_id, top_n)
         )
+
+    # --- Export Data Helpers ---
+    def get_gemini_quick_results_for_company(self, company_id: int):
+        """Get Gemini Quick Search results for a company."""
+        return self.fetch_all("SELECT * FROM gemini_quick_results WHERE company_id = ?", (company_id,))
+
+    def get_deep_scrape_export_data_for_company(self, company_id: int):
+        """Get joined deep scrape data for CSV export for a company."""
+        query = """
+            SELECT 
+                sr.created_at AS timestamp,
+                sr.url AS search_url,
+                sr.search_query,
+                sr.result_rank,
+                sr.snippet AS search_snippet,
+                sr.credits_used AS search_credits,
+                fl.should_scrape,
+                fl.relevance_score,
+                fl.reason AS filter_reason,
+                sp.scrape_status,
+                sp.credits_used AS scrape_credits,
+                sp.error_message,
+                ec.address,
+                ec.phone,
+                ec.email,
+                ec.website,
+                ec.fax,
+                ec.representative,
+                ec.confidence_score,
+                ec.raw_ai_response
+            FROM search_results sr
+            LEFT JOIN filtered_links fl ON sr.id = fl.search_result_id
+            LEFT JOIN scraped_pages sp ON fl.id = sp.filtered_link_id
+            LEFT JOIN extracted_contacts ec ON sp.id = ec.scraped_page_id
+            WHERE sr.company_id = ?
+        """
+        return self.fetch_all(query, (company_id,))

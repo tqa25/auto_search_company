@@ -783,6 +783,22 @@ def api_spa_gemini_models():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ---------------------------------------------------------------------------
+# API: Delete Companies
+# ---------------------------------------------------------------------------
+@app.post("/api/spa/companies/delete")
+async def api_spa_companies_delete(req: Request):
+    data = await req.json()
+    company_ids = data.get("company_ids", [])
+    if not company_ids:
+        return JSONResponse({"error": "No company_ids provided"}, status_code=400)
+    db = _db()
+    try:
+        db.delete_companies(company_ids)
+        return JSONResponse({"status": "ok", "deleted": len(company_ids)})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# ---------------------------------------------------------------------------
 # API: Companies mapping
 # ---------------------------------------------------------------------------
 @app.get("/api/companies/names")
@@ -1010,19 +1026,53 @@ def api_export_logs(format: str = "jsonl", company_id: int = None):
         )
 
     elif format == "csv":
-        query = "SELECT * FROM pipeline_logs"
+        query = """
+            SELECT 
+                pl.id, 
+                pl.company_id, 
+                c.original_name AS company_name,
+                pl.step, 
+                pl.status, 
+                pl.started_at, 
+                pl.finished_at, 
+                pl.duration_seconds, 
+                pl.source_url, 
+                pl.source_name, 
+                pl.credits_used, 
+                pl.error_message, 
+                pl.data_saved,
+                COALESCE(ec.phone, gqr.phone) AS phone,
+                COALESCE(ec.email, gqr.email) AS email,
+                COALESCE(ec.address, gqr.address) AS address,
+                COALESCE(ec.website, gqr.website) AS website,
+                COALESCE(ec.representative, gqr.representative) AS representative,
+                ROUND(fl.relevance_score, 1) AS relevance_score,
+                fl.reason AS score_reason,
+                sr.search_query,
+                sr.snippet AS search_snippet,
+                pl.metadata_json
+            FROM pipeline_logs pl
+            LEFT JOIN companies c ON pl.company_id = c.id
+            LEFT JOIN scraped_pages sp ON sp.url = pl.source_url AND sp.company_id = pl.company_id
+            LEFT JOIN extracted_contacts ec ON ec.scraped_page_id = sp.id
+            LEFT JOIN filtered_links fl ON fl.url = pl.source_url AND fl.company_id = pl.company_id
+            LEFT JOIN search_results sr ON sr.id = fl.search_result_id
+            LEFT JOIN gemini_quick_results gqr ON gqr.company_id = pl.company_id AND pl.step LIKE '%gemini_quick%'
+        """
         params = ()
         if company_id:
-            query += " WHERE company_id = ?"
+            query += " WHERE pl.company_id = ?"
             params = (company_id,)
-        query += " ORDER BY started_at ASC"
+        query += " ORDER BY pl.started_at ASC"
 
         rows = db.fetch_all(query, params)
         if not rows:
             return JSONResponse({"error": "No logs found"}, status_code=404)
 
+        fieldnames = list(rows[0].keys())
+
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -1098,6 +1148,36 @@ def api_export_logs(format: str = "jsonl", company_id: int = None):
         )
 
     return JSONResponse({"error": "Invalid format. Use: jsonl, csv, markdown"}, status_code=400)
+
+
+@app.get("/api/export/final-excel")
+def api_export_final_excel():
+    from src.excel_handler import ExcelWriter
+    from fastapi.responses import FileResponse
+    import tempfile
+    import logging
+    
+    local_logger = logging.getLogger("dashboard")
+    
+    db = _db()
+    today = _today_str()
+    
+    # Create a temporary file path
+    temp_dir = tempfile.gettempdir()
+    output_path = os.path.join(temp_dir, f"final_results_{today}.xlsx")
+    
+    try:
+        writer = ExcelWriter()
+        writer.write_consolidated_report(db, output_path)
+        
+        return FileResponse(
+            path=output_path,
+            filename=f"final_results_{today}.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        local_logger.error(f"Failed to export final excel: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to export Excel report: {str(e)}")
 
 
 # ---------------------------------------------------------------------------
