@@ -28,9 +28,8 @@ def main():
     db.init_db()
     
     target_companies = [
-        "CÔNG TY CỔ PHẦN ĐẦU TƯ & QUẢN LÝ TÀI SẢN Á CHÂU",
-        "CÔNG TY TNHH GIAO NHẬN ĐẠI ĐỒNG",
-        "CÔNG TY TNHH THƯƠNG PHẨM ATLANTIC VIỆT NAM"
+        "CÔNG TY TNHH GLOBOSVN",
+        "SOGO DESIGN & KHANG CUONG"
     ]
     
     company_ids = []
@@ -109,13 +108,18 @@ def main():
                 status_parts.append(f"⏭️ {step}")
         pipeline_status = " | ".join(status_parts)
         
-        core_name = ""
-        core_name_vi = ""
+        sources_list = []
         if quick_res:
             core_name = quick_res[0].get('core_name', '')
             core_name_vi = quick_res[0].get('core_name_vi', '')
+            try:
+                sources_str = quick_res[0].get('sources_json', '[]')
+                sources_list = json.loads(sources_str) if sources_str else []
+            except Exception:
+                sources_list = []
             
         quick_duration = quick_logs[0]['duration_seconds'] if quick_logs and quick_logs[0]['duration_seconds'] else 0
+        sources_text = ", ".join(sources_list) if sources_list else "None"
             
         report_data.append({
             "Company": company_name,
@@ -125,7 +129,7 @@ def main():
             "Input": f"Full Name: {company_name}",
             "Output": f"Core: {core_name} | Core VI: {core_name_vi}",
             "Score / Decision": quick_logs[0]['status'] if quick_logs else "N/A",
-            "Details": quick_logs[0]['metadata_json'] if quick_logs else "",
+            "Details": f"Sources: {sources_text} | metadata: {quick_logs[0]['metadata_json'] if quick_logs else ''}",
             "Pipeline Status": pipeline_status
         })
         

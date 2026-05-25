@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipeline Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body data-theme="dark">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon" data-lucide="zap"></div>
+      <div>
+        <div class="brand-title">Pipeline Control</div>
+        <div class="brand-subtitle">Live dashboard</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="#/dashboard" data-route="dashboard" class="nav-item active"><i data-lucide="layout-dashboard"></i>Overview</a>
+      <a href="#/companies" data-route="companies" class="nav-item"><i data-lucide="building-2"></i>Companies</a>
+      <a href="#/monitor" data-route="monitor" class="nav-item"><i data-lucide="activity"></i>Monitor Detail</a>
+      <a href="#/logs" data-route="logs" class="nav-item"><i data-lucide="terminal"></i>Logs</a>
+      <a href="#/settings" data-route="settings" class="nav-item"><i data-lucide="settings"></i>Settings</a>
+    </nav>
+    <div class="quota">
+      <div class="quota-row"><span>Gemini</span><span id="quota-gemini">0/0</span></div>
+      <div class="meter"><div id="quota-gemini-fill"></div></div>
+      <div class="quota-row"><span>Firecrawl</span><span id="quota-firecrawl">0/0</span></div>
+      <div class="meter"><div id="quota-firecrawl-fill"></div></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <button class="icon-button mobile-only" id="mobileMenuToggle" onclick="toggleMobileMenu()" title="Menu"><i data-lucide="menu"></i></button>
+        <div id="connectionState" class="connection offline"><span></span>Offline</div>
+      </div>
+      <button class="icon-button" id="themeToggle" title="Toggle theme"><i data-lucide="moon"></i></button>
+    </header>
+    <section id="app" class="page"></section>
+  </main>
+
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>

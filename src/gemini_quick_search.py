@@ -170,21 +170,33 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
                     from src.errors import CriticalError
                     raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
                     
-                if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
-                    logger.warning(f"[{company_id}] Gemini API experiencing high demand (503/Unavailable). Stop grounding fallback, raise RetryableError.")
-                    from src.errors import RetryableError
-                    raise RetryableError("Gemini API 503 unavailable during grounding search.")
-                    
-                logger.warning(f"[{company_id}] Gemini grounding failed ({e}). Retrying without grounding...")
-                # Fallback without grounding
-                response = self.client.models.generate_content(
-                    model=self.config.AI_GROUNDING_MODEL,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.0,
-                        max_output_tokens=2048
+                elif "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
+                    logger.warning(f"[{company_id}] Gemini API 503/Unavailable. Attempting fallback to models/gemini-3.5-flash...")
+                    try:
+                        response = self.client.models.generate_content(
+                            model="models/gemini-3.5-flash",
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                tools=[{"google_search": {}}],
+                                temperature=0.0,
+                                max_output_tokens=2048
+                            )
+                        )
+                    except Exception as fallback_e:
+                        logger.warning(f"[{company_id}] Fallback to 3.5-flash also failed: {fallback_e}")
+                        from src.errors import RetryableError
+                        raise RetryableError("Gemini API 503 unavailable and fallback failed.")
+                else:
+                    logger.warning(f"[{company_id}] Gemini grounding failed ({e}). Retrying without grounding...")
+                    # Fallback without grounding
+                    response = self.client.models.generate_content(
+                        model=self.config.AI_GROUNDING_MODEL,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.0,
+                            max_output_tokens=2048
+                        )
                     )
-                )
 
             duration = time.time() - start_time
             finished_at = datetime.now(VN_TZ)

@@ -214,9 +214,7 @@ class Config:
         self.SCRAPE_LINKEDIN_ENABLED: bool = _parse_bool(
             os.getenv("SCRAPE_LINKEDIN_ENABLED"), default=False
         )
-        self.SCRAPE_MASOTHUE_ENABLED: bool = _parse_bool(
-            os.getenv("SCRAPE_MASOTHUE_ENABLED"), default=False
-        )
+
 
     def __repr__(self) -> str:
         return (

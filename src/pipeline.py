@@ -95,17 +95,25 @@ class Pipeline:
     def _install_signal_handlers(self):
         """Install signal handlers for SIGINT and SIGTERM to enable graceful shutdown."""
         self._shutdown_requested = False
-        self._original_sigint_handler = signal.getsignal(signal.SIGINT)
-        self._original_sigterm_handler = signal.getsignal(signal.SIGTERM)
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        try:
+            self._original_sigint_handler = signal.getsignal(signal.SIGINT)
+            self._original_sigterm_handler = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        except ValueError:
+            self._original_sigint_handler = None
+            self._original_sigterm_handler = None
+            print("⚠️ Running in background thread. Skipping graceful signal handling.")
 
     def _restore_signal_handlers(self):
         """Restore original signal handlers after pipeline run completes."""
-        if self._original_sigint_handler is not None:
-            signal.signal(signal.SIGINT, self._original_sigint_handler)
-        if self._original_sigterm_handler is not None:
-            signal.signal(signal.SIGTERM, self._original_sigterm_handler)
+        try:
+            if self._original_sigint_handler is not None:
+                signal.signal(signal.SIGINT, self._original_sigint_handler)
+            if self._original_sigterm_handler is not None:
+                signal.signal(signal.SIGTERM, self._original_sigterm_handler)
+        except ValueError:
+            pass
 
     def _signal_handler(self, signum, frame):
         """Handle SIGINT/SIGTERM by setting a flag to stop after current company."""

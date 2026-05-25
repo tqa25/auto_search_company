@@ -232,7 +232,7 @@ try:
     test_urls = [
         ('https://thuvienphapluat.vn/doanh-nghiep/abc', 'ABC Corp', 'Legal domain'),
         ('https://vietnamworks.com/cong-ty/abc/lien-he', 'ABC Corp', 'Job + contact keyword'),
-        ('https://masothue.com/abc', 'ABC Corp', 'Blacklisted domain'),
+        ('https://masothue.com/abc', 'ABC Corp', 'Legal domain'),
         ('https://example.com', 'ABC Corp', 'Official website guess'),
         ('https://facebook.com/abc-corp', 'ABC Corp', 'Social media'),
     ]
@@ -555,7 +555,7 @@ Output Directory: {OUTPUT_DIR}
 ✅ BƯỚC 4: Filter Module Scoring
    - Domain-based scoring working (40/30/20/10)
    - Keyword bonuses working (+10/+10/+5)
-   - Blacklist domains blocked (masothue.com, infocom.vn, etc.)
+   - Blacklist domains blocked (infocom.vn, etc.)
    - Early-stop detection implemented
 
 ✅ BƯỚC 5: Search Module 2-Tier

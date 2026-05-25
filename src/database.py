@@ -225,6 +225,28 @@ class DatabaseManager:
             )
         """)
 
+        # 11. pipeline_jobs — Realtime dashboard monitor state
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_jobs (
+                company_id INTEGER PRIMARY KEY REFERENCES companies(id),
+                company_name TEXT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                current_step TEXT,
+                checkpoint TEXT,
+                progress INTEGER DEFAULT 0,
+                started_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                finished_at TIMESTAMP,
+                error_message TEXT,
+                removed_from_monitor BOOLEAN DEFAULT 0
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pipeline_jobs_status_updated
+            ON pipeline_jobs(status, updated_at)
+        """)
+
         conn.commit()
 
         # Run pending schema migrations
@@ -396,4 +418,3 @@ class DatabaseManager:
             "SELECT * FROM filtered_links WHERE company_id = ? AND should_scrape = 1 ORDER BY relevance_score DESC LIMIT ?",
             (company_id, top_n)
         )
-

@@ -235,12 +235,15 @@ class AIExtractor:
         
         attempt = 0
         max_retries = 3
+        current_model = self.config.AI_EXTRACTOR_MODEL
+        fallback_used = False
+
         while attempt < max_retries:
             try:
-                self.logger.logger.info(f"Calling Gemini API (gemini-2.5-flash-lite) for page ID {scraped_page_id}...")
+                self.logger.logger.info(f"Calling Gemini API ({current_model}) for page ID {scraped_page_id}...")
                 
                 response = self.client.models.generate_content(
-                    model="models/gemini-2.5-flash-lite",
+                    model=current_model,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.1,
@@ -356,9 +359,15 @@ class AIExtractor:
                         self.logger.logger.warning(f"Gemini API experiencing high demand (503/Unavailable). Retrying in 60s... (Attempt {attempt}/{max_retries})")
                         time.sleep(60)
                         continue
+                    elif not fallback_used:
+                        self.logger.logger.warning("Gemini API 503 retries exhausted. Attempting fallback to models/gemini-3.5-flash...")
+                        fallback_used = True
+                        current_model = "models/gemini-3.5-flash"
+                        attempt = 0
+                        continue
                     else:
-                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 retries exhausted", error_category="retryable")
-                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries")
+                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 fallback failed", error_category="retryable")
+                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries and fallback")
 
                 # 3. Other unknown errors: skip this company
                 self.logger.logger.error(f"Gemini API error: {error_msg}")
@@ -403,12 +412,15 @@ class AIExtractor:
 
         attempt = 0
         max_retries = 3
+        current_model = self.config.AI_EXTRACTOR_MODEL
+        fallback_used = False
+
         while attempt < max_retries:
             try:
-                self.logger.logger.info(f"Calling Gemini API (gemini-2.5-flash-lite) for batch of {len(batch_pages)} pages...")
+                self.logger.logger.info(f"Calling Gemini API ({current_model}) for batch extraction ({len(batch_pages)} pages)...")
 
                 response = self.client.models.generate_content(
-                    model="models/gemini-2.5-flash-lite",
+                    model=current_model,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.1,
@@ -524,9 +536,15 @@ class AIExtractor:
                         self.logger.logger.warning(f"Gemini API experiencing high demand (503/Unavailable). Retrying in 60s... (Attempt {attempt}/{max_retries})")
                         time.sleep(60)
                         continue
+                    elif not fallback_used:
+                        self.logger.logger.warning("Gemini API 503 retries exhausted. Attempting fallback to models/gemini-3.5-flash...")
+                        fallback_used = True
+                        current_model = "models/gemini-3.5-flash"
+                        attempt = 0
+                        continue
                     else:
-                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 retries exhausted", error_category="retryable")
-                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries")
+                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 fallback failed", error_category="retryable")
+                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries and fallback")
 
                 # 3. Other unknown errors: skip this company
                 self.logger.logger.error(f"Gemini API error: {error_msg}")

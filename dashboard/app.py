@@ -1,6 +1,6 @@
 """
 Pipeline Dashboard v2 — Pipeline Control Center
-FastAPI application with Jinja2 templates, WebSocket, and full API.
+FastAPI application serving the SPA dashboard and JSON APIs.
 """
 
 import os
@@ -16,7 +16,6 @@ from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from dotenv import set_key, load_dotenv
 
 # Ensure project root on sys.path
@@ -26,7 +25,6 @@ sys.path.insert(0, _PROJECT_ROOT)
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
 from src.config import Config
-from src.pipeline import Pipeline
 
 load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
 
@@ -39,6 +37,10 @@ app = FastAPI(title="Pipeline Control Center")
 # ---------------------------------------------------------------------------
 _pipeline_lock = threading.Lock()
 _pipeline_running = False
+_active_pipeline = None
+
+from dashboard.reparse_api import reparse_router
+app.include_router(reparse_router)
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -58,11 +60,12 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 # ---------------------------------------------------------------------------
-# Static files & Templates
+# SPA shell
 # ---------------------------------------------------------------------------
 _DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
-app.mount("/static", StaticFiles(directory=os.path.join(_DASHBOARD_DIR, "static")), name="static")
-templates = Jinja2Templates(directory=os.path.join(_DASHBOARD_DIR, "templates"))
+FRONTEND_DIR = os.path.join(_DASHBOARD_DIR, "frontend")
+SPA_PATH = os.path.join(FRONTEND_DIR, "index.html")
+app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")), name="assets")
 
 # ---------------------------------------------------------------------------
 # Paths & Helpers
@@ -70,6 +73,18 @@ templates = Jinja2Templates(directory=os.path.join(_DASHBOARD_DIR, "templates"))
 DB_PATH = os.path.join(_PROJECT_ROOT, os.getenv("DB_PATH", "data/company_data.db"))
 DOTENV_PATH = os.path.join(_PROJECT_ROOT, ".env")
 LOG_DIR = os.path.join(_PROJECT_ROOT, "output", "logs")
+_monitor_removed_ids: set[int] = set()
+_monitor_stopped_ids: set[int] = set()
+monitor_clients: list[WebSocket] = []
+_monitor_loop: asyncio.AbstractEventLoop | None = None
+
+
+DatabaseManager(DB_PATH).init_db()
+
+
+def _spa_response() -> HTMLResponse:
+    with open(SPA_PATH, "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
 
 
 def _db() -> DatabaseManager:
@@ -94,246 +109,208 @@ def _today_str():
     return datetime.now(VN_TZ).strftime("%Y-%m-%d")
 
 
+def _now_iso():
+    return datetime.now(VN_TZ).isoformat(timespec="seconds")
+
+
+def _job_from_status(status: str) -> tuple[str, str, int]:
+    return _STEP_BY_STATUS.get(status or "pending", ("Waiting", status or "pending", 0))
+
+
+def _upsert_job(db: DatabaseManager, company_id: int, status: str, current_step: str = None,
+                checkpoint: str = None, progress: int = None, error_message: str = None,
+                removed_from_monitor: int = 0) -> dict | None:
+    company = db.get_company(company_id)
+    if not company:
+        return None
+
+    inferred_step, inferred_checkpoint, inferred_progress = _job_from_status(status)
+    current_step = current_step or inferred_step
+    checkpoint = checkpoint or inferred_checkpoint
+    progress = inferred_progress if progress is None else progress
+    now = _now_iso()
+    finished_at = now if status in ("done", "failed", "stopped", "permanently_failed") else None
+
+    db.execute_query(
+        """
+        INSERT INTO pipeline_jobs (
+            company_id, company_name, status, current_step, checkpoint, progress,
+            started_at, updated_at, finished_at, error_message, removed_from_monitor
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET
+            company_name=excluded.company_name,
+            status=excluded.status,
+            current_step=excluded.current_step,
+            checkpoint=excluded.checkpoint,
+            progress=excluded.progress,
+            updated_at=excluded.updated_at,
+            finished_at=excluded.finished_at,
+            error_message=excluded.error_message,
+            removed_from_monitor=excluded.removed_from_monitor
+        """,
+        (
+            company_id, company["original_name"], status, current_step, checkpoint,
+            progress, now, now, finished_at, error_message, removed_from_monitor,
+        ),
+    )
+    return _get_job(db, company_id)
+
+
+def _get_job(db: DatabaseManager, company_id: int) -> dict | None:
+    return db.fetch_one(
+        """
+        SELECT company_id as id, company_name as name, status, current_step as step,
+               checkpoint, progress, started_at as started, updated_at, finished_at,
+               error_message, removed_from_monitor
+        FROM pipeline_jobs
+        WHERE company_id = ?
+        """,
+        (company_id,),
+    )
+
+
+def _monitor_counts(jobs: list[dict]) -> dict:
+    return {
+        "running": sum(1 for j in jobs if j["status"] in _RUNNING_STATUSES),
+        "queued": sum(1 for j in jobs if j["status"] == "queued"),
+        "failed": sum(1 for j in jobs if j["status"] == "failed"),
+        "stopped": sum(1 for j in jobs if j["status"] == "stopped"),
+    }
+
+
+def _monitor_snapshot(db: DatabaseManager) -> dict:
+    rows = db.fetch_all(
+        """
+        SELECT company_id as id, company_name as name, status, current_step as step,
+               checkpoint, progress, started_at as started, updated_at, finished_at,
+               error_message
+        FROM pipeline_jobs
+        WHERE removed_from_monitor = 0
+          AND status IN ('queued','pending','gemini_quick','searching','scraping','extracting','failed','stopped')
+        ORDER BY updated_at DESC, company_id
+        LIMIT 500
+        """
+    )
+    return {"jobs": rows, "counts": _monitor_counts(rows)}
+
+
+_broadcast_lock: asyncio.Lock | None = None
+
+async def _broadcast_monitor(payload: dict):
+    global _broadcast_lock
+    if _broadcast_lock is None:
+        _broadcast_lock = asyncio.Lock()
+        
+    dead = []
+    text = json.dumps(payload, ensure_ascii=False)
+    
+    async with _broadcast_lock:
+        for ws in monitor_clients:
+            try:
+                await ws.send_text(text)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            if ws in monitor_clients:
+                monitor_clients.remove(ws)
+
+
+def _emit_monitor(payload: dict):
+    global _monitor_loop
+    if not monitor_clients:
+        return
+    try:
+        loop = _monitor_loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(_broadcast_monitor(payload), loop)
+    except RuntimeError:
+        pass
+
+
+def _emit_job_update(db: DatabaseManager, job: dict | None, event_type: str = "job_updated"):
+    if not job:
+        return
+    _emit_monitor({
+        "type": event_type,
+        "job": job,
+        "counts": _monitor_snapshot(db)["counts"],
+    })
+
+
+class MonitorDatabase(DatabaseManager):
+    """Database wrapper that emits monitor events when company status changes."""
+
+    def update_company(self, company_id, **kwargs):
+        super().update_company(company_id, **kwargs)
+        if "status" in kwargs:
+            job = _upsert_job(self, int(company_id), kwargs["status"])
+            _emit_job_update(self, job)
+
+
 # ---------------------------------------------------------------------------
 # WebSocket connections
 # ---------------------------------------------------------------------------
 ws_clients: list[WebSocket] = []
 
 
+_log_broadcast_lock: asyncio.Lock | None = None
+
 async def broadcast_log(message: str):
     """Send a message to all connected WebSocket clients."""
+    global _log_broadcast_lock
+    if _log_broadcast_lock is None:
+        _log_broadcast_lock = asyncio.Lock()
+        
     dead = []
-    for ws in ws_clients:
-        try:
-            await ws.send_text(message)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        ws_clients.remove(ws)
+    async with _log_broadcast_lock:
+        for ws in ws_clients:
+            try:
+                await ws.send_text(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            if ws in ws_clients:
+                ws_clients.remove(ws)
 
 
 # ---------------------------------------------------------------------------
-# PAGE: Monitor (/)
+# SPA Pages
 # ---------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-def monitor_page(request: Request):
-    db = _db()
-    cfg = _cfg()
-
-    # Basic stats
-    total = db.fetch_one("SELECT COUNT(*) as cnt FROM companies")["cnt"]
-    done = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE status='done'")["cnt"]
-    failed = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE status IN ('failed','permanently_failed')")["cnt"]
-    pending = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE status='pending'")["cnt"]
-    pct = round(done / max(total, 1) * 100, 1)
-
-    # Phone/email coverage
-    phone_row = db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM extracted_contacts WHERE phone IS NOT NULL AND phone != ''")
-    email_row = db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM extracted_contacts WHERE email IS NOT NULL AND email != ''")
-    phone_count = phone_row["cnt"] if phone_row else 0
-    email_count = email_row["cnt"] if email_row else 0
-
-    # Pipeline step stats
-    gemini_sufficient = db.fetch_one("SELECT COUNT(*) as cnt FROM gemini_quick_results WHERE is_sufficient=1")
-    total_processed = max(done, 1)
-    gemini_pct = round((gemini_sufficient["cnt"] if gemini_sufficient else 0) / total_processed * 100)
-    # Approximate other stats from extracted contacts source types
-    maps_count = db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM extracted_contacts WHERE source_type='google_maps'")["cnt"]
-    maps_pct = round(maps_count / total_processed * 100)
-    deep_pct = max(0, 100 - gemini_pct - maps_pct - 5)  # Approximation
-    fb_pct = 5 if done > 10 else 0
-    no_phone_row = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE status='done' AND id NOT IN (SELECT DISTINCT company_id FROM extracted_contacts WHERE phone IS NOT NULL AND phone != '')")
-    no_phone_pct = round((no_phone_row["cnt"] if no_phone_row else 0) / total_processed * 100)
-
-    # Quota
-    today = _today_str()
-    quota_row = db.fetch_one("SELECT gemini_grounding_used, serper_used FROM daily_quota WHERE date = ?", (today,))
-    gemini_used = quota_row["gemini_grounding_used"] if quota_row else 0
-    serper_used = quota_row["serper_used"] if quota_row else 0
-
-    # Token usage (from gemini_quick_results today)
-    tokens = db.fetch_one("SELECT SUM(input_tokens) as tin, SUM(output_tokens) as tout FROM gemini_quick_results WHERE created_at LIKE ?", (f"{today}%",))
-
-    return templates.TemplateResponse(request, "monitor.html", context={
-        "active_page": "monitor",
-        "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
-        "stats": {
-            "total": total, "done": done, "failed": failed, "pending": pending,
-            "pct": pct,
-            "phone_pct": round(phone_count / max(done, 1) * 100, 1),
-            "email_pct": round(email_count / max(done, 1) * 100, 1),
-        },
-        "step_stats": {
-            "gemini": gemini_pct, "maps": maps_pct, "deep": deep_pct,
-            "facebook": fb_pct, "no_phone": no_phone_pct,
-        },
-        "quota": {
-            "gemini_used": gemini_used, "serper_used": serper_used,
-            "tokens_in": tokens["tin"] or 0 if tokens else 0,
-            "tokens_out": tokens["tout"] or 0 if tokens else 0,
-        },
-    })
+def spa_home():
+    return _spa_response()
 
 
-# ---------------------------------------------------------------------------
-# PAGE: Companies (/companies)
-# ---------------------------------------------------------------------------
 @app.get("/companies", response_class=HTMLResponse)
-def companies_page(request: Request, status: str = None, page: int = 1):
-    db = _db()
-    cfg = _cfg()
-    per_page = 50
-
-    # Count
-    if status:
-        total_count = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE status = ?", (status,))["cnt"]
-    else:
-        total_count = db.fetch_one("SELECT COUNT(*) as cnt FROM companies")["cnt"]
-
-    total_pages = max(1, (total_count + per_page - 1) // per_page)
-    page = max(1, min(page, total_pages))
-    offset = (page - 1) * per_page
-
-    # Fetch
-    if status:
-        rows = db.fetch_all(
-            "SELECT id, original_name, status, updated_at FROM companies WHERE status = ? ORDER BY id LIMIT ? OFFSET ?",
-            (status, per_page, offset)
-        )
-    else:
-        rows = db.fetch_all(
-            "SELECT id, original_name, status, updated_at FROM companies ORDER BY id LIMIT ? OFFSET ?",
-            (per_page, offset)
-        )
-
-    # Check phone for each
-    phone_ids = set()
-    if rows:
-        ids = [r["id"] for r in rows]
-        placeholders = ",".join("?" * len(ids))
-        phone_rows = db.fetch_all(
-            f"SELECT DISTINCT company_id FROM extracted_contacts WHERE company_id IN ({placeholders}) AND phone IS NOT NULL AND phone != ''",
-            tuple(ids)
-        )
-        phone_ids = {r["company_id"] for r in phone_rows}
-
-    for r in rows:
-        r["has_phone"] = r["id"] in phone_ids
-
-    return templates.TemplateResponse(request, "companies.html", context={
-        "active_page": "companies",
-        "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
-        "companies": rows,
-        "status_filter": status,
-        "page": page,
-        "total_pages": total_pages,
-    })
+def spa_companies():
+    return RedirectResponse(url="/#/companies", status_code=303)
 
 
-# ---------------------------------------------------------------------------
-# PAGE: Company Detail (/companies/{id})
-# ---------------------------------------------------------------------------
 @app.get("/companies/{company_id}", response_class=HTMLResponse)
-def company_detail_page(request: Request, company_id: int):
-    db = _db()
-    cfg = _cfg()
-    company = db.get_company(company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-
-    contacts = db.fetch_all(
-        "SELECT * FROM extracted_contacts WHERE company_id = ? ORDER BY confidence_score DESC",
-        (company_id,)
-    )
-
-    logs = db.fetch_all(
-        "SELECT * FROM pipeline_logs WHERE company_id = ? ORDER BY id DESC",
-        (company_id,)
-    )
-
-    links = db.fetch_all(
-        "SELECT url, source_type, relevance_score, should_scrape, reason FROM filtered_links WHERE company_id = ? ORDER BY relevance_score DESC",
-        (company_id,)
-    )
-
-    search_results = db.fetch_all(
-        "SELECT * FROM search_results WHERE company_id = ? ORDER BY search_type, result_rank",
-        (company_id,)
-    )
-
-    scraped_pages = db.fetch_all(
-        "SELECT id, url, source_type, content_length, scrape_status, credits_used, error_message, created_at FROM scraped_pages WHERE company_id = ? ORDER BY id",
-        (company_id,)
-    )
-
-    gemini_result = db.fetch_one(
-        "SELECT * FROM gemini_quick_results WHERE company_id = ? ORDER BY id DESC LIMIT 1",
-        (company_id,)
-    )
-    gemini_grounding = []
-    if gemini_result and gemini_result.get("grounding_sources_json"):
-        import json
-        try:
-            gemini_grounding = json.loads(gemini_result["grounding_sources_json"])
-        except json.JSONDecodeError:
-            pass
-
-    return templates.TemplateResponse(request, "company_detail.html", context={
-        "active_page": "companies",
-        "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
-        "company": company,
-        "contacts": contacts,
-        "logs": logs,
-        "links": links,
-        "search_results": search_results,
-        "scraped_pages": scraped_pages,
-        "gemini_result": gemini_result,
-        "gemini_grounding": gemini_grounding,
-    })
+def spa_company_detail(company_id: int):
+    return RedirectResponse(url=f"/#/company/{company_id}", status_code=303)
 
 
-# POST rerun
+@app.get("/runner", response_class=HTMLResponse)
+def spa_runner():
+    return RedirectResponse(url="/#/runner", status_code=303)
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def spa_settings():
+    return RedirectResponse(url="/#/settings", status_code=303)
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def spa_logs():
+    return RedirectResponse(url="/#/logs", status_code=303)
+
+
 @app.post("/companies/{company_id}/rerun")
 def company_rerun(company_id: int):
     db = _db()
     db.update_company(company_id, status="pending")
     return RedirectResponse(url=f"/companies/{company_id}", status_code=303)
-
-
-# ---------------------------------------------------------------------------
-# PAGE: Runner (/runner)
-# ---------------------------------------------------------------------------
-@app.get("/runner", response_class=HTMLResponse)
-def runner_page(request: Request):
-    db = _db()
-    cfg = _cfg()
-    companies = db.fetch_all("SELECT id, original_name FROM companies ORDER BY id")
-    return templates.TemplateResponse(request, "runner.html", context={
-        "active_page": "runner",
-        "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
-        "companies": companies,
-    })
-
-
-# ---------------------------------------------------------------------------
-# PAGE: Settings (/settings)
-# ---------------------------------------------------------------------------
-@app.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, saved: str = None):
-    cfg = _cfg()
-    
-    # Mask API keys
-    for k in ["FIRECRAWL_API_KEY", "GEMINI_API_KEY", "SERPER_API_KEY"]:
-        val = getattr(cfg, k, None)
-        if val and len(val) > 6:
-            setattr(cfg, k, val[:4] + "***" + val[-2:])
-            
-    return templates.TemplateResponse(request, "settings.html", context={
-        "active_page": "settings",
-        "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
-        "cfg": cfg,
-        "saved": saved == "1",
-    })
 
 
 @app.post("/settings")
@@ -348,38 +325,6 @@ async def settings_save(request: Request):
     # Reload environment to reflect changes immediately
     load_dotenv(DOTENV_PATH, override=True)
     return RedirectResponse(url="/settings?saved=1", status_code=303)
-
-
-# ---------------------------------------------------------------------------
-# PAGE: Raw Logs (/logs)
-# ---------------------------------------------------------------------------
-@app.get("/logs", response_class=HTMLResponse)
-def logs_page(request: Request):
-    cfg = _cfg()
-    today = _today_str()
-    log_file = os.path.join(LOG_DIR, f"pipeline_{today}.jsonl")
-
-    log_lines = []
-    if os.path.exists(log_file):
-        with open(log_file, "r", encoding="utf-8") as f:
-            raw_lines = f.readlines()[-200:]
-
-        for line in reversed(raw_lines):
-            try:
-                obj = json.loads(line)
-                status = obj.get("status", "")
-                css = "log-success" if status == "success" else ("log-failed" if status in ("failed", "error") else "log-muted")
-                log_lines.append({"text": json.dumps(obj, ensure_ascii=False), "css": css})
-            except (json.JSONDecodeError, ValueError):
-                log_lines.append({"text": line.strip(), "css": "log-muted"})
-
-    return templates.TemplateResponse(request, "logs.html", context={
-        "active_page": "logs",
-        "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
-        "today": today,
-        "log_count": len(log_lines),
-        "log_lines": log_lines,
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +359,428 @@ def api_status():
         "progress_percent": round(done / max(total, 1) * 100, 1),
     })
 
+
+# ---------------------------------------------------------------------------
+# API: SPA data
+# ---------------------------------------------------------------------------
+_RUNNING_STATUSES = {"gemini_quick", "searching", "scraping", "extracting"}
+_RESUMABLE_STATUSES = {
+    "pending", "failed", "gemini_quick", "gemini_quick_done", "searching",
+    "searched", "scraping", "scraped", "ai_extract_pending", "extracting",
+    "ai_done",
+}
+_STEP_BY_STATUS = {
+    "pending": ("Waiting", "pipeline_init", 0),
+    "failed": ("Failed", "failed", 0),
+    "gemini_quick": ("Gemini Quick", "gemini_quick", 20),
+    "gemini_quick_done": ("Deep Search", "deep_search", 35),
+    "searching": ("Deep Search", "deep_search", 40),
+    "searched": ("Filter", "filter", 55),
+    "scraping": ("Scrape", "scrape", 65),
+    "scraped": ("AI Extract", "ai_extract", 78),
+    "ai_extract_pending": ("AI Extract", "ai_extract", 82),
+    "extracting": ("AI Extract", "ai_extract", 90),
+    "ai_done": ("Finalizing", "done", 95),
+    "done": ("Done", "done", 100),
+    "permanently_failed": ("Permanently Failed", "permanently_failed", 100),
+}
+
+
+def _counts(db: DatabaseManager) -> dict:
+    total = db.fetch_one("SELECT COUNT(*) as cnt FROM companies")["cnt"]
+    done = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE status='done'")["cnt"]
+    failed = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE status IN ('failed','permanently_failed')")["cnt"]
+    pending = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE status='pending'")["cnt"]
+    running = db.fetch_one(
+        "SELECT COUNT(*) as cnt FROM companies WHERE status IN ('gemini_quick','searching','scraping','extracting')"
+    )["cnt"]
+    return {"total": total, "done": done, "failed": failed, "pending": pending, "running": running}
+
+
+def _latest_logs(db: DatabaseManager, limit: int = 20) -> list[dict]:
+    return db.fetch_all(
+        """
+        SELECT company_id, step, status, started_at, finished_at, duration_seconds,
+               credits_used, error_message, metadata_json
+        FROM pipeline_logs
+        ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+def _safe_json(value, fallback):
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def _company_step(status: str) -> tuple[str, str, int]:
+    return _STEP_BY_STATUS.get(status or "pending", ("Unknown", status or "pending", 0))
+
+
+@app.get("/api/spa/status")
+def api_spa_status():
+    db = _db()
+    cfg = _cfg()
+    counts = _counts(db)
+    done = counts["done"]
+
+    phone_count = db.fetch_one(
+        "SELECT COUNT(DISTINCT company_id) as cnt FROM extracted_contacts WHERE phone IS NOT NULL AND phone != ''"
+    )["cnt"]
+    email_count = db.fetch_one(
+        "SELECT COUNT(DISTINCT company_id) as cnt FROM extracted_contacts WHERE email IS NOT NULL AND email != ''"
+    )["cnt"]
+
+    today = _today_str()
+    quota = db.fetch_one("SELECT gemini_grounding_used, serper_used FROM daily_quota WHERE date = ?", (today,))
+    tokens = db.fetch_one(
+        "SELECT SUM(input_tokens) as tin, SUM(output_tokens) as tout FROM gemini_quick_results WHERE created_at LIKE ?",
+        (f"{today}%",),
+    )
+    gemini_sufficient = db.fetch_one("SELECT COUNT(*) as cnt FROM gemini_quick_results WHERE is_sufficient=1")["cnt"]
+    ai_extract_contacts = db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM extracted_contacts")["cnt"]
+
+    return JSONResponse({
+        "stats": {
+            **counts,
+            "progress_percent": round(done / max(counts["total"], 1) * 100, 1),
+            "phone_pct": round(phone_count / max(done, 1) * 100, 1),
+            "email_pct": round(email_count / max(done, 1) * 100, 1),
+        },
+        "quota": {
+            "gemini_used": quota["gemini_grounding_used"] if quota else 0,
+            "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
+            "firecrawl_used": quota["serper_used"] if quota else 0,
+            "firecrawl_total": 2500,
+            "tokens_in": tokens["tin"] or 0 if tokens else 0,
+            "tokens_out": tokens["tout"] or 0 if tokens else 0,
+        },
+        "sources": [
+            {"label": "Step 1: Gemini Quick", "value": gemini_sufficient},
+            {"label": "Step 4: AI Extract", "value": ai_extract_contacts},
+        ],
+        "logs": _latest_logs(db, 12),
+    })
+
+
+@app.get("/api/spa/companies")
+def api_spa_companies(status: str = None, search: str = None, page: int = 1, page_size: int = 50):
+    db = _db()
+    page_size = max(1, min(page_size, 100))
+    page = max(1, page)
+
+    filters = []
+    params: list[object] = []
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if search:
+        filters.append("LOWER(original_name) LIKE ?")
+        params.append(f"%{search.lower()}%")
+
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    total = db.fetch_one(f"SELECT COUNT(*) as cnt FROM companies {where}", tuple(params))["cnt"]
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    offset = (page - 1) * page_size
+
+    rows = db.fetch_all(
+        f"""
+        SELECT id, original_name, vietnamese_name, tax_code, status, updated_at, created_at
+        FROM companies
+        {where}
+        ORDER BY id
+        LIMIT ? OFFSET ?
+        """,
+        tuple(params + [page_size, offset]),
+    )
+
+    ids = [r["id"] for r in rows]
+    contact_by_id: dict[int, dict] = {}
+    latest_step_by_id: dict[int, str] = {}
+    if ids:
+        placeholders = ",".join("?" * len(ids))
+        contacts = db.fetch_all(
+            f"""
+            SELECT company_id,
+                   MAX(CASE WHEN phone IS NOT NULL AND phone != '' THEN 1 ELSE 0 END) as has_phone,
+                   MAX(CASE WHEN email IS NOT NULL AND email != '' THEN 1 ELSE 0 END) as has_email
+            FROM extracted_contacts
+            WHERE company_id IN ({placeholders})
+            GROUP BY company_id
+            """,
+            tuple(ids),
+        )
+        contact_by_id = {r["company_id"]: r for r in contacts}
+        latest_logs = db.fetch_all(
+            f"""
+            SELECT company_id, step
+            FROM pipeline_logs
+            WHERE id IN (
+                SELECT MAX(id) FROM pipeline_logs WHERE company_id IN ({placeholders}) GROUP BY company_id
+            )
+            """,
+            tuple(ids),
+        )
+        latest_step_by_id = {r["company_id"]: r["step"] for r in latest_logs}
+
+    companies = []
+    for row in rows:
+        contact = contact_by_id.get(row["id"], {})
+        step, checkpoint, _ = _company_step(row["status"])
+        companies.append({
+            **row,
+            "name": row["original_name"],
+            "has_phone": bool(contact.get("has_phone")),
+            "has_email": bool(contact.get("has_email")),
+            "checkpoint": latest_step_by_id.get(row["id"]) or checkpoint,
+            "current_step": step,
+        })
+
+    return JSONResponse({
+        "companies": companies,
+        "pagination": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages},
+        "counts": _counts(db),
+    })
+
+
+@app.get("/api/spa/companies/{company_id}")
+def api_spa_company_detail(company_id: int):
+    db = _db()
+    company = db.get_company(company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    gemini = db.fetch_one("SELECT * FROM gemini_quick_results WHERE company_id = ? ORDER BY id DESC LIMIT 1", (company_id,))
+    if gemini:
+        gemini["sources"] = _safe_json(gemini.get("sources_json"), [])
+        gemini["grounding_sources"] = _safe_json(gemini.get("grounding_sources_json"), [])
+
+    return JSONResponse({
+        "company": company,
+        "gemini_quick": gemini,
+        "search_results": db.fetch_all("SELECT * FROM search_results WHERE company_id = ? ORDER BY search_type, result_rank", (company_id,)),
+        "filtered_links": db.fetch_all("SELECT * FROM filtered_links WHERE company_id = ? ORDER BY relevance_score DESC", (company_id,)),
+        "scraped_pages": db.fetch_all("SELECT id, url, source_type, content_length, scrape_status, credits_used, error_message, created_at FROM scraped_pages WHERE company_id = ? ORDER BY id", (company_id,)),
+        "contacts": db.fetch_all("SELECT * FROM extracted_contacts WHERE company_id = ? ORDER BY confidence_score DESC", (company_id,)),
+        "timeline": db.fetch_all("SELECT * FROM pipeline_logs WHERE company_id = ? ORDER BY id", (company_id,)),
+    })
+
+
+@app.get("/api/spa/monitor")
+def api_spa_monitor():
+    return JSONResponse(_monitor_snapshot(_db()))
+
+
+@app.post("/api/spa/runner/start")
+async def api_spa_runner_start(request: Request):
+    data = await request.json()
+    company_ids = data.get("company_ids", [])
+    if not isinstance(company_ids, list) or not company_ids:
+        return JSONResponse({"error": "No company IDs provided"}, status_code=400)
+
+    normalized_ids = []
+    for cid in company_ids:
+        try:
+            normalized_ids.append(int(cid))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": f"Invalid company id: {cid}"}, status_code=400)
+
+    db = _db()
+    started = []
+    skipped = []
+    for cid in dict.fromkeys(normalized_ids):
+        company = db.get_company(cid)
+        if not company:
+            skipped.append({"id": cid, "reason": "not_found"})
+            continue
+        status = company["status"]
+        if status in _RUNNING_STATUSES:
+            skipped.append({"id": cid, "reason": "already_running", "status": status})
+            continue
+        if status in ("done", "permanently_failed"):
+            skipped.append({"id": cid, "reason": "not_resumable", "status": status})
+            continue
+        if status not in _RESUMABLE_STATUSES:
+            skipped.append({"id": cid, "reason": "unknown_status", "status": status})
+            continue
+        _monitor_removed_ids.discard(cid)
+        _monitor_stopped_ids.discard(cid)
+        job = _upsert_job(db, cid, "queued", current_step="Queued", checkpoint=status, progress=0)
+        _emit_job_update(db, job, "job_queued")
+        started.append(cid)
+
+    if not started:
+        return JSONResponse({"status": "skipped", "started": [], "skipped": skipped}, status_code=409)
+
+    global _pipeline_running
+    if _pipeline_running:
+        return JSONResponse({"error": "Pipeline already running", "started": [], "skipped": skipped}, status_code=409)
+
+    def run_batch():
+        global _pipeline_running, _active_pipeline
+        _pipeline_running = True
+        try:
+            with _pipeline_lock:
+                from src.pipeline import Pipeline
+                p = Pipeline(_pipeline_config())
+                _active_pipeline = p
+                monitor_db = MonitorDatabase(DB_PATH)
+                p.db = monitor_db
+                p.logger.db = monitor_db
+                p.run(company_ids=started)
+                for cid in started:
+                    company = monitor_db.get_company(cid)
+                    if company:
+                        job = _upsert_job(monitor_db, cid, company["status"])
+                        _emit_job_update(monitor_db, job)
+        finally:
+            _active_pipeline = None
+            _pipeline_running = False
+
+    threading.Thread(target=run_batch, daemon=True).start()
+    return JSONResponse({"status": "started", "started": started, "skipped": skipped})
+
+
+@app.post("/api/spa/runner/stop-all")
+def api_spa_runner_stop_all():
+    if _active_pipeline is not None:
+        _active_pipeline._shutdown_requested = True
+    db = _db()
+    rows = db.fetch_all(
+        """
+        SELECT company_id as id
+        FROM pipeline_jobs
+        WHERE removed_from_monitor = 0
+          AND status IN ('queued','pending','gemini_quick','searching','scraping','extracting','failed')
+        """
+    )
+    ids = [r["id"] for r in rows]
+    for cid in ids:
+        job = _upsert_job(db, cid, "stopped", current_step="Stopped", checkpoint="stopped", progress=0)
+        _emit_job_update(db, job, "job_stopped")
+    return JSONResponse({"status": "stop_requested", "stopped": ids, "count": len(ids)})
+
+
+@app.post("/api/spa/monitor/remove")
+async def api_spa_monitor_remove(request: Request):
+    data = await request.json()
+    company_id = data.get("company_id")
+    try:
+        company_id = int(company_id)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "Invalid company_id"}, status_code=400)
+    db = _db()
+    db.execute_query(
+        "UPDATE pipeline_jobs SET removed_from_monitor = 1, updated_at = CURRENT_TIMESTAMP WHERE company_id = ?",
+        (company_id,),
+    )
+    _emit_monitor({"type": "job_removed", "company_id": company_id, "counts": _monitor_snapshot(db)["counts"]})
+    return JSONResponse({"status": "removed", "company_id": company_id})
+
+
+@app.get("/api/spa/logs")
+def api_spa_logs(limit: int = 200):
+    limit = max(1, min(limit, 500))
+    today = _today_str()
+    log_file = os.path.join(LOG_DIR, f"pipeline_{today}.jsonl")
+    lines = []
+    if os.path.exists(log_file):
+        with open(log_file, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f.readlines()[-limit:] if line.strip()]
+    return JSONResponse({"date": today, "lines": list(reversed(lines))})
+
+
+@app.websocket("/ws/monitor")
+async def websocket_monitor(websocket: WebSocket):
+    global _monitor_loop
+    await websocket.accept()
+    _monitor_loop = asyncio.get_running_loop()
+    monitor_clients.append(websocket)
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "snapshot",
+            **_monitor_snapshot(_db()),
+        }, ensure_ascii=False))
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in monitor_clients:
+            monitor_clients.remove(websocket)
+
+
+import requests
+
+# ---------------------------------------------------------------------------
+# API: Settings
+# ---------------------------------------------------------------------------
+@app.get("/api/spa/settings")
+def api_spa_settings():
+    return JSONResponse({
+        "GEMINI_API_KEY": _mask_key(os.getenv("GEMINI_API_KEY", "")),
+        "FIRECRAWL_API_KEY": _mask_key(os.getenv("FIRECRAWL_API_KEY", "")),
+        "SERPER_API_KEY": _mask_key(os.getenv("SERPER_API_KEY", "")),
+        "AI_GROUNDING_MODEL": os.getenv("AI_GROUNDING_MODEL", "models/gemini-2.5-flash-lite"),
+        "AI_EXTRACTOR_MODEL": os.getenv("AI_EXTRACTOR_MODEL", "models/gemini-2.5-flash-lite")
+    })
+
+def _mask_key(key: str) -> str:
+    if not key or len(key) < 8: return key
+    return f"{key[:4]}...{key[-4:]}"
+
+@app.post("/api/spa/settings")
+async def api_spa_settings_update(req: Request):
+    data = await req.json()
+    
+    # Update only if a new value is provided and it doesn't contain the mask '...'
+    updated = False
+    for k in ["GEMINI_API_KEY", "FIRECRAWL_API_KEY", "SERPER_API_KEY"]:
+        if k in data and data[k] and "..." not in data[k]:
+            set_key(DOTENV_PATH, k, data[k])
+            os.environ[k] = data[k]
+            updated = True
+            
+    for k in ["AI_GROUNDING_MODEL", "AI_EXTRACTOR_MODEL"]:
+        if k in data and data[k]:
+            set_key(DOTENV_PATH, k, data[k])
+            os.environ[k] = data[k]
+            updated = True
+            
+    if updated:
+        load_dotenv(DOTENV_PATH, override=True)
+        
+    return JSONResponse({"status": "ok", "message": "Settings updated"})
+
+@app.get("/api/spa/gemini-models")
+def api_spa_gemini_models():
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return JSONResponse({"error": "No GEMINI_API_KEY configured"}, status_code=400)
+    
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        models = []
+        for m in data.get("models", []):
+            if "generateContent" in m.get("supportedGenerationMethods", []):
+                models.append({
+                    "name": m.get("name"),
+                    "displayName": m.get("displayName")
+                })
+        return JSONResponse({"models": models})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 # ---------------------------------------------------------------------------
 # API: Companies mapping
@@ -535,6 +902,7 @@ async def run_step_api(request: Request):
             })
 
         elif step in ("scrape", "filter", "ai_extract"):
+            from src.pipeline import Pipeline
             pipeline = Pipeline(_pipeline_config())
             step_map = {"scrape": "scrape", "filter": "filter", "ai_extract": "ai_extract"}
             pipeline.run_step(step_map[step], company_id)
@@ -559,15 +927,18 @@ async def run_step_api(request: Request):
                 return JSONResponse({"error": "Pipeline already running"}, status_code=409)
 
             def run_pipeline():
-                global _pipeline_running
+                global _pipeline_running, _active_pipeline
                 _pipeline_running = True
                 try:
                     with _pipeline_lock:
+                        from src.pipeline import Pipeline
                         p = Pipeline(_pipeline_config())
+                        _active_pipeline = p
                         db_inner = _db()
                         db_inner.update_company(company_id, status="pending")
-                        p.run(resume=False, company_ids=[company_id])
+                        p.run(company_ids=[company_id])
                 finally:
+                    _active_pipeline = None
                     _pipeline_running = False
 
             thread = threading.Thread(target=run_pipeline, daemon=True)
@@ -599,16 +970,19 @@ async def api_runner_start(request: Request):
         return JSONResponse({"error": "Pipeline already running"}, status_code=409)
 
     def run_batch():
-        global _pipeline_running
+        global _pipeline_running, _active_pipeline
         _pipeline_running = True
         try:
             with _pipeline_lock:
                 db_inner = _db()
                 for cid in company_ids:
                     db_inner.update_company(cid, status="pending")
+                from src.pipeline import Pipeline
                 p = Pipeline(_pipeline_config())
-                p.run(resume=False, company_ids=company_ids)
+                _active_pipeline = p
+                p.run(company_ids=company_ids)
         finally:
+            _active_pipeline = None
             _pipeline_running = False
 
     thread = threading.Thread(target=run_batch, daemon=True)
