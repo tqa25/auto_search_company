@@ -372,64 +372,33 @@ class ExcelWriter:
             logger.error(f"Failed to save final report to {output_path}: {e}")
             raise
 
-    def write_consolidated_report(self, db, output_path: str):
+    def write_consolidated_report(self, db, output_path: str, company_ids: List[int] = None):
         """
-        Writes a consolidated Excel report with two sheets:
-        Sheet 1: "Tổng hợp" - 1 row per company.
-        Sheet 2: "Chi tiết nguồn" - 1 row per source URL.
+        Writes a consolidated Excel report with dynamic domain columns for phones.
+        Tab 1: "Summary"
+        Tab 2: "Detail"
         """
         import json
         import os
+        import urllib.parse
+        from collections import defaultdict
 
         logger.info(f"Writing consolidated Excel report to {output_path}")
 
-        companies = db.get_all_companies()
-        
+        all_companies = db.get_all_companies()
+        if company_ids:
+            companies = [c for c in all_companies if c['id'] in company_ids]
+        else:
+            companies = all_companies
+            
         wb = openpyxl.Workbook()
         
-        # 1. Setup Sheet 1 (Tổng hợp)
-        ws1 = wb.active
-        ws1.title = "Tổng hợp"
+        # We will create Summary first, but we need data from Detail.
+        # So we'll build Detail first, then Summary, but we can set Summary as active and first sheet.
+        ws_summary = wb.active
+        ws_summary.title = "Summary"
         
-        headers1 = [
-            "STT", "Tên công ty", "Mã số thuế", "Địa chỉ", "Số điện thoại", 
-            "Email", "Website", "Người đại diện", "Phương thức thu thập", 
-            "Điểm tin cậy tối đa", "Trạng thái", "Thời gian cập nhật"
-        ]
-        
-        for col_idx, h in enumerate(headers1, start=1):
-            cell = ws1.cell(row=1, column=col_idx, value=h)
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            ws1.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
-        
-        ws1.freeze_panes = "A2"
-        
-        # 2. Setup Sheet 2 (Chi tiết nguồn)
-        ws2 = wb.create_sheet(title="Chi tiết nguồn")
-        headers2 = [
-            "STT", "Tên công ty", "Mã số thuế", "URL nguồn", "Loại nguồn", 
-            "Số điện thoại", "Email", "Địa chỉ", "Người đại diện", 
-            "Điểm đánh giá URL", "Lý do đánh giá", "Từ khóa tìm kiếm", 
-            "Đoạn trích tìm kiếm", "Thời gian thu thập"
-        ]
-        
-        for col_idx, h in enumerate(headers2, start=1):
-            cell = ws2.cell(row=1, column=col_idx, value=h)
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
-            
-        ws2.freeze_panes = "A2"
-        
-        thin_border = Border(
-            left=Side(style='thin'), 
-            right=Side(style='thin'), 
-            top=Side(style='thin'), 
-            bottom=Side(style='thin')
-        )
+        ws1 = wb.create_sheet(title="Detail")
         
         def clean_phone(phone_str):
             if not phone_str:
@@ -457,157 +426,79 @@ class ExcelWriter:
                     parts.append(cleaned)
             return parts
 
-        row_idx1 = 2
-        row_idx2 = 2
-        stt = 1
+        def extract_domain(url, default="Unknown"):
+            if not url or url == '—':
+                return default
+            try:
+                # Add scheme if missing so urlparse works correctly
+                if not url.startswith('http'):
+                    url = 'http://' + url
+                domain = urllib.parse.urlparse(url).netloc
+                if domain.startswith("www."):
+                    domain = domain[4:]
+                return domain if domain else default
+            except Exception:
+                return default
+
+        # --- PASS 1: Process data into flattened rows ---
+        flattened_rows = []
+        status_map = {
+            'done': 'Done',
+            'failed': 'Failed',
+            'permanently_failed': 'Failed',
+            'pending': 'Pending',
+            'running': 'Running',
+            'scraping': 'Scraping'
+        }
+        
+        unique_domains_found = set()
         
         for company in companies:
             cid = company['id']
             c_name = company['original_name']
+            vn_name = company.get('vietnamese_name', '') or '—'
             t_code = company.get('tax_code', '') or '—'
+            db_status = company.get('status', 'pending')
+            status_display = status_map.get(db_status, db_status)
             
-            # --- Fetch Source Data ---
             gemini_results = db.get_gemini_quick_results_for_company(cid)
             deep_scrape_data = db.get_deep_scrape_export_data_for_company(cid)
+            time_data = db.get_pipeline_time_for_company(cid)
             
-            # --- Consolidation State ---
-            phones = set()
+            start_time = str(time_data.get('started_at')) if time_data.get('started_at') else '—'
+            end_time = str(time_data.get('finished_at')) if time_data.get('finished_at') else '—'
+            
+            phones_with_source = [] # list of (phone_list, domain, source_url)
             emails = set()
             addresses = []
             websites = []
-            reps = []
-            confidences = []
             
-            has_gemini = len(gemini_results) > 0
-            has_deep = len(deep_scrape_data) > 0
-            
-            # --- 1. Process Gemini Quick Results ---
             for gr in gemini_results:
                 if gr.get('phone'):
-                    phones.update(clean_phone(gr['phone']))
+                    phones = clean_phone(gr['phone'])
+                    if phones:
+                        phones_with_source.append((phones, 'Gemini', '—'))
                 if gr.get('email'):
                     emails.update(clean_email(gr['email']))
                 if gr.get('address') and gr['address'] != '—':
                     addresses.append(gr['address'].strip())
                 if gr.get('website') and gr['website'] != '—':
                     websites.append(gr['website'].strip())
-                if gr.get('representative') and gr['representative'] != '—':
-                    reps.append(gr['representative'].strip())
-                if gr.get('confidence') is not None:
-                    confidences.append(float(gr['confidence']))
-                
-                # Write to Sheet 2 (Detailed)
-                sources = []
-                if gr.get('grounding_sources_json'):
-                    try:
-                        sources = json.loads(gr['grounding_sources_json'])
-                    except json.JSONDecodeError:
-                        pass
-                elif gr.get('sources_json'):
-                    try:
-                        sources = json.loads(gr['sources_json'])
-                    except json.JSONDecodeError:
-                        pass
-                        
-                if not sources:
-                    sources = ["—"]
-                    
-                for src_url in sources:
-                    url_val = src_url
-                    if isinstance(src_url, dict) and 'url' in src_url:
-                        url_val = src_url['url']
-                    
-                    row_data2 = [
-                        stt,
-                        c_name,
-                        t_code,
-                        url_val or "—",
-                        "Gemini Quick Search",
-                        gr.get('phone') or "—",
-                        gr.get('email') or "—",
-                        gr.get('address') or "—",
-                        gr.get('representative') or "—",
-                        "—",
-                        "—",
-                        "—",
-                        "—",
-                        gr.get('created_at') or "—"
-                    ]
-                    for col_idx, val in enumerate(row_data2, start=1):
-                        cell = ws2.cell(row=row_idx2, column=col_idx, value=val)
-                        cell.border = thin_border
-                        if isinstance(val, str) and len(val) > 30:
-                            cell.alignment = Alignment(wrap_text=True, vertical="top")
-                        else:
-                            cell.alignment = Alignment(vertical="top")
-                    row_idx2 += 1
             
-            # --- 2. Process Deep Scrape Results ---
             for row in deep_scrape_data:
                 if row.get('phone'):
-                    phones.update(clean_phone(row['phone']))
+                    domain = extract_domain(row.get('source_url', ''), default="Unknown")
+                    phones = clean_phone(row['phone'])
+                    if phones:
+                        phones_with_source.append((phones, domain, row.get('source_url', '—')))
                 if row.get('email'):
                     emails.update(clean_email(row['email']))
                 if row.get('address') and row['address'] != '—':
                     addresses.append(row['address'].strip())
                 if row.get('website') and row['website'] != '—':
                     websites.append(row['website'].strip())
-                if row.get('representative') and row['representative'] != '—':
-                    reps.append(row['representative'].strip())
-                if row.get('confidence_score') is not None:
-                    confidences.append(float(row['confidence_score']))
-                
-                # Write to Sheet 2 (Detailed)
-                rel_score = row.get('relevance_score')
-                if rel_score is not None:
-                    try:
-                        rel_score = round(float(rel_score), 1)
-                    except (ValueError, TypeError):
-                        pass
-                
-                row_data2 = [
-                    stt,
-                    c_name,
-                    t_code,
-                    row.get('search_url') or "—",
-                    row.get('source_type') or "Deep Scrape",
-                    row.get('phone') or "—",
-                    row.get('email') or "—",
-                    row.get('address') or "—",
-                    row.get('representative') or "—",
-                    rel_score if rel_score is not None else "—",
-                    row.get('filter_reason') or "—",
-                    row.get('search_query') or "—",
-                    row.get('search_snippet') or "—",
-                    row.get('timestamp') or "—"
-                ]
-                for col_idx, val in enumerate(row_data2, start=1):
-                    cell = ws2.cell(row=row_idx2, column=col_idx, value=val)
-                    cell.border = thin_border
-                    if isinstance(val, str) and len(val) > 30:
-                        cell.alignment = Alignment(wrap_text=True, vertical="top")
-                    else:
-                        cell.alignment = Alignment(vertical="top")
                     
-                    # Style relevance score cell if numeric
-                    if col_idx == 10 and isinstance(val, (int, float)):
-                        if val >= 80.0:
-                            cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-                            cell.font = Font(color="006100")
-                        elif val >= 50.0:
-                            cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-                            cell.font = Font(color="9C6500")
-                        else:
-                            cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-                            cell.font = Font(color="9C0006")
-                            
-                row_idx2 += 1
-                
-            # --- 3. Build Consolidated Fields ---
-            phone_list = sorted(list(phones))
             email_list = sorted(list(emails))
-            
-            best_phone = ", ".join(phone_list) if phone_list else "—"
             best_email = ", ".join(email_list) if email_list else "—"
             
             best_address = "—"
@@ -621,101 +512,99 @@ class ExcelWriter:
                 valid_sites = [w for w in websites if w and w != '—']
                 if valid_sites:
                     best_website = valid_sites[0]
-            
-            best_rep = "—"
-            if reps:
-                valid_reps = [r for r in reps if r and r != '—']
-                if valid_reps:
-                    best_rep = valid_reps[0]
-            
-            if has_gemini and has_deep:
-                method = "Cả hai"
-            elif has_gemini:
-                method = "Gemini Quick Search"
-            elif has_deep:
-                method = "Deep Scrape"
-            else:
-                method = "Không có dữ liệu"
-                
-            max_conf = max(confidences) if confidences else 0.0
-            if max_conf > 0.0:
-                max_conf_val = round(max_conf, 2)
-            else:
-                max_conf_val = "—"
-                
-            status_map = {
-                'done': 'Thành công',
-                'failed': 'Thất bại',
-                'permanently_failed': 'Thất bại',
-                'pending': 'Chờ xử lý',
-                'running': 'Đang xử lý',
-                'scraping': 'Đang xử lý'
-            }
-            db_status = company.get('status', 'pending')
-            status_display = status_map.get(db_status, db_status)
-            
-            updated_at = company.get('updated_at') or '—'
-            
-            # --- Write to Sheet 1 ---
-            row_data1 = [
-                stt,
-                c_name,
-                t_code,
-                best_address,
-                best_phone,
-                best_email,
-                best_website,
-                best_rep,
-                method,
-                max_conf_val,
-                status_display,
-                updated_at
+                    
+            base_row = [
+                c_name, vn_name, t_code,
+                start_time, end_time, best_address
             ]
             
-            for col_idx, val in enumerate(row_data1, start=1):
+            tail_row = [
+                best_email, best_website, status_display
+            ]
+            
+            if not phones_with_source:
+                # Company has no phones, still write 1 row
+                flattened_rows.append(base_row + ['—', '—', '—'] + tail_row)
+            else:
+                for (phones, domain, url) in phones_with_source:
+                    unique_domains_found.add(domain)
+                    for p in phones:
+                        flattened_rows.append(base_row + [p, domain, url] + tail_row)
+
+        # --- PASS 2: Write Detail Sheet ---
+        headers = [
+            "Company Name", "Vietnamese Name", "Tax Code",
+            "Start Time", "End Time", "Address",
+            "Phone", "Source Domain", "Source URL",
+            "Email", "Website", "Status"
+        ]
+        
+        for col_idx, h in enumerate(headers, start=1):
+            cell = ws1.cell(row=1, column=col_idx, value=h)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            ws1.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
+        
+        ws1.freeze_panes = "A2"
+        
+        thin_border = Border(
+            left=Side(style='thin'), 
+            right=Side(style='thin'), 
+            top=Side(style='thin'), 
+            bottom=Side(style='thin')
+        )
+        
+        row_idx1 = 2
+        for row_data in flattened_rows:
+            for col_idx, val in enumerate(row_data, start=1):
+                if isinstance(val, str) and len(val) > 200:
+                    val = val[:197] + "..."
                 cell = ws1.cell(row=row_idx1, column=col_idx, value=val)
                 cell.border = thin_border
-                if isinstance(val, str) and len(val) > 30:
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
-                else:
-                    cell.alignment = Alignment(vertical="top")
-                
-                # Style max confidence
-                if col_idx == 10 and isinstance(val, (int, float)):
-                    if val >= 0.8:
-                        cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-                        cell.font = Font(color="006100")
-                    elif val >= 0.5:
-                        cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-                        cell.font = Font(color="9C6500")
-                    else:
-                        cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-                        cell.font = Font(color="9C0006")
-                
-                # Style status
-                if col_idx == 11:
-                    if val == 'Thành công':
-                        cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-                        cell.font = Font(color="006100")
-                    elif val == 'Thất bại':
-                        cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-                        cell.font = Font(color="9C0006")
-                    elif val == 'Đang xử lý':
-                        cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-                        cell.font = Font(color="9C6500")
-                        
+                cell.alignment = Alignment(vertical="top")
             row_idx1 += 1
-            stt += 1
 
-        # Auto-adjust column widths for both sheets
-        for ws in [ws1, ws2]:
-            for col in ws.columns:
-                max_len = 0
-                col_letter = openpyxl.utils.get_column_letter(col[0].column)
-                for cell in col:
-                    if cell.value:
-                        max_len = max(max_len, min(len(str(cell.value)), 50))
-                ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+        # --- PASS 3: Setup Summary Sheet ---
+        ws_summary.column_dimensions['A'].width = 30
+        ws_summary.column_dimensions['B'].width = 20
+        
+        ws_summary.cell(row=1, column=1, value="Metric").font = Font(bold=True)
+        ws_summary.cell(row=1, column=2, value="Value").font = Font(bold=True)
+        
+        # Calculate summaries statically
+        total_companies = len(companies)
+        completed_companies = len([c for c in companies if c.get('status') in ('done', 'permanently_failed')])
+        total_phones = len([r for r in flattened_rows if r[6] != '—'])
+        
+        ws_summary.cell(row=2, column=1, value="Total Companies")
+        ws_summary.cell(row=2, column=2, value=total_companies)
+        
+        ws_summary.cell(row=3, column=1, value="Completed Companies")
+        ws_summary.cell(row=3, column=2, value=completed_companies)
+        
+        ws_summary.cell(row=4, column=1, value="Total Phone Numbers")
+        ws_summary.cell(row=4, column=2, value=total_phones)
+        
+        current_sum_row = 5
+        for dom in sorted(list(unique_domains_found)):
+            dom_count = len([r for r in flattened_rows if r[7] == dom])
+            ws_summary.cell(row=current_sum_row, column=1, value=f"Phones from {dom}")
+            ws_summary.cell(row=current_sum_row, column=2, value=dom_count)
+            current_sum_row += 1
+        
+        for r in range(1, current_sum_row):
+            ws_summary.cell(row=r, column=1).border = thin_border
+            ws_summary.cell(row=r, column=2).border = thin_border
+
+        # Auto-adjust column widths for Detail sheet
+        for col in ws1.columns:
+            max_len = 0
+            col_letter = openpyxl.utils.get_column_letter(col[0].column)
+            for cell in col:
+                if cell.value:
+                    max_len = max(max_len, min(len(str(cell.value)), 50))
+            ws1.column_dimensions[col_letter].width = max(max_len + 3, 12)
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         wb.save(output_path)

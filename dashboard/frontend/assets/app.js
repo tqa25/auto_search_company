@@ -5,7 +5,17 @@ const monitor = {
   counts: { running: 0, queued: 0, failed: 0, stopped: 0 },
   events: [],
 };
-const companiesState = { page: 1, pageSize: 50, status: "", search: "", selected: new Set() };
+const companiesState = {
+  page: 1,
+  pageSize: 50,
+  status: "",
+  search: "",
+  importBatchId: "",
+  dateMode: "created",
+  dateFrom: "",
+  dateTo: "",
+  selected: new Set(),
+};
 
 async function api(url, options = {}) {
   const response = await fetch(url, options);
@@ -103,14 +113,47 @@ function stat(label, value, className = "") {
   return `<div class="card"><div class="stat-value ${className}">${value}</div><div class="stat-label">${label}</div></div>`;
 }
 
+function companyQueryParams({ includePaging = true } = {}) {
+  const params = new URLSearchParams();
+  if (includePaging) {
+    params.set("page", companiesState.page);
+    params.set("page_size", companiesState.pageSize);
+  }
+  if (companiesState.status) params.set("status", companiesState.status);
+  if (companiesState.search) params.set("search", companiesState.search);
+  if (companiesState.importBatchId) params.set("import_batch_id", companiesState.importBatchId);
+  if (companiesState.dateFrom) params.set(`${companiesState.dateMode}_from`, companiesState.dateFrom);
+  if (companiesState.dateTo) params.set(`${companiesState.dateMode}_to`, companiesState.dateTo);
+  return params;
+}
+
+function localDate(offsetDays = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function batchOptions(batches) {
+  const selected = String(companiesState.importBatchId || "");
+  const options = batches.map((batch) => {
+    const label = `#${batch.id} ${batch.source_filename || "Import"} (${batch.imported}/${batch.total})`;
+    return `<option value="${batch.id}" ${selected === String(batch.id) ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+  return `<option value="">All imports</option><option value="latest">Latest import</option>${options}`;
+}
+
 async function renderCompanies(patch = {}) {
   setRouteActive("companies");
   Object.assign(companiesState, patch);
-  const params = new URLSearchParams({ page: companiesState.page, page_size: companiesState.pageSize });
-  if (companiesState.status) params.set("status", companiesState.status);
-  if (companiesState.search) params.set("search", companiesState.search);
-  const data = await api(`/api/spa/companies?${params}`);
+  const [data, batchesData] = await Promise.all([
+    api(`/api/spa/companies?${companyQueryParams()}`),
+    api("/api/spa/import-batches"),
+  ]);
   const companies = data.companies || [];
+  const batches = batchesData.batches || [];
   const counts = data.counts || {};
   const p = data.pagination || {};
   const allSelected = companies.length > 0 && companies.every(c => companiesState.selected.has(c.id));
@@ -129,10 +172,29 @@ async function renderCompanies(patch = {}) {
       ${chip("Done", "done", counts.done)}
       ${chip("Pending", "pending", counts.pending)}
       ${chip("Failed", "failed", counts.failed)}
+      <span class="selection-summary">${p.total || 0} shown · ${companiesState.selected.size} selected</span>
       <span class="spacer"></span>
       <button class="btn primary" id="runSelected" ${companiesState.selected.size ? "" : "style='display:none'"}><i data-lucide="play"></i>Run Selected</button>
       <button class="btn danger" id="deleteSelected" ${companiesState.selected.size ? "" : "style='display:none'"}><i data-lucide="trash-2"></i>Delete Selected</button>
       <input class="input" id="search" value="${escapeHtml(companiesState.search)}" placeholder="Search companies...">
+    </div>
+    <div class="toolbar filter-toolbar">
+      <select class="select" id="dateMode">
+        <option value="created" ${companiesState.dateMode === "created" ? "selected" : ""}>Imported date</option>
+        <option value="completed" ${companiesState.dateMode === "completed" ? "selected" : ""}>Completed date</option>
+      </select>
+      <button class="btn" data-quick-date="today">Today</button>
+      <button class="btn" data-quick-date="yesterday">Yesterday</button>
+      <button class="btn" data-quick-date="last7">Last 7 days</button>
+      <input class="input date-input" type="date" id="dateFrom" value="${escapeHtml(companiesState.dateFrom)}">
+      <input class="input date-input" type="date" id="dateTo" value="${escapeHtml(companiesState.dateTo)}">
+      <select class="select import-batch-select" id="importBatch">${batchOptions(batches)}</select>
+      <button class="btn" id="clearFilters"><i data-lucide="x"></i>Clear filters</button>
+      <button class="btn" id="selectAllFiltered"><i data-lucide="list-checks"></i>Select all filtered</button>
+    </div>
+    <div id="selectAllBanner" class="alert info" style="display: none; text-align: center; margin-bottom: 10px; background: var(--blue-light, #e0f2fe); color: var(--blue, #0284c7); padding: 8px; border-radius: 4px;">
+      All <b id="bannerCurrentCount">0</b> companies on this page are selected. 
+      <a href="#" id="bannerSelectAllLink" style="font-weight: bold; cursor: pointer; text-decoration: underline;">Select all <span id="bannerTotalCount">0</span> companies matching this filter</a>
     </div>
     <div class="table-wrap fixed">
       <table>
@@ -184,13 +246,85 @@ function bindCompanyEvents(companies, pagination) {
       renderCompanies({ search: event.target.value.trim(), page: 1 });
     }, 250);
   });
+  document.getElementById("dateMode").addEventListener("change", (event) => {
+    companiesState.selected.clear();
+    renderCompanies({ dateMode: event.target.value, page: 1 });
+  });
+  document.querySelectorAll("[data-quick-date]").forEach((button) => button.addEventListener("click", () => {
+    const value = button.dataset.quickDate;
+    const today = localDate(0);
+    const yesterday = localDate(-1);
+    const patch = value === "today"
+      ? { dateFrom: today, dateTo: today }
+      : value === "yesterday"
+        ? { dateFrom: yesterday, dateTo: yesterday }
+        : { dateFrom: localDate(-6), dateTo: today };
+    companiesState.selected.clear();
+    renderCompanies({ ...patch, page: 1 });
+  }));
+  document.getElementById("dateFrom").addEventListener("change", (event) => {
+    companiesState.selected.clear();
+    renderCompanies({ dateFrom: event.target.value, page: 1 });
+  });
+  document.getElementById("dateTo").addEventListener("change", (event) => {
+    companiesState.selected.clear();
+    renderCompanies({ dateTo: event.target.value, page: 1 });
+  });
+  document.getElementById("importBatch").addEventListener("change", async (event) => {
+    const value = event.target.value;
+    companiesState.selected.clear();
+    if (value === "latest") {
+      const data = await api("/api/spa/import-batches?limit=1");
+      const latest = (data.batches || [])[0];
+      return renderCompanies({ importBatchId: latest ? String(latest.id) : "", page: 1 });
+    }
+    renderCompanies({ importBatchId: value, page: 1 });
+  });
+  document.getElementById("clearFilters").addEventListener("click", () => {
+    companiesState.selected.clear();
+    renderCompanies({ status: "", search: "", importBatchId: "", dateMode: "created", dateFrom: "", dateTo: "", page: 1 });
+  });
   const updateSelectedUI = () => {
     const runBtn = document.getElementById("runSelected");
     const delBtn = document.getElementById("deleteSelected");
     const show = companiesState.selected.size ? "" : "none";
     if (runBtn) runBtn.style.display = show;
     if (delBtn) delBtn.style.display = show;
+    
+    // Update banner
+    const selectPageChecked = document.getElementById("selectPage").checked;
+    const banner = document.getElementById("selectAllBanner");
+    const totalCurrentPage = document.querySelectorAll(".row-check").length;
+    
+    if (selectPageChecked && totalCurrentPage > 0 && pagination.total > totalCurrentPage) {
+        if (companiesState.selected.size < pagination.total) {
+            banner.style.display = "block";
+            document.getElementById("bannerCurrentCount").textContent = totalCurrentPage;
+            document.getElementById("bannerTotalCount").textContent = pagination.total;
+        } else {
+            // Already selected all across pages
+            banner.style.display = "block";
+            banner.innerHTML = `All <b>${pagination.total}</b> companies matching this filter are selected. <a href="#" id="bannerClearSelection" style="font-weight: bold; cursor: pointer; text-decoration: underline;">Clear selection</a>`;
+            document.getElementById("bannerClearSelection").addEventListener("click", (e) => {
+                e.preventDefault();
+                companiesState.selected.clear();
+                renderCompanies({ page: companiesState.page });
+            });
+        }
+    } else {
+        banner.style.display = "none";
+    }
   };
+  
+  if (document.getElementById("bannerSelectAllLink")) {
+      document.getElementById("bannerSelectAllLink").addEventListener("click", async (e) => {
+          e.preventDefault();
+          const result = await api(`/api/spa/companies/ids?${companyQueryParams({ includePaging: false })}`);
+          companiesState.selected = new Set(result.company_ids || []);
+          renderCompanies();
+      });
+  }
+
   document.getElementById("selectPage").addEventListener("change", (event) => {
     const isChecked = event.target.checked;
     document.querySelectorAll(".row-check").forEach((check) => {
@@ -208,13 +342,59 @@ function bindCompanyEvents(companies, pagination) {
     document.getElementById("selectPage").checked = document.querySelectorAll(".row-check:not(:checked)").length === 0;
     updateSelectedUI();
   }));
+  document.getElementById("selectAllFiltered").addEventListener("click", async () => {
+    const result = await api(`/api/spa/companies/ids?${companyQueryParams({ includePaging: false })}`);
+    companiesState.selected = new Set(result.company_ids || []);
+    renderCompanies();
+  });
   document.querySelectorAll(".run-one").forEach((button) => button.addEventListener("click", () => runCompanies([Number(button.dataset.id)])));
   document.querySelectorAll(".delete-one").forEach((button) => button.addEventListener("click", () => deleteCompanies([Number(button.dataset.id)])));
   document.getElementById("runSelected").addEventListener("click", () => runCompanies([...companiesState.selected]));
   document.getElementById("deleteSelected").addEventListener("click", () => deleteCompanies([...companiesState.selected]));
   document.getElementById("prevPage").addEventListener("click", () => renderCompanies({ page: Math.max(1, companiesState.page - 1) }));
   document.getElementById("nextPage").addEventListener("click", () => renderCompanies({ page: Math.min(pagination.total_pages || 1, companiesState.page + 1) }));
-  document.getElementById("exportExcelBtn").addEventListener("click", () => window.open("/api/export/final-excel", "_blank"));
+  document.getElementById("exportExcelBtn").addEventListener("click", () => {
+    if (companiesState.selected.size === 0) {
+      alert("Please select at least one company to export.");
+      return;
+    }
+    const ids = Array.from(companiesState.selected);
+    const btn = document.getElementById("exportExcelBtn");
+    const oldText = btn.innerHTML;
+    btn.innerHTML = `<i data-lucide="loader-2" class="spin"></i> Exporting...`;
+    btn.disabled = true;
+    
+    fetch("/api/export-excel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ company_ids: ids })
+    })
+    .then(async res => {
+      if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || "Export failed");
+      }
+      return res.blob();
+    })
+    .then(blob => {
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `final_results_export.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    })
+    .catch(err => {
+      alert("Error exporting: " + err.message);
+    })
+    .finally(() => {
+      btn.innerHTML = oldText;
+      btn.disabled = false;
+      iconize();
+    });
+  });
   document.getElementById("exportLogs").addEventListener("click", () => window.open("/api/export/logs?format=csv", "_blank"));
   document.getElementById("importBtn").addEventListener("click", () => document.getElementById("importInput").click());
   document.getElementById("importInput").addEventListener("change", (event) => importCompanies(event.target.files[0]));
@@ -260,10 +440,11 @@ async function importCompanies(file) {
   const result = await api("/api/companies/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names }),
+    body: JSON.stringify({ names, source_filename: file.name }),
   });
   alert(`Imported ${result.imported}; skipped ${result.skipped}.`);
-  renderCompanies({ page: 1 });
+  companiesState.selected.clear();
+  renderCompanies({ importBatchId: String(result.batch_id || ""), page: 1 });
 }
 
 async function renderCompanyDetail(id) {
@@ -501,12 +682,15 @@ async function renderSettings() {
   app.innerHTML = `<div class="page-title"><div><h1>Settings</h1><div class="subtitle">Configuration editing</div></div></div><div class="card"><p>Loading settings...</p></div>`;
   
   try {
-    const [settingsRes, modelsRes] = await Promise.all([
+    const [settingsRes, pipelineRes, modelsRes] = await Promise.all([
       fetch("/api/spa/settings", { cache: "no-store" }),
+      fetch("/api/spa/pipeline-config", { cache: "no-store" }),
       fetch("/api/spa/gemini-models", { cache: "no-store" })
     ]);
     
     const settings = await settingsRes.json();
+    const pipelineConfig = await pipelineRes.json();
+    
     let modelsHTML = "";
     if (modelsRes.ok) {
         const modelsData = await modelsRes.json();
@@ -527,23 +711,93 @@ async function renderSettings() {
         </div>`;
     };
     
-    const buildInput = (id, label, value) => `
+    const buildInput = (id, label, value, placeholder="Leave unchanged to keep current key", type="text") => `
         <div class="form-group" style="margin-bottom: 15px;">
             <label style="display:block; margin-bottom: 5px; font-weight: 500; color: var(--muted);">${label}</label>
-            <input type="text" id="${id}" class="form-input" value="${value || ''}" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text);" placeholder="Leave unchanged to keep current key">
+            <input type="${type}" id="${id}" class="form-input" value="${value || (type==='number' ? 0 : '')}" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text);" placeholder="${placeholder}">
+        </div>`;
+
+    const buildTextarea = (id, label, value, hint="") => `
+        <div class="form-group" style="margin-bottom: 15px;">
+            <label style="display:block; margin-bottom: 5px; font-weight: 500; color: var(--muted);">${label}</label>
+            <textarea id="${id}" class="form-input" rows="3" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: monospace; font-size: 13px;">${(typeof value === 'string' ? value : JSON.stringify(value, null, 2)) || ''}</textarea>
+            ${hint ? `<small style="color: var(--muted);">${hint}</small>` : ''}
+        </div>`;
+        
+    const buildCheckbox = (id, label, checked) => `
+        <div class="form-group" style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+            <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} style="width: 16px; height: 16px; cursor: pointer;">
+            <label for="${id}" style="font-weight: 500; color: var(--text); cursor: pointer; margin: 0;">${label}</label>
         </div>`;
     
     app.innerHTML = `
-      <div class="page-title"><div><h1>Settings</h1><div class="subtitle">API Keys and Model Configuration</div></div></div>
-      <div class="card" style="max-width: 600px;">
-        <form id="settings-form" onsubmit="saveSettings(event)">
-            ${buildInput("gemini_key", "Gemini API Key", settings.GEMINI_API_KEY)}
-            ${buildInput("firecrawl_key", "Firecrawl API Key", settings.FIRECRAWL_API_KEY)}
-            ${buildInput("serper_key", "Serper API Key", settings.SERPER_API_KEY)}
-            ${buildSelect("grounding_model", "AI Grounding Model", settings.AI_GROUNDING_MODEL)}
-            ${buildSelect("extractor_model", "AI Extractor Model", settings.AI_EXTRACTOR_MODEL)}
-            <button type="submit" class="btn" style="background: var(--blue); color: white; margin-top: 10px; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Save Settings</button>
-        </form>
+      <div class="page-title"><div><h1>Settings</h1><div class="subtitle">API Keys and Pipeline Configuration</div></div></div>
+      <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+          <div class="card" style="flex: 1; min-width: 300px; max-width: 500px;">
+            <h2 style="margin-bottom: 15px; font-size: 1.2rem;">API & Models</h2>
+            <form id="settings-form" onsubmit="saveSettings(event)">
+                ${buildInput("gemini_key", "Gemini API Key", settings.GEMINI_API_KEY)}
+                ${buildInput("firecrawl_key", "Firecrawl API Key", settings.FIRECRAWL_API_KEY)}
+                ${buildInput("serper_key", "Serper API Key", settings.SERPER_API_KEY)}
+                ${buildSelect("grounding_model", "AI Grounding Model", settings.AI_GROUNDING_MODEL)}
+                ${buildSelect("extractor_model", "AI Extractor Model", settings.AI_EXTRACTOR_MODEL)}
+                <button type="submit" class="btn" style="background: var(--blue); color: white; margin-top: 10px; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Save API Keys</button>
+            </form>
+          </div>
+          
+          <div class="card" style="flex: 2; min-width: 300px;">
+            <h2 style="margin-bottom: 15px; font-size: 1.2rem;">Pipeline Logic</h2>
+            <form id="pipeline-form" onsubmit="savePipelineConfig(event)">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
+                    <!-- Section A: Scrape/Search Control -->
+                    <div>
+                        <h3 style="margin-bottom: 10px; font-size: 1rem; color: var(--blue);">Scrape & Search Control</h3>
+                        ${buildInput("TOP_N", "Top N Pages to Scrape", pipelineConfig.TOP_N, "", "number")}
+                        ${buildInput("SEARCH_LIMIT", "Serper Search Limit", pipelineConfig.SEARCH_LIMIT, "", "number")}
+                        ${buildInput("SERPER_NUM_RESULTS", "Results per Serper request", pipelineConfig.SERPER_NUM_RESULTS, "", "number")}
+                        ${buildInput("INFER_MAX_SCRAPE", "Max Scrapes for Inference", pipelineConfig.INFER_MAX_SCRAPE, "", "number")}
+                    </div>
+                    
+                    <!-- Section C: Pipeline Behavior -->
+                    <div>
+                        <h3 style="margin-bottom: 10px; font-size: 1rem; color: var(--blue);">Pipeline Behavior</h3>
+                        ${buildInput("EARLY_STOP_COUNT", "Early Stop Count", pipelineConfig.EARLY_STOP_COUNT, "", "number")}
+                        ${buildInput("EARLY_STOP_SCORE", "Early Stop Score", pipelineConfig.EARLY_STOP_SCORE, "", "number")}
+                        ${buildInput("DELAY_SECONDS", "Delay Seconds", pipelineConfig.DELAY_SECONDS, "", "number")}
+                        ${buildInput("MAX_RETRIES", "Max Retries", pipelineConfig.MAX_RETRIES, "", "number")}
+                        ${buildInput("BATCH_SIZE", "Batch Size", pipelineConfig.BATCH_SIZE, "", "number")}
+                        ${buildInput("MIN_CONFIDENCE_THRESHOLD", "Min Confidence", pipelineConfig.MIN_CONFIDENCE_THRESHOLD, "", "number")}
+                        ${buildInput("MIN_SCRAPE_SCORE", "Min Scrape Score", pipelineConfig.MIN_SCRAPE_SCORE, "", "number")}
+                    </div>
+                    
+                    <!-- Section D: Feature Toggles -->
+                    <div>
+                        <h3 style="margin-bottom: 10px; font-size: 1rem; color: var(--blue);">Feature Toggles</h3>
+                        ${buildCheckbox("GEMINI_QUICK_ENABLED", "Enable Gemini Quick Search", pipelineConfig.GEMINI_QUICK_ENABLED)}
+                        ${buildCheckbox("SERPER_ENABLED", "Enable Serper Search", pipelineConfig.SERPER_ENABLED)}
+                        ${buildCheckbox("GOOGLE_MAPS_ENABLED", "Enable Google Maps Lookup", pipelineConfig.GOOGLE_MAPS_ENABLED)}
+                        ${buildCheckbox("SCRAPE_LINKEDIN_ENABLED", "Enable LinkedIn Scrape", pipelineConfig.SCRAPE_LINKEDIN_ENABLED)}
+                        ${buildCheckbox("ENABLE_QUERY_DEDUP", "Enable Query Dedup", pipelineConfig.ENABLE_QUERY_DEDUP)}
+                        ${buildCheckbox("ENABLE_URL_DEDUP", "Enable URL Dedup", pipelineConfig.ENABLE_URL_DEDUP)}
+                        ${buildCheckbox("ENABLE_GLOBAL_CACHE", "Enable Global Cache", pipelineConfig.ENABLE_GLOBAL_CACHE)}
+                        ${buildInput("CACHE_TTL_DAYS", "Cache TTL (Days)", pipelineConfig.CACHE_TTL_DAYS, "", "number")}
+                    </div>
+                </div>
+                
+                <!-- Section B: Scoring and Domains -->
+                <div style="margin-top: 20px;">
+                    <h3 style="margin-bottom: 10px; font-size: 1rem; color: var(--blue);">Scoring & Domains (JSON Format)</h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
+                        ${buildTextarea("DOMAIN_SCORES", "Domain Scores (JSON)", pipelineConfig.DOMAIN_SCORES, "JSON object mapping categories to scores")}
+                        ${buildTextarea("KEYWORD_SCORES", "Keyword Scores (JSON)", pipelineConfig.KEYWORD_SCORES, "JSON object mapping keywords to scores")}
+                        ${buildTextarea("BLACKLISTED_DOMAINS", "Blacklist Domains (JSON array)", pipelineConfig.BLACKLISTED_DOMAINS, "JSON array of strings")}
+                        ${buildTextarea("SKIP_DOMAINS", "Skip Domains (JSON array)", pipelineConfig.SKIP_DOMAINS, "JSON array of strings")}
+                    </div>
+                </div>
+                
+                <button type="submit" class="btn" style="background: var(--blue); color: white; margin-top: 20px; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; width: 100%;">Save Pipeline Config</button>
+            </form>
+          </div>
       </div>
     `;
   } catch (err) {
@@ -576,12 +830,72 @@ async function saveSettings(e) {
             renderSettings();
         } else {
             alert("Error saving settings");
-            btn.textContent = "Save Settings";
+            btn.textContent = "Save API Keys";
             btn.disabled = false;
         }
     } catch (err) {
         alert("Error: " + err.message);
-        btn.textContent = "Save Settings";
+        btn.textContent = "Save API Keys";
+        btn.disabled = false;
+    }
+}
+
+async function savePipelineConfig(e) {
+    e.preventDefault();
+    const btn = e.target.querySelector('button');
+    btn.textContent = "Saving...";
+    btn.disabled = true;
+    
+    let data = {};
+    try {
+        // Parse numbers
+        const numFields = ['TOP_N', 'SEARCH_LIMIT', 'SERPER_NUM_RESULTS', 'INFER_MAX_SCRAPE', 'EARLY_STOP_COUNT', 'EARLY_STOP_SCORE', 'DELAY_SECONDS', 'MAX_RETRIES', 'BATCH_SIZE', 'MIN_CONFIDENCE_THRESHOLD', 'MIN_SCRAPE_SCORE', 'CACHE_TTL_DAYS'];
+        for (const f of numFields) {
+            const val = parseFloat(document.getElementById(f).value);
+            if (isNaN(val)) throw new Error(`Invalid number for ${f}`);
+            data[f] = val;
+        }
+        
+        // Parse booleans
+        const boolFields = ['GEMINI_QUICK_ENABLED', 'SERPER_ENABLED', 'GOOGLE_MAPS_ENABLED', 'SCRAPE_LINKEDIN_ENABLED', 'ENABLE_QUERY_DEDUP', 'ENABLE_URL_DEDUP', 'ENABLE_GLOBAL_CACHE'];
+        for (const f of boolFields) {
+            data[f] = document.getElementById(f).checked;
+        }
+        
+        // Parse JSON
+        const jsonFields = ['DOMAIN_SCORES', 'KEYWORD_SCORES', 'BLACKLISTED_DOMAINS', 'SKIP_DOMAINS'];
+        for (const f of jsonFields) {
+            try {
+                data[f] = JSON.parse(document.getElementById(f).value);
+            } catch (err) {
+                throw new Error(`Invalid JSON format in ${f}`);
+            }
+        }
+    } catch (err) {
+        alert(err.message);
+        btn.textContent = "Save Pipeline Config";
+        btn.disabled = false;
+        return;
+    }
+    // Send data to server
+    
+    try {
+        const res = await fetch("/api/spa/pipeline-config", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(data)
+        });
+        if (res.ok) {
+            alert("Pipeline Config saved successfully!");
+            renderSettings();
+        } else {
+            alert("Error saving pipeline config");
+            btn.textContent = "Save Pipeline Config";
+            btn.disabled = false;
+        }
+    } catch (err) {
+        alert("Error: " + err.message);
+        btn.textContent = "Save Pipeline Config";
         btn.disabled = false;
     }
 }

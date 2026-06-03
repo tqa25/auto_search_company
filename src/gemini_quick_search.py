@@ -401,20 +401,27 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             self.db.update_company(company_id, **updates)
 
     def _save_contact(self, company_id, parsed):
-        """Save extracted contact to extracted_contacts table."""
-        self.db.execute_query(
-            """INSERT INTO extracted_contacts
-               (company_id, source_type, source_url, address, phone, email, website,
-                fax, representative, raw_ai_response, confidence_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (company_id, "gemini_grounding",
-             ", ".join(parsed.get("sources", [])[:3]),
-             parsed.get("address"), parsed.get("phone"),
-             parsed.get("email"), parsed.get("website"),
-             parsed.get("fax"), parsed.get("representative"),
-             json.dumps(parsed, ensure_ascii=False),
-             parsed.get("confidence", 0))
-        )
+        """Save extracted contact to extracted_contacts table. One record per source URL."""
+        sources = parsed.get("sources", [])
+        if not sources:
+            sources = ["unknown"]
+        else:
+            sources = sources[:3] # keep max 3 to avoid spam
+            
+        for source_url in sources:
+            self.db.execute_query(
+                """INSERT INTO extracted_contacts
+                   (company_id, source_type, source_url, address, phone, email, website,
+                    fax, representative, raw_ai_response, confidence_score)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (company_id, "gemini_grounding",
+                 source_url,
+                 parsed.get("address"), parsed.get("phone"),
+                 parsed.get("email"), parsed.get("website"),
+                 parsed.get("fax"), parsed.get("representative"),
+                 json.dumps(parsed, ensure_ascii=False),
+                 parsed.get("confidence", 0))
+            )
 
     def _empty_result(self, reason: str) -> Dict:
         """Return an empty result dict with a fallback reason."""

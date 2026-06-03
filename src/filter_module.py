@@ -52,13 +52,24 @@ class LinkFilter:
 
     def __init__(self, db: DatabaseManager, logger: PipelineLogger, config=None):
         from src.config import default_config
+        import json
+        import os
+        
         self.config = config or default_config
         self.db = db
         self.logger = logger
-
-        # Dynamic blacklist/skip based on config toggles
-        self._blacklisted_domains = list(self.BLACKLISTED_DOMAINS)
-        self._skip_domains = list(self.SKIP_DOMAINS)
+        
+        self._blacklisted_domains = getattr(self.config, 'BLACKLISTED_DOMAINS', self.BLACKLISTED_DOMAINS)
+        self._skip_domains = getattr(self.config, 'SKIP_DOMAINS', self.SKIP_DOMAINS)
+        self._min_scrape_score = getattr(self.config, 'MIN_SCRAPE_SCORE', 35)
+        
+        # Load auto-blacklisted domains from DB
+        try:
+            auto_blacklisted = self.db.get_auto_blacklisted_domains()
+            self._blacklisted_domains.extend(auto_blacklisted)
+            self.logger.logger.info(f"Loaded {len(auto_blacklisted)} auto-blacklisted domains.")
+        except Exception as e:
+            self.logger.logger.error(f"Error loading auto-blacklist: {e}")
 
         # LinkedIn: toggle (default OFF = add to skip)
         if not self.config.SCRAPE_LINKEDIN_ENABLED:
@@ -226,7 +237,7 @@ class LinkFilter:
     # Public API
     # ------------------------------------------------------------------
 
-    def classify_url(self, url: str, company_name: str, title: str = "", vn_name: str = "") -> dict:
+    def classify_url(self, url: str, company_name: str, title: str = "", vn_name: str = "", tax_code: str = "") -> dict:
         """
         Classify a single URL and return a dict with:
             source_type, should_scrape, reason, relevance_score, score_breakdown
@@ -295,8 +306,9 @@ class LinkFilter:
                     
                 reason = f"Matched known domain: {known_domain} ({score_category})"
             else:
-                domain_score = float(self.config.DOMAIN_SCORES.get("official", 40))
-                reason = f"Possible official website: {domain}"
+                domain_score = float(self.config.DOMAIN_SCORES.get("unknown_web", 15))
+                src_type = "unknown_web"
+                reason = f"Unknown domain: {domain}"
 
             # TLD Bonus
             for tld, bonus in getattr(self.config, "TLD_SCORES", {}).items():
@@ -316,11 +328,38 @@ class LinkFilter:
             elif name_match_bonus < 0:
                 reason += f" (Overmatch penalty: {name_match_bonus:.1f})"
 
+            # Identity Match for upgrading unknown_web to official_website
+            if src_type == "unknown_web":
+                is_identity_match = False
+                if name_match_bonus >= 15.0:  # Strong name match
+                    is_identity_match = True
+                    reason += " [Upgraded to official: strong name match]"
+                elif tax_code and tax_code in url:
+                    is_identity_match = True
+                    reason += " [Upgraded to official: tax code in URL]"
+                elif tax_code and tax_code in title:
+                    is_identity_match = True
+                    reason += " [Upgraded to official: tax code in title]"
+                elif "contact" in keyword_bonuses or "admin" in keyword_bonuses:
+                    is_identity_match = True
+                    reason += " [Upgraded to official: contact/admin path]"
+                    
+                if is_identity_match:
+                    src_type = "official_website"
+                    domain_score = float(self.config.DOMAIN_SCORES.get("official", 40))
+
             total = domain_score + keyword_bonus_total + name_match_bonus
+            
+            should_scrape = True
+            
+            # Enforce MIN_SCRAPE_SCORE for unknown_web
+            if src_type == "unknown_web" and total < self._min_scrape_score:
+                should_scrape = False
+                reason += f" [Skipped: score {total} < {self._min_scrape_score}]"
 
             return {
                 "source_type": src_type,
-                "should_scrape": True,
+                "should_scrape": should_scrape,
                 "reason": reason,
                 "relevance_score": total,
                 "score_breakdown": {
@@ -383,22 +422,53 @@ class LinkFilter:
         urls: list[dict],
         seen_domains: set,
         company_name: str,
-        vn_name: str = ""
+        vn_name: str = "",
+        tax_code: str = ""
     ) -> tuple[list[dict], int]:
         """
         Classify and persist a batch of new search result URLs for a company.
+        Smart Dedup: if multiple URLs share a domain in this batch, keep the one with max relevance_score.
         Updates seen_domains set in-place.
         Returns: (filtered_results, good_count_above_threshold)
         """
         filtered_results = []
         good_count = 0
-
+        
+        # 1. First, classify all URLs and group by domain
+        domain_best_url = {}
         for r in urls:
-            search_result_id = r.get("search_result_id")
             url = r["url"]
             title = r.get("title", "")
+            
+            try:
+                domain = self._extract_domain(url) or "unknown"
+            except Exception:
+                domain = "unknown"
+                
+            # If domain was seen in a *previous* batch, skip completely
+            if domain in seen_domains and domain != "unknown":
+                continue
 
-            classification = self.classify_url(url, company_name, title=title, vn_name=vn_name)
+            classification = self.classify_url(url, company_name, title=title, vn_name=vn_name, tax_code=tax_code)
+            r['_classification'] = classification
+            r['_domain'] = domain
+            
+            # Keep the highest scoring URL for each domain in this batch
+            if domain not in domain_best_url:
+                domain_best_url[domain] = r
+            else:
+                if classification['relevance_score'] > domain_best_url[domain]['_classification']['relevance_score']:
+                    domain_best_url[domain] = r
+                    
+        # 2. Persist the best URLs
+        best_urls = list(domain_best_url.values())
+        best_urls.sort(key=lambda x: x['_classification']['relevance_score'], reverse=True)
+
+        for r in best_urls:
+            search_result_id = r.get("search_result_id")
+            url = r["url"]
+            classification = r['_classification']
+            domain = r['_domain']
 
             self.logger.log_event("score_calculated", company_id, {
                 "url": url,
@@ -409,15 +479,9 @@ class LinkFilter:
                 "reason": classification.get("reason", "")
             })
 
-            # Dedup by domain.
-            try:
-                domain = self._extract_domain(url) or "unknown"
-            except Exception:
-                domain = "unknown"
-
-            if domain in seen_domains:
-                continue
-            seen_domains.add(domain)
+            # Mark domain as seen for future batches
+            if domain != "unknown":
+                seen_domains.add(domain)
 
             # Validate scored link before persisting
             scored_link_dict = {
@@ -431,7 +495,7 @@ class LinkFilter:
             try:
                 validate_scored_link(scored_link_dict)
             except ValueError as e:
-                logger.warning(f"Skipping invalid scored link: {e}")
+                self.logger.logger.warning(f"Skipping invalid scored link: {e}")
                 continue
 
             # Persist the link.

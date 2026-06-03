@@ -214,6 +214,41 @@ class Config:
         self.SCRAPE_LINKEDIN_ENABLED: bool = _parse_bool(
             os.getenv("SCRAPE_LINKEDIN_ENABLED"), default=False
         )
+        
+        # --- Dynamic Overrides from pipeline_config.json ---
+        self._load_pipeline_config()
+
+    def _load_pipeline_config(self):
+        """Override config values from pipeline_config.json if it exists."""
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "pipeline_config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                
+                # Iterate through expected keys and override if present
+                keys_to_override = [
+                    "SEARCH_LIMIT", "EARLY_STOP_COUNT", "EARLY_STOP_SCORE", "INFER_MAX_SCRAPE",
+                    "DOMAIN_SCORES", "KEYWORD_SCORES", "TOP_N", 
+                    "ENABLE_QUERY_DEDUP", "ENABLE_URL_DEDUP", "ENABLE_GLOBAL_CACHE", "CACHE_TTL_DAYS",
+                    "DELAY_SECONDS", "MAX_RETRIES", "BATCH_SIZE", "MIN_CONFIDENCE_THRESHOLD",
+                    "GEMINI_QUICK_ENABLED", "SERPER_ENABLED", "GOOGLE_MAPS_ENABLED", "SCRAPE_LINKEDIN_ENABLED",
+                    "MIN_SCRAPE_SCORE"
+                ]
+                
+                for k in keys_to_override:
+                    if k in data:
+                        setattr(self, k, data[k])
+                        
+                # Note: BLACKLISTED_DOMAINS and SKIP_DOMAINS are used in filter_module directly
+                # We can also store them here for completeness
+                if "BLACKLISTED_DOMAINS" in data:
+                    self.BLACKLISTED_DOMAINS = data["BLACKLISTED_DOMAINS"]
+                if "SKIP_DOMAINS" in data:
+                    self.SKIP_DOMAINS = data["SKIP_DOMAINS"]
+                    
+            except Exception as e:
+                print(f"Warning: Failed to load pipeline_config.json: {e}")
 
 
     def __repr__(self) -> str:

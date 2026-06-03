@@ -180,6 +180,16 @@ h1 { margin: 0; color: var(--heading); font-size: 24px; }
   padding: 9px 12px;
 }
 .input { min-width: 260px; }
+.filter-toolbar { align-items: stretch; }
+.date-input { min-width: 150px; }
+.import-batch-select { min-width: 220px; max-width: 320px; }
+.selection-summary {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 .table-wrap {
   border: 1px solid var(--border);

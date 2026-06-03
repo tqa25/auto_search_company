@@ -197,13 +197,8 @@ class FirecrawlDeepSearch:
     @staticmethod
     def normalize_url(url: str) -> str:
         """Normalize a URL for dedup comparison."""
-        if not url:
-            return ""
-        parsed = urlparse(url.lower().rstrip("/"))
-        host = parsed.netloc
-        if host.startswith("www."):
-            host = host[4:]
-        return f"{host}{parsed.path}"
+        from src.utils import normalize_url as utils_normalize
+        return utils_normalize(url)
 
     @staticmethod
     def dedup_results(results: List[Dict], existing_urls: Set[str]) -> List[Dict]:

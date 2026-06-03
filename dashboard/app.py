@@ -11,6 +11,7 @@ import io
 import asyncio
 import threading
 import base64
+import sqlite3
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
@@ -111,6 +112,59 @@ def _today_str():
 
 def _now_iso():
     return datetime.now(VN_TZ).isoformat(timespec="seconds")
+
+
+def _date_start(value: str | None) -> str | None:
+    if not value:
+        return None
+    return f"{value[:10]} 00:00:00"
+
+
+def _date_end(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        day = datetime.strptime(value[:10], "%Y-%m-%d") + timedelta(days=1)
+        return day.strftime("%Y-%m-%d 00:00:00")
+    except ValueError:
+        return value
+
+
+def _company_filter_sql(
+    status: str = None,
+    search: str = None,
+    import_batch_id: int = None,
+    created_from: str = None,
+    created_to: str = None,
+    completed_from: str = None,
+    completed_to: str = None,
+) -> tuple[str, list[object]]:
+    filters = []
+    params: list[object] = []
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if search:
+        filters.append("LOWER(original_name) LIKE ?")
+        params.append(f"%{search.lower()}%")
+    if import_batch_id:
+        filters.append("import_batch_id = ?")
+        params.append(import_batch_id)
+    if created_from:
+        filters.append("created_at >= ?")
+        params.append(_date_start(created_from))
+    if created_to:
+        filters.append("created_at < ?")
+        params.append(_date_end(created_to))
+    if completed_from:
+        filters.append("completed_at >= ?")
+        params.append(_date_start(completed_from))
+    if completed_to:
+        filters.append("completed_at < ?")
+        params.append(_date_end(completed_to))
+
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    return where, params
 
 
 def _job_from_status(status: str) -> tuple[str, str, int]:
@@ -438,11 +492,15 @@ def api_spa_status():
     )["cnt"]
 
     today = _today_str()
-    quota = db.fetch_one("SELECT gemini_grounding_used, serper_used FROM daily_quota WHERE date = ?", (today,))
+    quota = db.fetch_one("SELECT gemini_grounding_used FROM daily_quota WHERE date = ?", (today,))
     tokens = db.fetch_one(
         "SELECT SUM(input_tokens) as tin, SUM(output_tokens) as tout FROM gemini_quick_results WHERE created_at LIKE ?",
         (f"{today}%",),
     )
+    fc_scrape = db.fetch_one("SELECT SUM(credits_used) as total FROM scraped_pages WHERE created_at LIKE ?", (f"{today}%",))
+    fc_search = db.fetch_one("SELECT SUM(credits_used) as total FROM search_results WHERE search_type LIKE '%firecrawl%' AND created_at LIKE ?", (f"{today}%",))
+    firecrawl_used = (fc_scrape["total"] or 0) + (fc_search["total"] or 0)
+    
     gemini_sufficient = db.fetch_one("SELECT COUNT(*) as cnt FROM gemini_quick_results WHERE is_sufficient=1")["cnt"]
     ai_extract_contacts = db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM extracted_contacts")["cnt"]
 
@@ -456,7 +514,7 @@ def api_spa_status():
         "quota": {
             "gemini_used": quota["gemini_grounding_used"] if quota else 0,
             "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
-            "firecrawl_used": quota["serper_used"] if quota else 0,
+            "firecrawl_used": firecrawl_used,
             "firecrawl_total": 2500,
             "tokens_in": tokens["tin"] or 0 if tokens else 0,
             "tokens_out": tokens["tout"] or 0 if tokens else 0,
@@ -470,21 +528,30 @@ def api_spa_status():
 
 
 @app.get("/api/spa/companies")
-def api_spa_companies(status: str = None, search: str = None, page: int = 1, page_size: int = 50):
+def api_spa_companies(
+    status: str = None,
+    search: str = None,
+    import_batch_id: int = None,
+    created_from: str = None,
+    created_to: str = None,
+    completed_from: str = None,
+    completed_to: str = None,
+    page: int = 1,
+    page_size: int = 50,
+):
     db = _db()
     page_size = max(1, min(page_size, 100))
     page = max(1, page)
 
-    filters = []
-    params: list[object] = []
-    if status:
-        filters.append("status = ?")
-        params.append(status)
-    if search:
-        filters.append("LOWER(original_name) LIKE ?")
-        params.append(f"%{search.lower()}%")
-
-    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    where, params = _company_filter_sql(
+        status=status,
+        search=search,
+        import_batch_id=import_batch_id,
+        created_from=created_from,
+        created_to=created_to,
+        completed_from=completed_from,
+        completed_to=completed_to,
+    )
     total = db.fetch_one(f"SELECT COUNT(*) as cnt FROM companies {where}", tuple(params))["cnt"]
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = min(page, total_pages)
@@ -492,7 +559,8 @@ def api_spa_companies(status: str = None, search: str = None, page: int = 1, pag
 
     rows = db.fetch_all(
         f"""
-        SELECT id, original_name, vietnamese_name, tax_code, status, updated_at, created_at
+        SELECT id, original_name, vietnamese_name, tax_code, status, updated_at, created_at,
+               import_batch_id, completed_at
         FROM companies
         {where}
         ORDER BY id
@@ -548,6 +616,36 @@ def api_spa_companies(status: str = None, search: str = None, page: int = 1, pag
         "pagination": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages},
         "counts": _counts(db),
     })
+
+
+@app.get("/api/spa/companies/ids")
+def api_spa_company_ids(
+    status: str = None,
+    search: str = None,
+    import_batch_id: int = None,
+    created_from: str = None,
+    created_to: str = None,
+    completed_from: str = None,
+    completed_to: str = None,
+):
+    db = _db()
+    where, params = _company_filter_sql(
+        status=status,
+        search=search,
+        import_batch_id=import_batch_id,
+        created_from=created_from,
+        created_to=created_to,
+        completed_from=completed_from,
+        completed_to=completed_to,
+    )
+    rows = db.fetch_all(f"SELECT id FROM companies {where} ORDER BY id", tuple(params))
+    return JSONResponse({"company_ids": [r["id"] for r in rows], "count": len(rows)})
+
+
+@app.get("/api/spa/import-batches")
+def api_spa_import_batches(limit: int = 25):
+    db = _db()
+    return JSONResponse({"batches": db.get_import_batches(max(1, min(limit, 100)))})
 
 
 @app.get("/api/spa/companies/{company_id}")
@@ -759,6 +857,40 @@ async def api_spa_settings_update(req: Request):
         
     return JSONResponse({"status": "ok", "message": "Settings updated"})
 
+@app.get("/api/spa/pipeline-config")
+def api_spa_pipeline_config_get():
+    config_file = "pipeline_config.json"
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, "r") as f:
+                return JSONResponse(json.load(f))
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({})
+
+@app.post("/api/spa/pipeline-config")
+async def api_spa_pipeline_config_update(req: Request):
+    data = await req.json()
+    config_file = "pipeline_config.json"
+    
+    # Merge with existing
+    current_config = {}
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, "r") as f:
+                current_config = json.load(f)
+        except Exception:
+            pass
+            
+    current_config.update(data)
+    
+    try:
+        with open(config_file, "w") as f:
+            json.dump(current_config, f, indent=2)
+        return JSONResponse({"status": "success"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 @app.get("/api/spa/gemini-models")
 def api_spa_gemini_models():
     api_key = os.getenv("GEMINI_API_KEY")
@@ -819,22 +951,48 @@ async def api_import(request: Request):
         return JSONResponse({"error": "No names provided"}, status_code=400)
 
     db = _db()
+    batch_id = db.create_import_batch(
+        source_filename=data.get("source_filename"),
+        total=len(names),
+        imported=0,
+        skipped=0,
+    )
     imported = 0
     skipped = 0
+    seen_keys: set[str] = set()
+    duplicate_names = []
 
     for name in names:
         name = str(name).strip()
         if not name:
             continue
-        # Check duplicate
-        existing = db.fetch_one("SELECT id FROM companies WHERE original_name = ?", (name,))
+        name_key = db.normalize_company_name(name)
+        if not name_key or name_key in seen_keys:
+            skipped += 1
+            duplicate_names.append(name)
+            continue
+        seen_keys.add(name_key)
+
+        existing = db.fetch_one("SELECT id FROM companies WHERE original_name_key = ?", (name_key,))
         if existing:
             skipped += 1
+            duplicate_names.append(name)
             continue
-        db.insert_company(name)
-        imported += 1
+        try:
+            db.insert_company(name, import_batch_id=batch_id)
+            imported += 1
+        except sqlite3.IntegrityError:
+            skipped += 1
+            duplicate_names.append(name)
 
-    return JSONResponse({"imported": imported, "skipped": skipped, "total": len(names)})
+    db.update_import_batch(batch_id, imported=imported, skipped=skipped)
+    return JSONResponse({
+        "batch_id": batch_id,
+        "imported": imported,
+        "skipped": skipped,
+        "total": len(names),
+        "duplicate_names": duplicate_names,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1150,8 +1308,8 @@ def api_export_logs(format: str = "jsonl", company_id: int = None):
     return JSONResponse({"error": "Invalid format. Use: jsonl, csv, markdown"}, status_code=400)
 
 
-@app.get("/api/export/final-excel")
-def api_export_final_excel():
+@app.post("/api/export-excel")
+def api_export_excel(payload: dict):
     from src.excel_handler import ExcelWriter
     from fastapi.responses import FileResponse
     import tempfile
@@ -1159,6 +1317,10 @@ def api_export_final_excel():
     
     local_logger = logging.getLogger("dashboard")
     
+    company_ids = payload.get("company_ids", [])
+    if not company_ids:
+        raise HTTPException(status_code=400, detail="No company IDs provided")
+        
     db = _db()
     today = _today_str()
     
@@ -1168,7 +1330,7 @@ def api_export_final_excel():
     
     try:
         writer = ExcelWriter()
-        writer.write_consolidated_report(db, output_path)
+        writer.write_consolidated_report(db, output_path, company_ids=company_ids)
         
         return FileResponse(
             path=output_path,
@@ -1225,3 +1387,5 @@ async def websocket_logs(websocket: WebSocket):
     finally:
         if websocket in ws_clients:
             ws_clients.remove(websocket)
+
+# Triggering uvicorn reload for src/ updates

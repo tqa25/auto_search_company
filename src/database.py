@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import re
 import threading
 
 class DatabaseManager:
@@ -47,15 +48,38 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS companies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 original_name TEXT NOT NULL,
+                original_name_key TEXT,
                 vietnamese_name TEXT,
                 tax_code TEXT,
                 status TEXT DEFAULT 'pending',
+                import_batch_id INTEGER REFERENCES company_import_batches(id),
+                completed_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS company_import_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                source_filename TEXT,
+                total INTEGER DEFAULT 0,
+                imported INTEGER DEFAULT 0,
+                skipped INTEGER DEFAULT 0
+            )
+        """)
+
         # Safe migration: add address and vn_data_source to existing companies table
+        for sql in (
+            "ALTER TABLE companies ADD COLUMN original_name_key TEXT",
+            "ALTER TABLE companies ADD COLUMN import_batch_id INTEGER REFERENCES company_import_batches(id)",
+            "ALTER TABLE companies ADD COLUMN completed_at TIMESTAMP",
+        ):
+            try:
+                cursor.execute(sql)
+            except Exception:
+                pass
         try:
             cursor.execute("ALTER TABLE companies ADD COLUMN address TEXT")
         except Exception:
@@ -247,11 +271,74 @@ class DatabaseManager:
             ON pipeline_jobs(status, updated_at)
         """)
 
+        # 12. domain_stats — Track scrape success for auto-blacklisting
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS domain_stats (
+                domain TEXT PRIMARY KEY,
+                scrape_count INTEGER DEFAULT 0,
+                success_count INTEGER DEFAULT 0,
+                is_auto_blacklisted BOOLEAN DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
+        self._ensure_company_name_keys()
 
         # Run pending schema migrations
         from src.migrations import run_migrations
         run_migrations(self)
+
+    @staticmethod
+    def normalize_company_name(name: str) -> str:
+        """Create a stable key for duplicate company-name checks."""
+        return re.sub(r"\s+", " ", str(name or "").strip()).casefold()
+
+    def _ensure_company_name_keys(self):
+        """Backfill normalized company keys and add the unique guard."""
+        rows = self.fetch_all(
+            "SELECT id, original_name, original_name_key FROM companies ORDER BY id"
+        )
+        seen: set[str] = set()
+        for row in rows:
+            current_key = row.get("original_name_key")
+            if current_key:
+                if current_key in seen:
+                    base_duplicate_key = f"{current_key}#duplicate-{row['id']}"
+                    current_key = base_duplicate_key
+                    suffix = 2
+                    while current_key in seen:
+                        current_key = f"{base_duplicate_key}-{suffix}"
+                        suffix += 1
+                    self.execute_query(
+                        "UPDATE companies SET original_name_key = ? WHERE id = ?",
+                        (current_key, row["id"]),
+                    )
+                seen.add(current_key)
+                continue
+
+            base_key = self.normalize_company_name(row["original_name"])
+            if not base_key:
+                base_key = f"company-{row['id']}"
+            if base_key not in seen:
+                key = base_key
+            else:
+                duplicate_key = f"{base_key}#duplicate-{row['id']}"
+                key = duplicate_key
+                suffix = 2
+                while key in seen:
+                    key = f"{duplicate_key}-{suffix}"
+                    suffix += 1
+            seen.add(key)
+            self.execute_query(
+                "UPDATE companies SET original_name_key = ? WHERE id = ?",
+                (key, row["id"]),
+            )
+
+        self.execute_query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_original_name_key "
+            "ON companies(original_name_key)"
+        )
 
     # Generic method for inserting/updating to avoid redundant code
     def execute_query(self, query, params=()):
@@ -278,12 +365,15 @@ class DatabaseManager:
         return dict(row) if row else None
 
     # --- Companies ---
-    def insert_company(self, original_name, vietnamese_name=None, tax_code=None, status="pending"):
+    def insert_company(self, original_name, vietnamese_name=None, tax_code=None, status="pending", import_batch_id=None):
         """Insert a new company into the companies table."""
-        return self.execute_query(
-            "INSERT INTO companies (original_name, vietnamese_name, tax_code, status) VALUES (?, ?, ?, ?)",
-            (original_name, vietnamese_name, tax_code, status)
+        company_id = self.execute_query(
+            "INSERT INTO companies (original_name, original_name_key, vietnamese_name, tax_code, status, import_batch_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (original_name, self.normalize_company_name(original_name), vietnamese_name, tax_code, status, import_batch_id)
         )
+        if status == "done":
+            self.execute_query("UPDATE companies SET completed_at = CURRENT_TIMESTAMP WHERE id = ?", (company_id,))
+        return company_id
 
     def get_company(self, company_id):
         """Retrieve a company by its ID."""
@@ -296,10 +386,42 @@ class DatabaseManager:
     def update_company(self, company_id, **kwargs):
         """Update fields formatting a given company entry."""
         if not kwargs: return
+        if "original_name" in kwargs and "original_name_key" not in kwargs:
+            kwargs["original_name_key"] = self.normalize_company_name(kwargs["original_name"])
         set_clauses = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        if kwargs.get("status") == "done" and "completed_at" not in kwargs:
+            set_clauses = f"{set_clauses}, completed_at = CURRENT_TIMESTAMP"
         query = f"UPDATE companies SET {set_clauses}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
         params = list(kwargs.values()) + [company_id]
         self.execute_query(query, params)
+
+    def create_import_batch(self, source_filename=None, total=0, imported=0, skipped=0):
+        """Create an import batch record and return its ID."""
+        return self.execute_query(
+            "INSERT INTO company_import_batches (source_filename, total, imported, skipped) VALUES (?, ?, ?, ?)",
+            (source_filename, total, imported, skipped),
+        )
+
+    def update_import_batch(self, batch_id, **kwargs):
+        if not kwargs:
+            return
+        set_clauses = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        params = list(kwargs.values()) + [batch_id]
+        self.execute_query(f"UPDATE company_import_batches SET {set_clauses} WHERE id = ?", params)
+
+    def get_import_batches(self, limit=25):
+        return self.fetch_all(
+            """
+            SELECT b.*,
+                   COUNT(c.id) as current_company_count
+            FROM company_import_batches b
+            LEFT JOIN companies c ON c.import_batch_id = b.id
+            GROUP BY b.id
+            ORDER BY b.created_at DESC, b.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
 
     def delete_companies(self, company_ids):
         """Delete multiple companies and all their associated data across all tables."""
@@ -395,6 +517,26 @@ class DatabaseManager:
         """Get pipeline logs for a company."""
         return self.fetch_all("SELECT * FROM pipeline_logs WHERE company_id = ? ORDER BY started_at ASC", (company_id,))
 
+    def get_pipeline_time_for_company(self, company_id: int) -> dict:
+        """Get started_at and finished_at for a company, falling back to pipeline_logs if missing."""
+        # Try pipeline_jobs first
+        job = self.fetch_one("SELECT started_at, finished_at FROM pipeline_jobs WHERE company_id = ?", (company_id,))
+        if job and job.get('started_at'):
+            return {
+                "started_at": job.get('started_at'),
+                "finished_at": job.get('finished_at')
+            }
+        
+        # Fallback to pipeline_logs
+        logs = self.fetch_all("SELECT MIN(started_at) as min_start, MAX(finished_at) as max_finish FROM pipeline_logs WHERE company_id = ?", (company_id,))
+        if logs and logs[0].get('min_start'):
+            return {
+                "started_at": logs[0].get('min_start'),
+                "finished_at": logs[0].get('max_finish')
+            }
+            
+        return {"started_at": None, "finished_at": None}
+
     # --- Query Cache ---
     def insert_query_cache(self, query_hash: str, query_text: str, company_id: int, expires_at: str, result_count: int = 0):
         return self.execute_query(
@@ -466,6 +608,7 @@ class DatabaseManager:
                 sp.scrape_status,
                 sp.credits_used AS scrape_credits,
                 sp.error_message,
+                ec.source_url,
                 ec.address,
                 ec.phone,
                 ec.email,
@@ -481,3 +624,46 @@ class DatabaseManager:
             WHERE sr.company_id = ?
         """
         return self.fetch_all(query, (company_id,))
+
+    # --- Domain Stats (Auto-Blacklist) ---
+    def record_domain_scrape(self, domain: str, success: bool, threshold: int = 10):
+        """Record a scrape attempt for a domain and auto-blacklist if it fails too many times."""
+        # Insert if not exists
+        self.execute_query(
+            "INSERT OR IGNORE INTO domain_stats (domain) VALUES (?)",
+            (domain,)
+        )
+        
+        # Update counts
+        if success:
+            self.execute_query(
+                "UPDATE domain_stats SET scrape_count = scrape_count + 1, success_count = success_count + 1, updated_at = CURRENT_TIMESTAMP WHERE domain = ?",
+                (domain,)
+            )
+        else:
+            self.execute_query(
+                "UPDATE domain_stats SET scrape_count = scrape_count + 1, updated_at = CURRENT_TIMESTAMP WHERE domain = ?",
+                (domain,)
+            )
+            
+        # Check auto-blacklist threshold
+        stat = self.fetch_one("SELECT scrape_count, success_count, is_auto_blacklisted FROM domain_stats WHERE domain = ?", (domain,))
+        if stat and not stat['is_auto_blacklisted'] and stat['scrape_count'] >= threshold and stat['success_count'] == 0:
+            self.execute_query("UPDATE domain_stats SET is_auto_blacklisted = 1 WHERE domain = ?", (domain,))
+
+    def get_auto_blacklisted_domains(self) -> list[str]:
+        """Get list of auto-blacklisted domains."""
+        rows = self.fetch_all("SELECT domain FROM domain_stats WHERE is_auto_blacklisted = 1")
+        return [row['domain'] for row in rows]
+        
+    def get_domain_stats(self):
+        """Get all domain stats for settings UI."""
+        return self.fetch_all("SELECT * FROM domain_stats ORDER BY scrape_count DESC")
+        
+    def remove_auto_blacklist(self, domain: str):
+        """Manually remove a domain from auto-blacklist and reset its counts."""
+        self.execute_query(
+            "UPDATE domain_stats SET is_auto_blacklisted = 0, scrape_count = 0, success_count = 0 WHERE domain = ?",
+            (domain,)
+        )
+

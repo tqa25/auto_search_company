@@ -3,6 +3,7 @@ import json
 import time
 import re
 import requests
+from urllib.parse import urlparse
 from google import genai
 from google.genai import types
 from src.database import DatabaseManager
@@ -113,6 +114,21 @@ class AIExtractor:
 
     {markdown_content}
     """
+
+    def _record_domain_stat(self, url: str, success: bool):
+        """Helper to extract domain from URL and record scrape stats in DB."""
+        if not url or url == 'batch' or url == 'unknown':
+            return
+            
+        domain = urlparse(url).netloc
+        if domain.startswith('www.'):
+            domain = domain[4:]
+            
+        if domain:
+            # We don't want to penalize well-known platforms like facebook or linkedin
+            # if they happen to not have contact info on a specific page
+            if domain not in ['facebook.com', 'linkedin.com', 'yellowpages.vn']:
+                self.db.record_domain_scrape(domain, success, threshold=10)
 
     def _has_contact_signals(self, markdown: str) -> bool:
         """
@@ -276,6 +292,7 @@ class AIExtractor:
                             raw_ai_response=raw_response, 
                             confidence_score=0.0
                         )
+                        self._record_domain_stat(source_url, False)
                         self.logger.log_step_end(log_id, "FAILED", error_message="json_parse_error", error_category="skippable")
                         return {"status": "failed", "reason": "json_parse_error", "confidence": 0.0}
 
@@ -334,6 +351,9 @@ class AIExtractor:
                 if email: extracted_fields_list.append("email")
                 if website: extracted_fields_list.append("website")
                 if representative: extracted_fields_list.append("rep")
+                
+                has_contacts = len(extracted_fields_list) > 0
+                self._record_domain_stat(source_url, has_contacts)
                 
                 metadata = {"extracted_fields": ",".join(extracted_fields_list) if extracted_fields_list else "none"}
                 self.logger.log_step_end(log_id, "SUCCESS", data_saved=True, metadata=metadata)
@@ -443,6 +463,8 @@ class AIExtractor:
                         data = json.loads(clean_text)
                     except json.JSONDecodeError:
                         self.logger.logger.warning(f"Failed to parse JSON for batch")
+                        for page in batch_pages:
+                            self._record_domain_stat(page.get('url', ''), False)
                         self.logger.log_step_end(log_id, "FAILED", error_message="json_parse_error", error_category="skippable")
                         return {"status": "failed", "reason": "json_parse_error", "confidence": 0.0}
 
@@ -507,6 +529,10 @@ class AIExtractor:
                 if email: extracted_fields_list.append("email")
                 if website: extracted_fields_list.append("website")
                 if representative: extracted_fields_list.append("rep")
+
+                has_contacts = len(extracted_fields_list) > 0
+                for page in batch_pages:
+                    self._record_domain_stat(page.get('url', ''), has_contacts)
 
                 metadata = {
                     "extracted_fields": ",".join(extracted_fields_list) if extracted_fields_list else "none",
