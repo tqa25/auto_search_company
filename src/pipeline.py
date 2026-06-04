@@ -13,7 +13,7 @@ from src.excel_handler import ExcelReader, ExcelWriter
 from src.ai_extractor import AIExtractor
 from src.result_aggregator import ResultAggregator
 from src.gemini_quick_search import GeminiQuickSearch
-from src.serper_search import SerperSearch
+from src.firecrawl_deep_search import FirecrawlDeepSearch
 from src.errors import PipelineError, RetryableError, SkippableError, CriticalError
 
 VN_TZ = timezone(timedelta(hours=7))
@@ -21,7 +21,7 @@ VN_TZ = timezone(timedelta(hours=7))
 class Pipeline:
     """Pipeline orchestrator with resume, checkpoint, and graceful shutdown support."""
 
-    # Status progression: pending → gemini_quick_done → searched → scraped → ai_done → done
+    # Status progression: pending → gemini_quick_done → searched → scraped → ai_extract_pending → ai_done → done
     # Failed states: failed, permanently_failed
     STATUS_FLOW = {
         'pending':              'gemini_quick',
@@ -31,16 +31,16 @@ class Pipeline:
         'searched':             'filter',
         'scraping':             'filter',           # interrupted during scrape — redo filter+scrape
         'scraped':              'ai_extract',
+        'ai_extract_pending':   'ai_extract',       # ★ CHECKPOINT: scraped done, AI not yet run → skip scrape on resume
         'extracting':           'ai_extract',       # interrupted during extraction
-        'ai_done':              'contact_discovery', # check if phone missing → maybe discover
-        'contact_discovering':  'contact_discovery',
+        'ai_done':              'done',
         'failed':               'gemini_quick',     # retry from beginning
     }
 
     def __init__(self, config: dict, pipeline_config=None):
         # existing dict-based config stays for backward compat
         self.config = config
-        self.firecrawl_api_key = config.get("firecrawl_api_key")
+        self.firecrawl_api_key = config.get("firecrawl_api_key") or os.getenv("FIRECRAWL_API_KEY", "")
         self.input_excel_path = config.get("input_excel_path")
         self.output_dir = config.get("output_dir", "output")
         self.delay_seconds = config.get("delay_seconds", 3.0)
@@ -66,14 +66,14 @@ class Pipeline:
 
         # New modules for 4-step pipeline
         self.gemini_quick = GeminiQuickSearch(self.db, self.logger, config=self.cfg)
-        self.serper = SerperSearch(self.db, self.logger, config=self.cfg)
+        self.deep_search = FirecrawlDeepSearch(self.db, self.logger, config=self.cfg)
 
         self.gemini_api_key = config.get("gemini_api_key")
 
-        # We handle AIExtractor gracefully if GEMINI API KEY doesn't exist yet for legacy scripts
+        # We handle AIExtractor gracefully if GEMINI_API_KEY doesn't exist yet for legacy scripts
         self.ai_extractor = None
-        if self.gemini_api_key:
-            self.ai_extractor = AIExtractor(self.db, self.logger, self.gemini_api_key)
+        if self.cfg.GEMINI_API_KEY:
+            self.ai_extractor = AIExtractor(self.db, self.logger, config=self.cfg)
 
         self.result_aggregator = ResultAggregator(self.db)
 
@@ -95,17 +95,25 @@ class Pipeline:
     def _install_signal_handlers(self):
         """Install signal handlers for SIGINT and SIGTERM to enable graceful shutdown."""
         self._shutdown_requested = False
-        self._original_sigint_handler = signal.getsignal(signal.SIGINT)
-        self._original_sigterm_handler = signal.getsignal(signal.SIGTERM)
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        try:
+            self._original_sigint_handler = signal.getsignal(signal.SIGINT)
+            self._original_sigterm_handler = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        except ValueError:
+            self._original_sigint_handler = None
+            self._original_sigterm_handler = None
+            print("⚠️ Running in background thread. Skipping graceful signal handling.")
 
     def _restore_signal_handlers(self):
         """Restore original signal handlers after pipeline run completes."""
-        if self._original_sigint_handler is not None:
-            signal.signal(signal.SIGINT, self._original_sigint_handler)
-        if self._original_sigterm_handler is not None:
-            signal.signal(signal.SIGTERM, self._original_sigterm_handler)
+        try:
+            if self._original_sigint_handler is not None:
+                signal.signal(signal.SIGINT, self._original_sigint_handler)
+            if self._original_sigterm_handler is not None:
+                signal.signal(signal.SIGTERM, self._original_sigterm_handler)
+        except ValueError:
+            pass
 
     def _signal_handler(self, signum, frame):
         """Handle SIGINT/SIGTERM by setting a flag to stop after current company."""
@@ -125,10 +133,12 @@ class Pipeline:
     def _should_do_step(self, next_step: str, target_step: str) -> bool:
         """Check if a given target_step should be executed given the next_step.
 
-        Pipeline order: gemini_quick → deep_search → filter → scrape → ai_extract → contact_discovery
+        Pipeline order: gemini_quick → deep_search → filter → scrape → ai_extract
         If next_step is 'filter', we skip gemini_quick and deep_search but do filter, scrape, etc.
         """
-        step_order = ['gemini_quick', 'deep_search', 'filter', 'scrape', 'ai_extract', 'contact_discovery']
+        if next_step == 'done':
+            return False
+        step_order = ['gemini_quick', 'deep_search', 'filter', 'scrape', 'ai_extract']
         if next_step not in step_order or target_step not in step_order:
             return True
         return step_order.index(target_step) >= step_order.index(next_step)
@@ -226,6 +236,7 @@ class Pipeline:
                         # ====== BƯỚC 1: GEMINI QUICK SEARCH (no early-stop) ======
                         gemini_result = None
                         quick = None
+                        filter_already_completed = False
                         if self._should_do_step(next_step, 'gemini_quick') and not replay_mode:
                             print("  -> Bước 1: Gemini Quick Search...")
                             self.db.update_company(company_id, status='gemini_quick')
@@ -247,54 +258,57 @@ class Pipeline:
 
                             self.db.update_company(company_id, status='gemini_quick_done')
 
-                        # ====== GOOGLE MAPS (OPTIONAL — gated by config) ======
-                        if self.cfg.GOOGLE_MAPS_ENABLED and self._should_do_step(next_step, 'deep_search') and not replay_mode:
-                            maps_query = (gemini_result or {}).get("core_name_vi") or \
-                                         (gemini_result or {}).get("core_name") or company_name
-                            print(f"  -> [Optional] Google Maps ({maps_query[:40]})...")
-                            maps_result = self.serper.search_places(company_id, maps_query)
-                            self._batch_stats["serper_credits"] += maps_result.get("serper_credits_used", 0)
-
-                            if maps_result.get("phone"):
-                                self._save_maps_contact(company_id, maps_result, gemini_result)
-                                self._batch_stats["optional_maps_success"] += 1
-                                print(f"  -> [Optional] Google Maps có phone, đã lưu (tiếp tục deep search)")
-                            else:
-                                maps_website = maps_result.get("website")
-                                if maps_website:
-                                    self.db.execute_query(
-                                        """INSERT OR IGNORE INTO filtered_links 
-                                           (company_id, url, source_type, should_scrape, reason, relevance_score) 
-                                           VALUES (?, ?, 'google_maps', 1, 'maps_website_discovery', 15)""",
-                                        (company_id, maps_website)
-                                    )
-                                    print(f"  -> [Optional] Maps: không có phone, đã thêm website {maps_website} vào scrape queue")
-                                else:
-                                    print(f"  -> [Optional] Maps: không có phone, không có website")
-
-                        # ====== BƯỚC 2: DEEP SEARCH (Serper + Filter + Firecrawl + Extract) ======
+                        # ====== BƯỚC 2: DEEP SEARCH (Firecrawl + Filter + Extract) ======
                         if self._should_do_step(next_step, 'deep_search'):
                             if not replay_mode:
                                 print("  -> Bước 2: Deep Search...")
-                                # Build smart queries from Gemini result
+                                        # Build smart queries from Gemini result
                                 if gemini_result:
-                                    queries = self.serper.build_fallback_queries(gemini_result)
+                                    queries = self.deep_search.build_fallback_queries(gemini_result, company_name)
                                     gemini_sources = set(quick.get("grounding_sources", []) if quick else [])
 
+                                    seen_domains = set()
+                                    good_pages_total = 0
                                     all_search_results = []
-                                    for q in queries:
-                                        results = self.serper.search(company_id, q["query"])
-                                        self._batch_stats["serper_credits"] += (2 if len(results) > 10 else 1)
+                                    for q_idx, q in enumerate(queries):
+                                        print(f"    - Query {q_idx+1}: {q['query']}")
+                                        results = self.deep_search.search(company_id, q["query"], limit=self.cfg.SEARCH_LIMIT)
+                                        
                                         # Dedup against Gemini sources
-                                        deduped = SerperSearch.dedup_results(results, gemini_sources)
+                                        deduped = FirecrawlDeepSearch.dedup_results(results, gemini_sources)
                                         self._batch_stats["urls_deduped"] += len(results) - len(deduped)
-                                        # Save to search_results table
+                                        
+                                        # Save to search_results table and collect IDs
+                                        urls_to_filter = []
                                         for rank, r in enumerate(deduped):
-                                            self.db.execute_query(
+                                            sr_id = self.db.execute_query(
                                                 "INSERT INTO search_results (company_id, search_query, search_type, result_rank, url, title, snippet) VALUES (?, ?, ?, ?, ?, ?, ?)",
                                                 (company_id, q["query"], q["type"], rank+1, r["url"], r["title"], r["snippet"])
                                             )
+                                            urls_to_filter.append({
+                                                "search_result_id": sr_id,
+                                                "url": r["url"],
+                                                "title": r.get("title", ""),
+                                                "snippet": r.get("snippet", "")
+                                            })
                                         all_search_results.extend(deduped)
+
+                                        # Run incremental filter immediately
+                                        vn_name = gemini_result.get("vietnamese_name", "") if isinstance(gemini_result, dict) else ""
+                                        batch_filtered, batch_good = self.filter_module.filter_urls_incremental(
+                                            company_id=company_id,
+                                            urls=urls_to_filter,
+                                            seen_domains=seen_domains,
+                                            company_name=company_name,
+                                            vn_name=vn_name
+                                        )
+                                        good_pages_total += batch_good
+
+                                        if good_pages_total >= self.cfg.EARLY_STOP_COUNT:
+                                            print(f"    -> Đã tìm đủ {good_pages_total} URLs chất lượng thực tế (score >= {self.cfg.EARLY_STOP_SCORE}). Dừng các query tiếp theo.")
+                                            break
+                                    
+                                    filter_already_completed = True
                                 else:
                                     # No Gemini result — use legacy search
                                     print("  -> (Legacy search fallback)")
@@ -307,15 +321,21 @@ class Pipeline:
 
                         # FILTER
                         if self._should_do_step(next_step, 'filter'):
-                            print("  -> Filtering...")
-                            self.filter_module.filter_company_links(company_id)
+                            if not filter_already_completed:
+                                print("  -> Filtering...")
+                                self.filter_module.filter_company_links(company_id)
+                            else:
+                                print("  -> Filtering already completed incrementally during search.")
 
                         # SCRAPE
                         if self._should_do_step(next_step, 'scrape'):
                             if not replay_mode:
                                 print("  -> Scraping...")
                                 self.scrape_module.scrape_company(company_id, self.delay_seconds)
-                                self.db.update_company(company_id, status='scraped')
+                                # ★ CHECKPOINT: all scraping done → mark ai_extract_pending
+                                # On resume, pipeline will skip scrape and go straight to AI extract
+                                self.db.update_company(company_id, status='ai_extract_pending')
+                                print("  -> ✓ Checkpoint: scraped data saved (ai_extract_pending)")
                             else:
                                 print(f"  -> [REPLAY] Skipping scrape for company {company_id}")
 
@@ -341,27 +361,7 @@ class Pipeline:
                                 success_count += 1
                                 break
 
-                        # ====== BƯỚC 3: FACEBOOK LAST RESORT ======
-                        if self._company_has_no_phone(company_id):
-                            self._batch_stats["step3_fallback"] += 1
-                            # Check for Facebook URLs in search results
-                            fb_links = self.db.fetch_all(
-                                "SELECT url FROM search_results WHERE company_id = ? AND url LIKE '%facebook.com%'",
-                                (company_id,)
-                            )
-                            if fb_links:
-                                print(f"  -> Bước 3: Facebook Last Resort ({len(fb_links)} links)...")
-                                for fb in fb_links[:3]:
-                                    # Save as filtered link for scraping
-                                    self.db.execute_query(
-                                        "INSERT OR IGNORE INTO filtered_links (company_id, url, source_type, should_scrape, reason) VALUES (?, ?, 'facebook', 1, 'facebook_last_resort')",
-                                        (company_id, fb["url"])
-                                    )
-                                self.scrape_module.scrape_company(company_id, self.delay_seconds)
-                                if self.ai_extractor:
-                                    self.ai_extractor.extract_for_company(company_id, self.delay_seconds)
-                        else:
-                            self._batch_stats["step2_success"] += 1
+                        self._batch_stats["step2_success"] += 1
 
                         self.db.update_company(company_id, status='done')
                         if self._company_has_no_phone(company_id):
@@ -395,7 +395,12 @@ class Pipeline:
 
                     except CriticalError as e:
                         error_msg = str(e)
-                        print(f"  -> CRITICAL: {error_msg}")
+                        print(f"  -> ⛔ CRITICAL: {error_msg}")
+                        # If scraping was already done, preserve that checkpoint
+                        current_status = self.db.get_company(company_id)
+                        if current_status and current_status['status'] in ('ai_extract_pending', 'extracting'):
+                            self.db.update_company(company_id, status='ai_extract_pending')
+                            print(f"  -> Checkpoint bảo toàn: status='ai_extract_pending' — dữ liệu đã cào được giữ lại.")
                         print("  -> Stopping entire pipeline.")
                         self._restore_signal_handlers()
                         raise
@@ -433,7 +438,6 @@ class Pipeline:
         return {
             "total": 0, "success": 0, "failed": 0, "skipped": 0,
             "step1_success": 0, "step2_success": 0,
-            "step3_fallback": 0,
             "optional_maps_success": 0,
             "no_phone": 0,
             "gemini_tokens_in": 0, "gemini_tokens_out": 0,
@@ -462,7 +466,6 @@ class Pipeline:
   Tổng công ty xử lý:            {processed}
   Bước 1 thành công (Gemini):     {s['step1_success']} ({s['step1_success']/max(processed,1)*100:.0f}%)
   Bước 2 thành công (Deep):       {s['step2_success']}{maps_line}
-  Bước 3 Facebook fallback:       {s['step3_fallback']}
   Không tìm được phone:           {s['no_phone']}
   Thất bại (lỗi):                 {s['failed']}
   ─────────────────────────────────────────
@@ -509,7 +512,7 @@ class Pipeline:
         """Run a single pipeline step for one company. For manual/debug use.
 
         Args:
-            step: One of 'search', 'filter', 'scrape', 'ai_extract', 'contact_discovery'
+            step: One of 'search', 'filter', 'scrape', 'ai_extract'
             company_id: Company to process
             **kwargs: Step-specific overrides (e.g. delay_seconds)
         """
@@ -528,18 +531,8 @@ class Pipeline:
                 self.db.update_company(company_id, status='extracting')
                 self.ai_extractor.extract_for_company(company_id, delay)
                 self.db.update_company(company_id, status='ai_done')
-        elif step == 'contact_discovery':
-            pages = self.scrape_module.discover_contact_pages(company_id, delay)
-            if pages and self.ai_extractor:
-                recent = self.db.fetch_all(
-                    "SELECT id FROM scraped_pages WHERE company_id = ? AND source_type = 'contact_page' ORDER BY id DESC LIMIT 5",
-                    (company_id,)
-                )
-                for p in recent:
-                    self.ai_extractor.extract_from_page(p['id'])
-            self.db.update_company(company_id, status='done')
         else:
-            raise ValueError(f"Unknown step: {step}. Valid: search, filter, scrape, ai_extract, contact_discovery")
+            raise ValueError(f"Unknown step: {step}. Valid: search, filter, scrape, ai_extract")
 
     # ------------------------------------------------------------------
     # Manual URL injection

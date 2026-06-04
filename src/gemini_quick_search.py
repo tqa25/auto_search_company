@@ -38,7 +38,7 @@ class GeminiQuickSearch:
     PROMPT_TEMPLATE = """Tìm thông tin công ty "{company_name}" tại Việt Nam. 
 CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
 {{
-  "core_name": "Tên định danh",
+  "core_name": "Tên thương hiệu cốt lõi (LOẠI BỎ hoàn toàn hậu tố như co.,ltd, corp, jsc, llc. VD: 'king freight int\\'l vn co.,ltd' -> 'king freight int\\'l vn')",
   "core_name_vi": "Tên tiếng Việt pháp lý",
   "abbreviation": "Viết tắt",
   "address": "Địa chỉ",
@@ -46,6 +46,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
   "email": "Email",
   "website": "Website",
   "tax_code": "MST",
+  "representative": "Người đại diện",
   "sources": ["url1", "url2"],
   "confidence": 0.95
 }}"""
@@ -56,10 +57,10 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
         self.db = db
         self.pipeline_logger = pipeline_logger
 
-        api_key = os.getenv("GEMINI_API_KEY", "")
+        api_key = self.config.GEMINI_API_KEY
         if not api_key:
             logger.warning("GEMINI_API_KEY not set. Gemini Quick Search will be disabled.")
-        self.client = genai.Client(api_key=api_key) if api_key else None
+        self.client = genai.Client(api_key=api_key, http_options={'timeout': 600000}) if api_key else None
 
     # ------------------------------------------------------------------
     # Quota management
@@ -141,7 +142,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
         log_id = self.pipeline_logger.log_step_start(
             company_id, "gemini_quick",
             source_name=f"gemini_quick: {company_name}",
-            raw_request={"company_name": company_name, "model": self.config.GEMINI_QUICK_MODEL}
+            raw_request={"company_name": company_name, "model": self.config.AI_GROUNDING_MODEL}
         )
 
         started_at = datetime.now(VN_TZ)
@@ -154,7 +155,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             # Call Gemini with Search Grounding
             try:
                 response = self.client.models.generate_content(
-                    model=self.config.GEMINI_QUICK_MODEL,
+                    model=self.config.AI_GROUNDING_MODEL,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         tools=[{"google_search": {}}],
@@ -163,16 +164,39 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
                     )
                 )
             except Exception as e:
-                logger.warning(f"[{company_id}] Gemini grounding failed ({e}). Retrying without grounding...")
-                # Fallback without grounding
-                response = self.client.models.generate_content(
-                    model=self.config.GEMINI_QUICK_MODEL,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.0,
-                        max_output_tokens=2048
+                error_msg = str(e)
+                if "429" in error_msg or "quota exceeded" in error_msg.lower():
+                    logger.error(f"[{company_id}] Gemini API Rate Limit/Quota Exceeded (429)! Stop processing.")
+                    from src.errors import CriticalError
+                    raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
+                    
+                elif "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
+                    logger.warning(f"[{company_id}] Gemini API 503/Unavailable. Attempting fallback to models/gemini-3.5-flash...")
+                    try:
+                        response = self.client.models.generate_content(
+                            model="models/gemini-3.5-flash",
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                tools=[{"google_search": {}}],
+                                temperature=0.0,
+                                max_output_tokens=2048
+                            )
+                        )
+                    except Exception as fallback_e:
+                        logger.warning(f"[{company_id}] Fallback to 3.5-flash also failed: {fallback_e}")
+                        from src.errors import RetryableError
+                        raise RetryableError("Gemini API 503 unavailable and fallback failed.")
+                else:
+                    logger.warning(f"[{company_id}] Gemini grounding failed ({e}). Retrying without grounding...")
+                    # Fallback without grounding
+                    response = self.client.models.generate_content(
+                        model=self.config.AI_GROUNDING_MODEL,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.0,
+                            max_output_tokens=2048
+                        )
                     )
-                )
 
             duration = time.time() - start_time
             finished_at = datetime.now(VN_TZ)
@@ -231,7 +255,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
                 credits_used=0,
                 data_saved=True,
                 network_latency_ms=duration * 1000,
-                raw_response_summary={"model": self.config.GEMINI_QUICK_MODEL},
+                raw_response_summary={"model": self.config.AI_GROUNDING_MODEL},
                 metadata={
                     "started_at": started_at.isoformat(),
                     "finished_at": finished_at.isoformat(),
@@ -267,10 +291,29 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             }
 
         except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "quota exceeded" in error_msg.lower():
+                logger.error(f"[{company_id}] Gemini API Rate Limit/Quota Exceeded (429)! Stop processing.")
+                self.pipeline_logger.log_step_end(
+                    log_id, status="error", error_message="Rate Limit/Quota Exceeded",
+                    metadata={"error_category": "critical"}
+                )
+                from src.errors import CriticalError
+                raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
+                
+            if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
+                logger.error(f"[{company_id}] Gemini API transient error (503) caught in quick search!")
+                self.pipeline_logger.log_step_end(
+                    log_id, status="error", error_message="Service Unavailable (503)",
+                    metadata={"error_category": "retryable"}
+                )
+                from src.errors import RetryableError
+                raise RetryableError("Gemini API 503 unavailable during quick search.")
+                
             duration = time.time() - start_time
             logger.error(f"[{company_id}] Gemini Quick Search error: {e}")
             self.pipeline_logger.log_step_end(
-                log_id, status="error", error_message=str(e),
+                log_id, status="error", error_message=error_msg,
                 network_latency_ms=duration * 1000,
                 metadata={"duration_seconds": round(duration, 2)}
             )
@@ -358,20 +401,27 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             self.db.update_company(company_id, **updates)
 
     def _save_contact(self, company_id, parsed):
-        """Save extracted contact to extracted_contacts table."""
-        self.db.execute_query(
-            """INSERT INTO extracted_contacts
-               (company_id, source_type, source_url, address, phone, email, website,
-                fax, representative, raw_ai_response, confidence_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (company_id, "gemini_grounding",
-             ", ".join(parsed.get("sources", [])[:3]),
-             parsed.get("address"), parsed.get("phone"),
-             parsed.get("email"), parsed.get("website"),
-             parsed.get("fax"), parsed.get("representative"),
-             json.dumps(parsed, ensure_ascii=False),
-             parsed.get("confidence", 0))
-        )
+        """Save extracted contact to extracted_contacts table. One record per source URL."""
+        sources = parsed.get("sources", [])
+        if not sources:
+            sources = ["unknown"]
+        else:
+            sources = sources[:3] # keep max 3 to avoid spam
+            
+        for source_url in sources:
+            self.db.execute_query(
+                """INSERT INTO extracted_contacts
+                   (company_id, source_type, source_url, address, phone, email, website,
+                    fax, representative, raw_ai_response, confidence_score)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (company_id, "gemini_grounding",
+                 source_url,
+                 parsed.get("address"), parsed.get("phone"),
+                 parsed.get("email"), parsed.get("website"),
+                 parsed.get("fax"), parsed.get("representative"),
+                 json.dumps(parsed, ensure_ascii=False),
+                 parsed.get("confidence", 0))
+            )
 
     def _empty_result(self, reason: str) -> Dict:
         """Return an empty result dict with a fallback reason."""

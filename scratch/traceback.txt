@@ -1,0 +1,13 @@
+[5] Gemini grounding failed (400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'API key expired. Please renew the API key.', 'status': 'INVALID_ARGUMENT', 'details': [{'@type': 'type.googleapis.com/google.rpc.ErrorInfo', 'reason': 'API_KEY_INVALID', 'domain': 'googleapis.com', 'metadata': {'service': 'generativelanguage.googleapis.com'}}, {'@type': 'type.googleapis.com/google.rpc.LocalizedMessage', 'locale': 'en-US', 'message': 'API key expired. Please renew the API key.'}]}}). Retrying without grounding...
+[5] Gemini Quick Search error: 400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'API key expired. Please renew the API key.', 'status': 'INVALID_ARGUMENT', 'details': [{'@type': 'type.googleapis.com/google.rpc.ErrorInfo', 'reason': 'API_KEY_INVALID', 'domain': 'googleapis.com', 'metadata': {'service': 'generativelanguage.googleapis.com'}}, {'@type': 'type.googleapis.com/google.rpc.LocalizedMessage', 'locale': 'en-US', 'message': 'API key expired. Please renew the API key.'}]}}
+[2026-05-22 15:39:59] [CMP-0005] [GEMINI_QUICK] [ERROR] 0 credits  | 0.0s | → 400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'API key expired. Please renew the API key.', 'status': 'INVALID_ARGUMENT', 'details': [{'@type': 'type.googleapis.com/google.rpc.ErrorInfo', 'reason': 'API_KEY_INVALID', 'domain': 'googleapis.com', 'metadata': {'service': 'generativelanguage.googleapis.com'}}, {'@type': 'type.googleapis.com/google.rpc.LocalizedMessage', 'locale': 'en-US', 'message': 'API key expired. Please renew the API key.'}]}}
+[DEDUP] CMP-0005 dedup_query_cache_hit
+[2026-05-22 15:39:59] [CMP-0005] [SEARCH] [SUCCESS] 0 credits  | 0.0s | "CTY TNHH YOUL CHON VINA" → 6 links found
+[DEDUP] CMP-0005 dedup_query_cache_hit
+[2026-05-22 15:39:59] [CMP-0005] [SEARCH] [SUCCESS] 0 credits  | 0.0s | "CTY TNHH YOUL CHON VINA" → 6 links found
+[2026-05-22 15:40:02] [CMP-0005] [FILTER] [SUCCESS] 0 credits  | 0.0s | Filtered links
+[DEDUP] CMP-0005 dedup_url_cache_hit
+[DEDUP] CMP-0005 dedup_url_cache_hit
+Calling Gemini API (gemini-2.5-flash-lite) for page ID 1...
+Gemini API error: 400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'API key expired. Please renew the API key.', 'status': 'INVALID_ARGUMENT', 'details': [{'@type': 'type.googleapis.com/google.rpc.ErrorInfo', 'reason': 'API_KEY_INVALID', 'domain': 'googleapis.com', 'metadata': {'service': 'generativelanguage.googleapis.com'}}, {'@type': 'type.googleapis.com/google.rpc.LocalizedMessage', 'locale': 'en-US', 'message': 'API key expired. Please renew the API key.'}]}}
+[2026-05-22 15:40:03] [CMP-0005] [AI_EXT] [FAILED] 0 credits  | 1.0s | → 400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'API key expired. Please renew the API key.

@@ -1,0 +1,2 @@
+❌ LỖI: 'Config' object has no attribute 'CONTACT_PATHS'
+AttributeError

@@ -47,10 +47,13 @@ def _make_pipeline_with_db(test_db, config):
                         with patch('src.pipeline.ExcelReader'):
                             with patch('src.pipeline.ExcelWriter'):
                                 with patch('src.pipeline.ResultAggregator'):
-                                    pipeline = Pipeline(config)
-                                    pipeline.db = test_db
-                                    pipeline.logger = mock_logger
-                                    return pipeline
+                                    with patch('src.pipeline.GeminiQuickSearch') as MockQuick:
+                                        with patch('src.pipeline.FirecrawlDeepSearch'):
+                                            pipeline = Pipeline(config)
+                                            pipeline.db = test_db
+                                            pipeline.logger = mock_logger
+                                            pipeline.gemini_quick.search.return_value = {}
+                                            return pipeline
 
 
 # ------------------------------------------------------------------
@@ -58,9 +61,9 @@ def _make_pipeline_with_db(test_db, config):
 # ------------------------------------------------------------------
 
 class TestGetNextStep:
-    def test_pending_starts_at_search(self, test_db, pipeline_config):
+    def test_pending_starts_at_gemini_quick(self, test_db, pipeline_config):
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
-        assert pipeline._get_next_step('pending') == 'search'
+        assert pipeline._get_next_step('pending') == 'gemini_quick'
 
     def test_searched_starts_at_filter(self, test_db, pipeline_config):
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
@@ -70,13 +73,13 @@ class TestGetNextStep:
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
         assert pipeline._get_next_step('scraped') == 'ai_extract'
 
-    def test_failed_starts_at_search(self, test_db, pipeline_config):
+    def test_failed_starts_at_gemini_quick(self, test_db, pipeline_config):
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
-        assert pipeline._get_next_step('failed') == 'search'
+        assert pipeline._get_next_step('failed') == 'gemini_quick'
 
-    def test_searching_interrupted_restarts_search(self, test_db, pipeline_config):
+    def test_searching_interrupted_restarts_deep_search(self, test_db, pipeline_config):
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
-        assert pipeline._get_next_step('searching') == 'search'
+        assert pipeline._get_next_step('searching') == 'deep_search'
 
     def test_scraping_interrupted_restarts_filter(self, test_db, pipeline_config):
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
@@ -92,27 +95,28 @@ class TestGetNextStep:
 # ------------------------------------------------------------------
 
 class TestShouldDoStep:
-    def test_search_from_search(self, test_db, pipeline_config):
+    def test_gemini_quick_from_gemini_quick(self, test_db, pipeline_config):
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
-        assert pipeline._should_do_step('search', 'search') is True
+        assert pipeline._should_do_step('gemini_quick', 'gemini_quick') is True
 
-    def test_filter_from_search(self, test_db, pipeline_config):
+    def test_filter_from_gemini_quick(self, test_db, pipeline_config):
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
-        assert pipeline._should_do_step('search', 'filter') is True
+        assert pipeline._should_do_step('gemini_quick', 'filter') is True
 
-    def test_search_from_filter(self, test_db, pipeline_config):
-        """If next_step is filter, we should NOT do search."""
+    def test_gemini_quick_from_filter(self, test_db, pipeline_config):
+        """If next_step is filter, we should NOT do gemini_quick."""
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
-        assert pipeline._should_do_step('filter', 'search') is False
+        assert pipeline._should_do_step('filter', 'gemini_quick') is False
 
     def test_scrape_from_filter(self, test_db, pipeline_config):
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
         assert pipeline._should_do_step('filter', 'scrape') is True
 
     def test_search_from_ai_extract(self, test_db, pipeline_config):
-        """If next_step is ai_extract, skip search/filter/scrape."""
+        """If next_step is ai_extract, skip previous steps."""
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
-        assert pipeline._should_do_step('ai_extract', 'search') is False
+        assert pipeline._should_do_step('ai_extract', 'gemini_quick') is False
+        assert pipeline._should_do_step('ai_extract', 'deep_search') is False
         assert pipeline._should_do_step('ai_extract', 'filter') is False
         assert pipeline._should_do_step('ai_extract', 'scrape') is False
         assert pipeline._should_do_step('ai_extract', 'ai_extract') is True
@@ -146,7 +150,7 @@ class TestGetResumableCompanies:
         result = pipeline.get_resumable_companies()
         assert len(result) == 1
         assert result[0]['status'] == 'pending'
-        assert result[0]['next_step'] == 'search'
+        assert result[0]['next_step'] == 'gemini_quick'
 
     def test_searched_included_with_correct_next_step(self, test_db, pipeline_config):
         test_db.insert_company("Searched Corp", status="searched")
@@ -170,7 +174,7 @@ class TestGetResumableCompanies:
         result = pipeline.get_resumable_companies()
         assert len(result) == 1
         assert result[0]['status'] == 'failed'
-        assert result[0]['next_step'] == 'search'
+        assert result[0]['next_step'] == 'gemini_quick'
 
     def test_mixed_statuses(self, test_db, pipeline_config):
         """Multiple companies with different statuses."""

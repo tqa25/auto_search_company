@@ -670,8 +670,9 @@ class SearchModule:
         saved: List[Dict] = []
         credits_per_result = self.CREDITS_PER_SEARCH / max(len(results), 1)
 
+        from src.utils import normalize_url
         for rank, item in enumerate(results, start=1):
-            url = item.get("url", "")
+            url = normalize_url(item.get("url", ""))
             title = item.get("title", "") or item.get("metadata", {}).get("title", "")
             snippet = item.get("snippet", "") or item.get("description", "")
             if not snippet and item.get("markdown"):

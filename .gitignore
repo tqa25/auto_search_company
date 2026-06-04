@@ -8,3 +8,8 @@ data/*.db
 output/
 __pycache__/
 *.xlsx
+results/report/.~lock.*
+*.db-shm
+*.db-wal
+*.m4a
+*:Zone.Identifier

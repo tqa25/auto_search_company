@@ -2,6 +2,8 @@ import os
 import json
 import time
 import re
+import requests
+from urllib.parse import urlparse
 from google import genai
 from google.genai import types
 from src.database import DatabaseManager
@@ -10,16 +12,26 @@ from src.errors import RetryableError, CriticalError, SkippableError, PipelineEr
 from src.config import Config
 
 class AIExtractor:
-    def __init__(self, db: DatabaseManager, logger: PipelineLogger, gemini_api_key: str):
+    def __init__(self, db: DatabaseManager, logger: PipelineLogger, config=None):
         self.db = db
         self.logger = logger
-        self.config = Config()
         
-        # Initialize Google Gemini client
-        if not gemini_api_key:
-            raise ValueError("GEMINI_API_KEY is not provided.")
+        if config is not None:
+            if isinstance(config, str):
+                self.config = Config()
+                self.config.GEMINI_API_KEY = config
+            elif isinstance(config, dict):
+                self.config = Config()
+                self.config.GEMINI_API_KEY = config.get("gemini_api_key")
+            else:
+                self.config = config
+        else:
+            self.config = Config()
             
-        self.client = genai.Client(api_key=gemini_api_key)
+        # Verify Gemini API key for Gemma 4 extraction
+        if not getattr(self.config, 'GEMINI_API_KEY', None):
+            raise ValueError("GEMINI_API_KEY is not provided.")
+        self.client = genai.Client(api_key=self.config.GEMINI_API_KEY)
 
     EXTRACTION_PROMPT_TEMPLATE = """
     Bạn đang trích xuất thông tin liên hệ của công ty: {company_name}
@@ -102,6 +114,21 @@ class AIExtractor:
 
     {markdown_content}
     """
+
+    def _record_domain_stat(self, url: str, success: bool):
+        """Helper to extract domain from URL and record scrape stats in DB."""
+        if not url or url == 'batch' or url == 'unknown':
+            return
+            
+        domain = urlparse(url).netloc
+        if domain.startswith('www.'):
+            domain = domain[4:]
+            
+        if domain:
+            # We don't want to penalize well-known platforms like facebook or linkedin
+            # if they happen to not have contact info on a specific page
+            if domain not in ['facebook.com', 'linkedin.com', 'yellowpages.vn']:
+                self.db.record_domain_scrape(domain, success, threshold=10)
 
     def _has_contact_signals(self, markdown: str) -> bool:
         """
@@ -210,9 +237,9 @@ class AIExtractor:
             return {"status": "skipped", "reason": "no_contact_signals"}
 
         # Long content safeguard
-        if len(markdown_content) > 30000:
-            self.logger.logger.warning(f"Markdown content too long for scraped_page_id {scraped_page_id}, truncating to 30,000 chars.")
-            markdown_content = markdown_content[:30000]
+        if len(markdown_content) > 15000:
+            self.logger.logger.warning(f"Markdown content too long for scraped_page_id {scraped_page_id}, truncating to 15,000 chars.")
+            markdown_content = markdown_content[:15000]
 
         prompt = self.EXTRACTION_PROMPT_TEMPLATE.replace(
             "{company_name}", company_name
@@ -224,21 +251,21 @@ class AIExtractor:
         
         attempt = 0
         max_retries = 3
+        current_model = self.config.AI_EXTRACTOR_MODEL
+        fallback_used = False
+
         while attempt < max_retries:
             try:
-                # Setting generation config to try enforcing JSON format
-                self.logger.logger.info(f"Calling Gemini API for page ID {scraped_page_id}...")
+                self.logger.logger.info(f"Calling Gemini API ({current_model}) for page ID {scraped_page_id}...")
                 
-                # Gemini free tier might strictly parse response_mime_type if correctly set
                 response = self.client.models.generate_content(
-                    model=self.config.AI_EXTRACTOR_MODEL,
+                    model=current_model,
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1
+                        temperature=0.1,
+                        response_mime_type="application/json"
                     )
                 )
-                
                 raw_response = response.text
                 
                 # Parse JSON
@@ -265,6 +292,7 @@ class AIExtractor:
                             raw_ai_response=raw_response, 
                             confidence_score=0.0
                         )
+                        self._record_domain_stat(source_url, False)
                         self.logger.log_step_end(log_id, "FAILED", error_message="json_parse_error", error_category="skippable")
                         return {"status": "failed", "reason": "json_parse_error", "confidence": 0.0}
 
@@ -324,6 +352,9 @@ class AIExtractor:
                 if website: extracted_fields_list.append("website")
                 if representative: extracted_fields_list.append("rep")
                 
+                has_contacts = len(extracted_fields_list) > 0
+                self._record_domain_stat(source_url, has_contacts)
+                
                 metadata = {"extracted_fields": ",".join(extracted_fields_list) if extracted_fields_list else "none"}
                 self.logger.log_step_end(log_id, "SUCCESS", data_saved=True, metadata=metadata)
                 
@@ -335,20 +366,30 @@ class AIExtractor:
                 
             except Exception as e:
                 error_msg = str(e)
-                if "429" in error_msg:
+                # 1. Critical cases: 429 / Quota exceeded
+                if "429" in error_msg or "quota exceeded" in error_msg.lower():
+                    self.logger.logger.error("Gemini API Rate Limit/Quota Exceeded (429/Quota)! Stop processing.")
+                    self.logger.log_step_end(log_id, "FAILED", error_message="Rate Limit/Quota Exceeded", error_category="critical")
+                    raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
+
+                # 2. Transient/Retryable cases: 503 / Unavailable / experiencing high demand
+                if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
                     attempt += 1
                     if attempt < max_retries:
-                        self.logger.logger.warning(f"Rate limit exceeded (429). Retrying in 60s... (Attempt {attempt}/{max_retries})")
+                        self.logger.logger.warning(f"Gemini API experiencing high demand (503/Unavailable). Retrying in 60s... (Attempt {attempt}/{max_retries})")
                         time.sleep(60)
                         continue
+                    elif not fallback_used:
+                        self.logger.logger.warning("Gemini API 503 retries exhausted. Attempting fallback to models/gemini-3.5-flash...")
+                        fallback_used = True
+                        current_model = "models/gemini-3.5-flash"
+                        attempt = 0
+                        continue
                     else:
-                        self.logger.log_step_end(log_id, "FAILED", error_message="Rate limit exceeded after retries")
-                        raise RetryableError(f"Rate limit exceeded (429) after {max_retries} retries")
-                elif "quota exceeded" in error_msg.lower():
-                    self.logger.logger.error("Gemini API Quota Exceeded! Stop processing.")
-                    self.logger.log_step_end(log_id, "FAILED", error_message="Quota Exceeded", error_category="critical")
-                    raise CriticalError("Gemini API quota exceeded. Stop pipeline.")
+                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 fallback failed", error_category="retryable")
+                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries and fallback")
 
+                # 3. Other unknown errors: skip this company
                 self.logger.logger.error(f"Gemini API error: {error_msg}")
                 category = e.category if isinstance(e, PipelineError) else "unknown"
                 self.logger.log_step_end(log_id, "FAILED", error_message=error_msg[:100], error_category=category)
@@ -391,19 +432,21 @@ class AIExtractor:
 
         attempt = 0
         max_retries = 3
+        current_model = self.config.AI_EXTRACTOR_MODEL
+        fallback_used = False
+
         while attempt < max_retries:
             try:
-                self.logger.logger.info(f"Calling Gemini API for batch of {len(batch_pages)} pages...")
+                self.logger.logger.info(f"Calling Gemini API ({current_model}) for batch extraction ({len(batch_pages)} pages)...")
 
                 response = self.client.models.generate_content(
-                    model=self.config.AI_EXTRACTOR_MODEL,
+                    model=current_model,
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1
+                        temperature=0.1,
+                        response_mime_type="application/json"
                     )
                 )
-
                 raw_response = response.text
 
                 # Parse JSON
@@ -420,6 +463,8 @@ class AIExtractor:
                         data = json.loads(clean_text)
                     except json.JSONDecodeError:
                         self.logger.logger.warning(f"Failed to parse JSON for batch")
+                        for page in batch_pages:
+                            self._record_domain_stat(page.get('url', ''), False)
                         self.logger.log_step_end(log_id, "FAILED", error_message="json_parse_error", error_category="skippable")
                         return {"status": "failed", "reason": "json_parse_error", "confidence": 0.0}
 
@@ -485,6 +530,10 @@ class AIExtractor:
                 if website: extracted_fields_list.append("website")
                 if representative: extracted_fields_list.append("rep")
 
+                has_contacts = len(extracted_fields_list) > 0
+                for page in batch_pages:
+                    self._record_domain_stat(page.get('url', ''), has_contacts)
+
                 metadata = {
                     "extracted_fields": ",".join(extracted_fields_list) if extracted_fields_list else "none",
                     "batch_size": len(batch_pages)
@@ -500,20 +549,30 @@ class AIExtractor:
 
             except Exception as e:
                 error_msg = str(e)
-                if "429" in error_msg:
+                # 1. Critical cases: 429 / Quota exceeded
+                if "429" in error_msg or "quota exceeded" in error_msg.lower():
+                    self.logger.logger.error("Gemini API Rate Limit/Quota Exceeded (429/Quota)! Stop processing.")
+                    self.logger.log_step_end(log_id, "FAILED", error_message="Rate Limit/Quota Exceeded", error_category="critical")
+                    raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
+
+                # 2. Transient/Retryable cases: 503 / Unavailable / experiencing high demand
+                if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
                     attempt += 1
                     if attempt < max_retries:
-                        self.logger.logger.warning(f"Rate limit exceeded (429). Retrying in 60s... (Attempt {attempt}/{max_retries})")
+                        self.logger.logger.warning(f"Gemini API experiencing high demand (503/Unavailable). Retrying in 60s... (Attempt {attempt}/{max_retries})")
                         time.sleep(60)
                         continue
+                    elif not fallback_used:
+                        self.logger.logger.warning("Gemini API 503 retries exhausted. Attempting fallback to models/gemini-3.5-flash...")
+                        fallback_used = True
+                        current_model = "models/gemini-3.5-flash"
+                        attempt = 0
+                        continue
                     else:
-                        self.logger.log_step_end(log_id, "FAILED", error_message="Rate limit exceeded after retries")
-                        raise RetryableError(f"Rate limit exceeded (429) after {max_retries} retries")
-                elif "quota exceeded" in error_msg.lower():
-                    self.logger.logger.error("Gemini API Quota Exceeded! Stop processing.")
-                    self.logger.log_step_end(log_id, "FAILED", error_message="Quota Exceeded", error_category="critical")
-                    raise CriticalError("Gemini API quota exceeded. Stop pipeline.")
+                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 fallback failed", error_category="retryable")
+                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries and fallback")
 
+                # 3. Other unknown errors: skip this company
                 self.logger.logger.error(f"Gemini API error: {error_msg}")
                 category = e.category if isinstance(e, PipelineError) else "unknown"
                 self.logger.log_step_end(log_id, "FAILED", error_message=error_msg[:100], error_category=category)
@@ -562,41 +621,14 @@ class AIExtractor:
                 res = self.extract_from_page(page['id'])
                 results.append(res)
                 processed_count += 1
-                i = processed_count - 1 # for early stop logic compat
+                i = processed_count - 1
             else:
                 res = self._extract_batch(batch, company_id, company_name)
                 results.append(res)
                 processed_count += len(batch)
-                i = processed_count - 1 # for early stop logic compat
+                i = processed_count - 1
 
-            # Sub-task B: Early stop extraction
-            if res.get('status') == 'success':
-                extracted_fields = res.get('extracted_fields', {})
-                confidence = res.get('confidence', 0.0)
 
-                # Count non-null fields (phone, email, address)
-                fields_found = []
-                if extracted_fields.get('phone'):
-                    fields_found.append('phone')
-                if extracted_fields.get('email'):
-                    fields_found.append('email')
-                if extracted_fields.get('address'):
-                    fields_found.append('address')
-
-                # Early stop if >= 3 fields and confidence >= 0.8
-                if len(fields_found) >= 3 and confidence >= 0.8:
-                    pages_skipped = len(scraped_pages) - i - 1
-                    early_stop_event = {
-                        "event": "early_stop_extraction",
-                        "company_id": company_id,
-                        "fields_found": fields_found,
-                        "confidence": confidence,
-                        "pages_processed": i + 1,
-                        "pages_skipped": pages_skipped
-                    }
-                    self.logger.log_event("early_stop_extraction", company_id, early_stop_event)
-                    self.logger.logger.info(f"Early stop extraction for company {company_id}: {early_stop_event}")
-                    break
 
             # Since Gemini free tier is 15 RPM, we need to respect the delay between calls
             if i < len(scraped_pages) - 1 and res.get('status') == 'success':

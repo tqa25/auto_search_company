@@ -32,13 +32,41 @@ class ResultAggregator:
                 "confidence": contact.get("confidence_score")
             })
             
+        steps = ['gemini_quick', 'serper_search', 'firecrawl_search', 'filter', 'scrape', 'AI_EXT']
+        status_parts = []
+        step_details = []
+        
+        for step in steps:
+            logs = self.db.fetch_all(
+                "SELECT status, error_message FROM pipeline_logs "
+                "WHERE company_id = ? AND step = ? ORDER BY id DESC LIMIT 1",
+                (company_id, step)
+            )
+            if logs:
+                s = logs[0]['status']
+                err = logs[0].get('error_message', '')
+                step_details.append({"step": step, "status": s, "error": err})
+                
+                if s in ('FAILED', 'failed', 'error'):
+                    status_parts.append(f"❌ {step}: {(err or '')[:50]}")
+                else:
+                    status_parts.append(f"✅ {step}")
+            else:
+                step_details.append({"step": step, "status": "skipped", "error": None})
+                status_parts.append(f"⏭️ {step}")
+                
+        pipeline_status_summary = " | ".join(status_parts)
+
         return {
             "company_name": company.get("original_name"),
             "tax_code": company.get("tax_code"),
             "sources": sources,
             "has_data": len(sources) > 0,
             "total_sources": len(sources),
-            "collection_date": datetime.now().strftime("%Y-%m-%d")
+            "collection_date": datetime.now().strftime("%Y-%m-%d"),
+            "pipeline_status_db": company.get("status"),
+            "pipeline_status_summary": pipeline_status_summary,
+            "step_details": step_details
         }
 
     def aggregate_all(self, company_ids: List[int] = None) -> List[Dict]:
