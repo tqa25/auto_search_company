@@ -8,6 +8,34 @@ from src.schemas import validate_scored_link
 
 logger = logging.getLogger(__name__)
 
+class _FallbackLogger:
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+
+    def log_event(self, *args, **kwargs):
+        return None
+
+
+def _normalize_tax_code(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", "", str(value).strip()).replace("–", "-").replace("—", "-")
+
+
+def _extract_masothue_tax_code(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return ""
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    if not (domain == "masothue.com" or domain.endswith(".masothue.com")):
+        return ""
+    path = urllib.parse.unquote(parsed.path or "")
+    match = re.search(r"(?<!\d)(\d{4,14}(?:-\d{1,5})?)(?!\d)", path)
+    return _normalize_tax_code(match.group(1)) if match else ""
+
 
 class LinkFilter:
     # Domains that never contain phone numbers — score 0, never scrape.
@@ -50,29 +78,29 @@ class LinkFilter:
         (["tuyen-dung", "tuyendung", "career", "careers", "recruitment", "jobs"],   "recruitment"),
     ]
 
-    def __init__(self, db: DatabaseManager, logger: PipelineLogger, config=None):
+    def __init__(self, db: DatabaseManager = None, logger: PipelineLogger = None, config=None):
         from src.config import default_config
-        import json
-        import os
-        
+
         self.config = config or default_config
         self.db = db
-        self.logger = logger
-        
-        self._blacklisted_domains = getattr(self.config, 'BLACKLISTED_DOMAINS', self.BLACKLISTED_DOMAINS)
-        self._skip_domains = getattr(self.config, 'SKIP_DOMAINS', self.SKIP_DOMAINS)
+        self.logger = logger or _FallbackLogger()
+
+        self._blacklisted_domains = list(getattr(self.config, 'BLACKLISTED_DOMAINS', self.BLACKLISTED_DOMAINS))
+        self._skip_domains = list(getattr(self.config, 'SKIP_DOMAINS', self.SKIP_DOMAINS))
+        self._known_domains = dict(getattr(self.config, 'KNOWN_DOMAINS', self.KNOWN_DOMAINS))
         self._min_scrape_score = getattr(self.config, 'MIN_SCRAPE_SCORE', 35)
-        
-        # Load auto-blacklisted domains from DB
-        try:
-            auto_blacklisted = self.db.get_auto_blacklisted_domains()
-            self._blacklisted_domains.extend(auto_blacklisted)
-            self.logger.logger.info(f"Loaded {len(auto_blacklisted)} auto-blacklisted domains.")
-        except Exception as e:
-            self.logger.logger.error(f"Error loading auto-blacklist: {e}")
+
+        # Load auto-blacklisted domains from DB when a DB is available.
+        if self.db is not None and hasattr(self.db, "get_auto_blacklisted_domains"):
+            try:
+                auto_blacklisted = self.db.get_auto_blacklisted_domains()
+                self._blacklisted_domains.extend(auto_blacklisted)
+                self.logger.logger.info(f"Loaded {len(auto_blacklisted)} auto-blacklisted domains.")
+            except Exception as e:
+                self.logger.logger.error(f"Error loading auto-blacklist: {e}")
 
         # LinkedIn: toggle (default OFF = add to skip)
-        if not self.config.SCRAPE_LINKEDIN_ENABLED:
+        if not getattr(self.config, 'SCRAPE_LINKEDIN_ENABLED', False):
             if "linkedin.com" not in self._skip_domains:
                 self._skip_domains.append("linkedin.com")
 
@@ -276,9 +304,22 @@ class LinkFilter:
                     "score_breakdown": breakdown,
                 }
 
-            # 3. Known classified domain.
+            # 3. Strict masothue MST guard before normal scoring.
+            target_tax_code = _normalize_tax_code(tax_code)
+            masothue_tax_code = _extract_masothue_tax_code(url)
+            if target_tax_code and masothue_tax_code and masothue_tax_code != target_tax_code:
+                return {
+                    "source_type": "masothue",
+                    "should_scrape": False,
+                    "reason": f"masothue_tax_mismatch: target_mst={target_tax_code}, page_mst={masothue_tax_code}",
+                    "relevance_score": 0.0,
+                    "score_breakdown": breakdown,
+                }
+
+            # 4. Known classified domain.
             matched_known = None
-            for known_domain, (src_type, score_category) in self.KNOWN_DOMAINS.items():
+            for known_domain, domain_config in self._known_domains.items():
+                src_type, score_category = domain_config
                 if domain == known_domain or domain.endswith("." + known_domain):
                     matched_known = (known_domain, src_type, score_category)
                     break
@@ -384,7 +425,7 @@ class LinkFilter:
                 },
             }
 
-    def score_urls_batch(self, urls: list[dict], company_name: str, vn_name: str = "") -> list[dict]:
+    def score_urls_batch(self, urls: list[dict], company_name: str, vn_name: str = "", tax_code: str = "") -> list[dict]:
         """
         Inline score a batch of URLs without saving to DB.
         Validates each scored link before returning.
@@ -397,7 +438,7 @@ class LinkFilter:
                 continue
 
             # Note: We need vn_name for new fuzzy logic. We pass it down from arguments.
-            classification = self.classify_url(url, company_name, title=title, vn_name=vn_name)
+            classification = self.classify_url(url, company_name, title=title, vn_name=vn_name, tax_code=tax_code)
             scored_item = {
                 "url": url,
                 "source_type": classification["source_type"],
@@ -479,8 +520,10 @@ class LinkFilter:
                 "reason": classification.get("reason", "")
             })
 
-            # Mark domain as seen for future batches
-            if domain != "unknown":
+            # Mark usable domains as seen for future batches. A masothue MST mismatch
+            # must not hide a later exact-MST masothue URL.
+            is_tax_mismatch = "masothue_tax_mismatch" in classification.get("reason", "")
+            if domain != "unknown" and not is_tax_mismatch:
                 seen_domains.add(domain)
 
             # Validate scored link before persisting
@@ -552,7 +595,13 @@ class LinkFilter:
                 url = result["url"]
                 title = result.get("title", "")
                 vn_name = company.get("vietnamese_name", "")
-                classification = self.classify_url(url, company_name, title=title, vn_name=vn_name)
+                classification = self.classify_url(
+                    url,
+                    company_name,
+                    title=title,
+                    vn_name=vn_name,
+                    tax_code=company.get("tax_code", ""),
+                )
 
                 self.logger.log_event("score_calculated", company_id, {
                     "url": url,
@@ -571,7 +620,9 @@ class LinkFilter:
 
                 if domain in seen_domains:
                     continue
-                seen_domains.add(domain)
+                is_tax_mismatch = "masothue_tax_mismatch" in classification.get("reason", "")
+                if not is_tax_mismatch:
+                    seen_domains.add(domain)
 
                 # Validate scored link before persisting
                 scored_link_dict = {

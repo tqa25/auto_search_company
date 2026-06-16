@@ -127,10 +127,37 @@ class Config:
                 ".top": 2, ".xyz": 2, ".club": 2, ".tk": 2, ".ml": 2, ".ga": 2
             }
         )
+        self.KNOWN_DOMAINS: dict = _parse_json_dict(
+            os.getenv("KNOWN_DOMAINS"),
+            default={
+                "thuvienphapluat.vn": ("thuvienphapluat", "legal"),
+                "hosocongty.vn": ("hosocongty", "legal"),
+                "vietnamworks.com": ("vietnamworks", "job"),
+                "topcv.vn": ("topcv", "job"),
+                "vietcareer.vn": ("vietcareer", "job"),
+                "jobsgo.vn": ("jobsgo", "job"),
+                "facebook.com": ("facebook", "social"),
+                "linkedin.com": ("linkedin", "social"),
+                "yellowpages.vn": ("yellowpages", "official"),
+                "masothue.com": ("masothue", "legal"),
+            },
+        )
 
         # --- Scrape group ---
         self.TOP_N: int = _parse_int(
             os.getenv("TOP_N"), default=10
+        )
+        self.FIRECRAWL_BATCH_SCRAPE_ENABLED: bool = _parse_bool(
+            os.getenv("FIRECRAWL_BATCH_SCRAPE_ENABLED"), default=False
+        )
+        self.FIRECRAWL_MAX_CONCURRENCY: int = _parse_int(
+            os.getenv("FIRECRAWL_MAX_CONCURRENCY"), default=10
+        )
+        self.FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS: float = _parse_float(
+            os.getenv("FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS"), default=2.0
+        )
+        self.FIRECRAWL_BATCH_TIMEOUT_SECONDS: float = _parse_float(
+            os.getenv("FIRECRAWL_BATCH_TIMEOUT_SECONDS"), default=300.0
         )
 
         # --- Dedup group ---
@@ -230,10 +257,12 @@ class Config:
                 keys_to_override = [
                     "SEARCH_LIMIT", "EARLY_STOP_COUNT", "EARLY_STOP_SCORE", "INFER_MAX_SCRAPE",
                     "DOMAIN_SCORES", "KEYWORD_SCORES", "TOP_N", 
+                    "FIRECRAWL_BATCH_SCRAPE_ENABLED", "FIRECRAWL_MAX_CONCURRENCY",
+                    "FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS", "FIRECRAWL_BATCH_TIMEOUT_SECONDS",
                     "ENABLE_QUERY_DEDUP", "ENABLE_URL_DEDUP", "ENABLE_GLOBAL_CACHE", "CACHE_TTL_DAYS",
                     "DELAY_SECONDS", "MAX_RETRIES", "BATCH_SIZE", "MIN_CONFIDENCE_THRESHOLD",
                     "GEMINI_QUICK_ENABLED", "SERPER_ENABLED", "GOOGLE_MAPS_ENABLED", "SCRAPE_LINKEDIN_ENABLED",
-                    "MIN_SCRAPE_SCORE"
+                    "MIN_SCRAPE_SCORE", "KNOWN_DOMAINS"
                 ]
                 
                 for k in keys_to_override:

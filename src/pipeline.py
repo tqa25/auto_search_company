@@ -294,13 +294,19 @@ class Pipeline:
                                         all_search_results.extend(deduped)
 
                                         # Run incremental filter immediately
+                                        target_tax_code = ""
+                                        if isinstance(gemini_result, dict):
+                                            target_tax_code = gemini_result.get("tax_code", "") or company.get("tax_code", "") or ""
+                                        else:
+                                            target_tax_code = company.get("tax_code", "") or ""
                                         vn_name = gemini_result.get("vietnamese_name", "") if isinstance(gemini_result, dict) else ""
                                         batch_filtered, batch_good = self.filter_module.filter_urls_incremental(
                                             company_id=company_id,
                                             urls=urls_to_filter,
                                             seen_domains=seen_domains,
                                             company_name=company_name,
-                                            vn_name=vn_name
+                                            vn_name=vn_name,
+                                            tax_code=target_tax_code
                                         )
                                         good_pages_total += batch_good
 

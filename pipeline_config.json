@@ -1,6 +1,6 @@
 {
   "BLACKLISTED_DOMAINS": ["infocom.vn", "xinvoice.vn", "dauthau.info", "dauthau.net", "thuonghieuviet.info.vn", "fiingate.vn"],
-  "SKIP_DOMAINS": ["google.com", "youtube.com", "wikipedia.org", "baomoi.com", "vnexpress.net", "bing.com", "twitter.com", "tiktok.com", "pinterest.com", "amazon.com", "shopee.vn", "lazada.vn"],
+  "SKIP_DOMAINS": ["google.com", "youtube.com", "wikipedia.org", "baomoi.com", "vnexpress.net", "bing.com", "twitter.com", "tiktok.com", "pinterest.com", "amazon.com", "shopee.vn", "lazada.vn", "topcv.vn", "tratencongty.com", "emis.com", "nhansu.vn", "vn.joboko.com", "ybox.vn", "cdn.thuvienphapluat.vn", "files.thuvienphapluat.vn"],
   "KNOWN_DOMAINS": {
         "thuvienphapluat.vn":  ["thuvienphapluat", "legal"],
         "hosocongty.vn":       ["hosocongty",       "legal"],
@@ -15,6 +15,10 @@
   },
   "MIN_SCRAPE_SCORE": 35,
   "TOP_N": 10,
+  "FIRECRAWL_BATCH_SCRAPE_ENABLED": false,
+  "FIRECRAWL_MAX_CONCURRENCY": 10,
+  "FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS": 2.0,
+  "FIRECRAWL_BATCH_TIMEOUT_SECONDS": 300.0,
   "SEARCH_LIMIT": 100,
   "SERPER_NUM_RESULTS": 10,
   "INFER_MAX_SCRAPE": 2,

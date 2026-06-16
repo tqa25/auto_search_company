@@ -1,3 +1,5 @@
+import { parseCompanyImportText } from "./companyImportParser.js";
+
 const app = document.getElementById("app");
 const monitor = {
   socket: null,
@@ -15,6 +17,21 @@ const companiesState = {
   dateFrom: "",
   dateTo: "",
   selected: new Set(),
+};
+const scoringDomainsState = {
+  activeTab: "scores",
+};
+const SCORING_DOMAIN_TABS = [
+  { id: "scores", label: "Scores" },
+  { id: "known", label: "Known Sources" },
+  { id: "skip", label: "Skip Domains" },
+  { id: "blacklist", label: "Blacklist" },
+];
+const PIPELINE_CONFIG_DEFAULTS = {
+  FIRECRAWL_BATCH_SCRAPE_ENABLED: false,
+  FIRECRAWL_MAX_CONCURRENCY: 10,
+  FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS: 2.0,
+  FIRECRAWL_BATCH_TIMEOUT_SECONDS: 300.0,
 };
 
 async function api(url, options = {}) {
@@ -113,6 +130,85 @@ function stat(label, value, className = "") {
   return `<div class="card"><div class="stat-value ${className}">${value}</div><div class="stat-label">${label}</div></div>`;
 }
 
+
+export function isValidDomain(value) {
+  const domain = String(value || "").trim().toLowerCase();
+  return /^(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/.test(domain)
+    && domain.split(".").every((part) => !part.endsWith("-"));
+}
+
+function toFormValue(value) {
+  return value || value === 0 ? String(value) : "";
+}
+
+function numberValue(id, label) {
+  const input = document.getElementById(id);
+  const value = Number(input.value);
+  if (input.value.trim() === "" || !Number.isFinite(value)) throw new Error(`${label} must be a number.`);
+  return value;
+}
+
+export function parseScoreRows(rows, label) {
+  const result = {};
+  rows.forEach((row, index) => {
+    const key = String(row.key || "").trim();
+    const score = Number(row.score);
+    if (!key) throw new Error(`${label} row ${index + 1} needs a category or keyword.`);
+    if (!Number.isFinite(score)) throw new Error(`${label} row ${index + 1} needs a numeric score.`);
+    result[key] = score;
+  });
+  return result;
+}
+
+export function parseKnownSourceRows(rows) {
+  const result = {};
+  rows.forEach((row, index) => {
+    const domain = String(row.domain || "").trim().toLowerCase();
+    const sourceType = String(row.sourceType || "").trim();
+    const scoreCategory = String(row.scoreCategory || "").trim();
+    if (!isValidDomain(domain)) throw new Error(`Known Sources row ${index + 1} has an invalid domain.`);
+    if (!sourceType) throw new Error(`Known Sources row ${index + 1} needs a source type.`);
+    if (!scoreCategory) throw new Error(`Known Sources row ${index + 1} needs a score category.`);
+    result[domain] = [sourceType, scoreCategory];
+  });
+  return result;
+}
+
+export function parseDomainList(values, label) {
+  const result = [];
+  values.forEach((value, index) => {
+    const domain = String(value || "").trim().toLowerCase();
+    if (!domain) return;
+    if (!isValidDomain(domain)) throw new Error(`${label} item ${index + 1} is not a valid domain.`);
+    if (!result.includes(domain)) result.push(domain);
+  });
+  return result;
+}
+
+function readRows(containerId, mapper) {
+  return [...document.querySelectorAll(`#${containerId} [data-row]`)].map(mapper);
+}
+
+export function collectScoringDomainsConfigFromDocument() {
+  return {
+    DOMAIN_SCORES: parseScoreRows(readRows("domainScoreRows", (row) => ({
+      key: row.querySelector('[data-field="key"]').value,
+      score: row.querySelector('[data-field="score"]').value,
+    })), "Domain Scores"),
+    KEYWORD_SCORES: parseScoreRows(readRows("keywordScoreRows", (row) => ({
+      key: row.querySelector('[data-field="key"]').value,
+      score: row.querySelector('[data-field="score"]').value,
+    })), "Keyword Scores"),
+    KNOWN_DOMAINS: parseKnownSourceRows(readRows("knownSourceRows", (row) => ({
+      domain: row.querySelector('[data-field="domain"]').value,
+      sourceType: row.querySelector('[data-field="sourceType"]').value,
+      scoreCategory: row.querySelector('[data-field="scoreCategory"]').value,
+    }))),
+    SKIP_DOMAINS: parseDomainList(readRows("skipDomainRows", (row) => row.dataset.value), "Skip Domains"),
+    BLACKLISTED_DOMAINS: parseDomainList(readRows("blacklistDomainRows", (row) => row.dataset.value), "Blacklist"),
+  };
+}
+
 function companyQueryParams({ includePaging = true } = {}) {
   const params = new URLSearchParams();
   if (includePaging) {
@@ -193,7 +289,7 @@ async function renderCompanies(patch = {}) {
       <button class="btn" id="selectAllFiltered"><i data-lucide="list-checks"></i>Select all filtered</button>
     </div>
     <div id="selectAllBanner" class="alert info" style="display: none; text-align: center; margin-bottom: 10px; background: var(--blue-light, #e0f2fe); color: var(--blue, #0284c7); padding: 8px; border-radius: 4px;">
-      All <b id="bannerCurrentCount">0</b> companies on this page are selected. 
+      All <b id="bannerCurrentCount">0</b> companies on this page are selected.
       <a href="#" id="bannerSelectAllLink" style="font-weight: bold; cursor: pointer; text-decoration: underline;">Select all <span id="bannerTotalCount">0</span> companies matching this filter</a>
     </div>
     <div class="table-wrap fixed">
@@ -290,12 +386,12 @@ function bindCompanyEvents(companies, pagination) {
     const show = companiesState.selected.size ? "" : "none";
     if (runBtn) runBtn.style.display = show;
     if (delBtn) delBtn.style.display = show;
-    
+
     // Update banner
     const selectPageChecked = document.getElementById("selectPage").checked;
     const banner = document.getElementById("selectAllBanner");
     const totalCurrentPage = document.querySelectorAll(".row-check").length;
-    
+
     if (selectPageChecked && totalCurrentPage > 0 && pagination.total > totalCurrentPage) {
         if (companiesState.selected.size < pagination.total) {
             banner.style.display = "block";
@@ -315,7 +411,7 @@ function bindCompanyEvents(companies, pagination) {
         banner.style.display = "none";
     }
   };
-  
+
   if (document.getElementById("bannerSelectAllLink")) {
       document.getElementById("bannerSelectAllLink").addEventListener("click", async (e) => {
           e.preventDefault();
@@ -363,7 +459,7 @@ function bindCompanyEvents(companies, pagination) {
     const oldText = btn.innerHTML;
     btn.innerHTML = `<i data-lucide="loader-2" class="spin"></i> Exporting...`;
     btn.disabled = true;
-    
+
     fetch("/api/export-excel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -435,7 +531,7 @@ async function deleteCompanies(ids) {
 async function importCompanies(file) {
   if (!file) return;
   const text = await file.text();
-  const names = text.split(/\r?\n/).map((line) => line.split(",")[0].trim()).filter(Boolean);
+  const names = parseCompanyImportText(text, file.name);
   if (!names.length) return alert("No company names found.");
   const result = await api("/api/companies/import", {
     method: "POST",
@@ -455,7 +551,7 @@ async function renderCompanyDetail(id) {
   const logs = data.timeline || [];
   const scrapedPages = data.scraped_pages || [];
   const filteredLinks = data.filtered_links || [];
-  
+
   // Build step status strip
   const steps = ["gemini_quick", "deep_search", "filter", "scrape", "ai_extract"];
   const stepStatus = {};
@@ -465,14 +561,14 @@ async function renderCompanyDetail(id) {
           stepStatus[l.step] = l.status; // "SUCCESS", "FAILED", "STARTED", etc.
       }
   });
-  
+
   const stepStripHtml = steps.map(step => {
       let st = stepStatus[step];
       let color = "var(--muted)";
       if (st === "SUCCESS") color = "var(--green)";
       else if (st === "FAILED") color = "var(--red)";
       else if (st === "STARTED" || st === "RUNNING") color = "var(--blue)";
-      
+
       return `<div style="flex: 1; text-align: center; padding: 10px; margin: 0 5px; border-radius: 4px; background: var(--surface); border: 2px solid ${color}; font-weight: bold; color: ${color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.9em;">
           ${step.replace("_", " ")}<br>
           <small>${st || "PENDING"}</small>
@@ -496,7 +592,7 @@ async function renderCompanyDetail(id) {
           </table>
       </div>`;
   }
-  
+
   // Top 10 Scored URLs
   let top10Html = '<p class="muted">No filtered links.</p>';
   const top10 = filteredLinks.slice(0, 10);
@@ -517,14 +613,14 @@ async function renderCompanyDetail(id) {
 
   app.innerHTML = `
     <div class="page-title"><div><a href="#/companies" class="muted">← Companies</a><h1>${escapeHtml(company.original_name)}</h1><div class="subtitle">#${company.id} · ${company.status}</div></div></div>
-    
+
     <div class="card" style="margin-bottom: 16px;">
         <h3 style="margin-bottom: 10px;">Pipeline Steps</h3>
         <div style="display: flex; flex-wrap: wrap; justify-content: space-between;">
             ${stepStripHtml}
         </div>
     </div>
-    
+
     <div class="grid two">
       <div class="card" style="display: flex; flex-direction: column;">
           <h3>Contacts Extracted</h3>
@@ -542,7 +638,7 @@ async function renderCompanyDetail(id) {
           <pre class="terminal" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(JSON.stringify(data.gemini_quick || {}, null, 2))}</pre>
       </div>
     </div>
-    
+
     <div class="grid two" style="margin-top: 16px;">
         <div class="card">
             <h3>Top 10 Scored URLs</h3>
@@ -553,7 +649,7 @@ async function renderCompanyDetail(id) {
             ${scrapedHtml}
         </div>
     </div>
-    
+
     <div class="card" style="margin-top:16px"><h3>Timeline</h3><div class="terminal">${logs.length ? logs.map((l) => `<div class="terminal-line">${l.started_at || ""} ${l.step} ${l.status} ${l.error_message || ""}</div>`).join("") : '<div class="terminal-line">No logs yet.</div>'}</div></div>
   `;
 }
@@ -677,140 +773,275 @@ async function renderLogs() {
   iconize();
 }
 
+
+function formField(id, label, value, { type = "text", placeholder = "", min = "", step = "any" } = {}) {
+  return `
+    <div class="form-group">
+      <label for="${id}">${escapeHtml(label)}</label>
+      <input type="${type}" id="${id}" class="input setting-input" value="${escapeHtml(toFormValue(value))}" placeholder="${escapeHtml(placeholder)}" ${min !== "" ? `min="${min}"` : ""} ${type === "number" ? `step="${step}"` : ""}>
+    </div>`;
+}
+
+function checkboxField(id, label, checked) {
+  return `
+    <label class="setting-check">
+      <input type="checkbox" id="${id}" ${checked ? "checked" : ""}>
+      <span>${escapeHtml(label)}</span>
+    </label>`;
+}
+
+function scoreRows(id, values, keyLabel) {
+  return Object.entries(values || {}).map(([key, score]) => `
+    <div class="settings-row score-row" data-row>
+      <input class="input setting-input" data-field="key" value="${escapeHtml(key)}" placeholder="${escapeHtml(keyLabel)}">
+      <input class="input setting-input compact-number" data-field="score" type="number" step="any" value="${escapeHtml(score)}" placeholder="Score">
+      <button type="button" class="btn ghost danger-text" data-remove-row title="Remove"><i data-lucide="trash-2"></i></button>
+    </div>`).join("") || `<div class="muted empty-state">No rows yet.</div>`;
+}
+
+function knownSourceRows(values) {
+  return Object.entries(values || {}).map(([domain, source]) => `
+    <div class="settings-row known-source-row" data-row>
+      <input class="input setting-input" data-field="domain" value="${escapeHtml(domain)}" placeholder="example.com">
+      <input class="input setting-input" data-field="sourceType" value="${escapeHtml((source || [])[0] || "")}" placeholder="source type">
+      <input class="input setting-input" data-field="scoreCategory" value="${escapeHtml((source || [])[1] || "")}" placeholder="score category">
+      <button type="button" class="btn ghost danger-text" data-remove-row title="Remove"><i data-lucide="trash-2"></i></button>
+    </div>`).join("") || `<div class="muted empty-state">No known sources yet.</div>`;
+}
+
+function domainListRows(id, values) {
+  return (values || []).map((domain) => `
+    <div class="domain-pill-row" data-row data-value="${escapeHtml(domain)}">
+      <span class="mono">${escapeHtml(domain)}</span>
+      <button type="button" class="btn ghost danger-text" data-remove-row>Remove</button>
+    </div>`).join("") || `<div class="muted empty-state">No domains yet.</div>`;
+}
+
+function scoringDomainsTabs(activeTab) {
+  return SCORING_DOMAIN_TABS.map((tab) => `
+    <button type="button" class="settings-tab ${activeTab === tab.id ? "active" : ""}" data-scoring-tab="${tab.id}">${tab.label}</button>`).join("");
+}
+
+function scoringDomainsPane(pipelineConfig) {
+  const activeTab = scoringDomainsState.activeTab;
+  return `
+    <div class="card settings-scoring-card">
+      <div class="settings-section-heading">
+        <div>
+          <h2>Scoring & Domains</h2>
+          <p class="muted">Structured editors for URL scoring, known source hints, and domain exclusion lists.</p>
+        </div>
+        <button type="button" class="btn primary" id="saveScoringDomains">Save Scoring & Domains</button>
+      </div>
+      <div class="settings-tabs" role="tablist">${scoringDomainsTabs(activeTab)}</div>
+      <div class="settings-tab-panel ${activeTab === "scores" ? "active" : ""}" data-tab-panel="scores">
+        <div class="settings-split">
+          <div>
+            <div class="settings-table-heading"><h3>Domain Scores</h3><button type="button" class="btn" data-add-score="domainScoreRows">Add score</button></div>
+            <div id="domainScoreRows" class="settings-row-list">${scoreRows("domainScoreRows", pipelineConfig.DOMAIN_SCORES, "category")}</div>
+          </div>
+          <div>
+            <div class="settings-table-heading"><h3>Keyword Scores</h3><button type="button" class="btn" data-add-score="keywordScoreRows">Add keyword</button></div>
+            <div id="keywordScoreRows" class="settings-row-list">${scoreRows("keywordScoreRows", pipelineConfig.KEYWORD_SCORES, "keyword")}</div>
+          </div>
+        </div>
+      </div>
+      <div class="settings-tab-panel ${activeTab === "known" ? "active" : ""}" data-tab-panel="known">
+        <div class="settings-table-heading"><h3>Known Sources</h3><button type="button" class="btn" id="addKnownSource">Add source</button></div>
+        <div class="settings-row header-row"><span>Domain</span><span>Source type</span><span>Score category</span><span></span></div>
+        <div id="knownSourceRows" class="settings-row-list">${knownSourceRows(pipelineConfig.KNOWN_DOMAINS)}</div>
+      </div>
+      <div class="settings-tab-panel ${activeTab === "skip" ? "active" : ""}" data-tab-panel="skip">
+        <div class="list-editor-add"><input class="input setting-input" id="skipDomainInput" placeholder="domain.com"><button type="button" class="btn" data-add-domain="skipDomainRows" data-input="skipDomainInput">Add domain</button></div>
+        <div id="skipDomainRows" class="domain-list">${domainListRows("skipDomainRows", pipelineConfig.SKIP_DOMAINS)}</div>
+      </div>
+      <div class="settings-tab-panel ${activeTab === "blacklist" ? "active" : ""}" data-tab-panel="blacklist">
+        <div class="list-editor-add"><input class="input setting-input" id="blacklistDomainInput" placeholder="domain.com"><button type="button" class="btn" data-add-domain="blacklistDomainRows" data-input="blacklistDomainInput">Add domain</button></div>
+        <div id="blacklistDomainRows" class="domain-list">${domainListRows("blacklistDomainRows", pipelineConfig.BLACKLISTED_DOMAINS)}</div>
+      </div>
+    </div>`;
+}
+
 async function renderSettings() {
   setRouteActive("settings");
   app.innerHTML = `<div class="page-title"><div><h1>Settings</h1><div class="subtitle">Configuration editing</div></div></div><div class="card"><p>Loading settings...</p></div>`;
-  
+
   try {
     const [settingsRes, pipelineRes, modelsRes] = await Promise.all([
       fetch("/api/spa/settings", { cache: "no-store" }),
       fetch("/api/spa/pipeline-config", { cache: "no-store" }),
       fetch("/api/spa/gemini-models", { cache: "no-store" })
     ]);
-    
+
     const settings = await settingsRes.json();
     const pipelineConfig = await pipelineRes.json();
-    
+
     let modelsHTML = "";
     if (modelsRes.ok) {
-        const modelsData = await modelsRes.json();
-        modelsHTML = (modelsData.models || []).map(m => `<option value="${m.name}">${m.displayName || m.name}</option>`).join("");
+      const modelsData = await modelsRes.json();
+      modelsHTML = (modelsData.models || []).map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.displayName || m.name)}</option>`).join("");
     } else {
-        modelsHTML = `<option value="models/gemini-2.5-flash-lite">gemini-2.5-flash-lite (Failed to load dynamic list)</option>`;
+      modelsHTML = `<option value="models/gemini-2.5-flash-lite">gemini-2.5-flash-lite (Failed to load dynamic list)</option>`;
     }
-    
+
     const buildSelect = (id, label, value) => {
-        let selectHtml = `<select id="${id}" class="form-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text);">${modelsHTML}</select>`;
-        if (value) {
-            selectHtml = selectHtml.replace(`value="${value}"`, `value="${value}" selected`);
-        }
-        return `
-        <div class="form-group" style="margin-bottom: 15px;">
-            <label style="display:block; margin-bottom: 5px; font-weight: 500; color: var(--muted);">${label}</label>
-            ${selectHtml}
+      const options = modelsHTML.replace(`value="${escapeHtml(value)}"`, `value="${escapeHtml(value)}" selected`);
+      return `
+        <div class="form-group">
+          <label for="${id}">${escapeHtml(label)}</label>
+          <select id="${id}" class="select setting-input">${options}</select>
         </div>`;
     };
-    
-    const buildInput = (id, label, value, placeholder="Leave unchanged to keep current key", type="text") => `
-        <div class="form-group" style="margin-bottom: 15px;">
-            <label style="display:block; margin-bottom: 5px; font-weight: 500; color: var(--muted);">${label}</label>
-            <input type="${type}" id="${id}" class="form-input" value="${value || (type==='number' ? 0 : '')}" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text);" placeholder="${placeholder}">
-        </div>`;
 
-    const buildTextarea = (id, label, value, hint="") => `
-        <div class="form-group" style="margin-bottom: 15px;">
-            <label style="display:block; margin-bottom: 5px; font-weight: 500; color: var(--muted);">${label}</label>
-            <textarea id="${id}" class="form-input" rows="3" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: monospace; font-size: 13px;">${(typeof value === 'string' ? value : JSON.stringify(value, null, 2)) || ''}</textarea>
-            ${hint ? `<small style="color: var(--muted);">${hint}</small>` : ''}
-        </div>`;
-        
-    const buildCheckbox = (id, label, checked) => `
-        <div class="form-group" style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
-            <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} style="width: 16px; height: 16px; cursor: pointer;">
-            <label for="${id}" style="font-weight: 500; color: var(--text); cursor: pointer; margin: 0;">${label}</label>
-        </div>`;
-    
     app.innerHTML = `
-      <div class="page-title"><div><h1>Settings</h1><div class="subtitle">API Keys and Pipeline Configuration</div></div></div>
-      <div style="display: flex; gap: 20px; flex-wrap: wrap;">
-          <div class="card" style="flex: 1; min-width: 300px; max-width: 500px;">
-            <h2 style="margin-bottom: 15px; font-size: 1.2rem;">API & Models</h2>
-            <form id="settings-form" onsubmit="saveSettings(event)">
-                ${buildInput("gemini_key", "Gemini API Key", settings.GEMINI_API_KEY)}
-                ${buildInput("firecrawl_key", "Firecrawl API Key", settings.FIRECRAWL_API_KEY)}
-                ${buildInput("serper_key", "Serper API Key", settings.SERPER_API_KEY)}
-                ${buildSelect("grounding_model", "AI Grounding Model", settings.AI_GROUNDING_MODEL)}
-                ${buildSelect("extractor_model", "AI Extractor Model", settings.AI_EXTRACTOR_MODEL)}
-                <button type="submit" class="btn" style="background: var(--blue); color: white; margin-top: 10px; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Save API Keys</button>
+      <div class="page-title"><div><h1>Settings</h1><div class="subtitle">API keys and pipeline configuration</div></div></div>
+      <div class="settings-layout">
+        <div class="card settings-card settings-narrow-card">
+          <h2>API & Models</h2>
+          <form id="settings-form">
+            ${formField("gemini_key", "Gemini API Key", settings.GEMINI_API_KEY, { placeholder: "Leave unchanged to keep current key" })}
+            ${formField("firecrawl_key", "Firecrawl API Key", settings.FIRECRAWL_API_KEY, { placeholder: "Leave unchanged to keep current key" })}
+            ${formField("serper_key", "Serper API Key", settings.SERPER_API_KEY, { placeholder: "Leave unchanged to keep current key" })}
+            ${buildSelect("grounding_model", "AI Grounding Model", settings.AI_GROUNDING_MODEL)}
+            ${buildSelect("extractor_model", "AI Extractor Model", settings.AI_EXTRACTOR_MODEL)}
+            <button type="submit" class="btn primary">Save API Keys</button>
+          </form>
+        </div>
+
+        <div class="settings-wide-column">
+          <div class="card settings-card">
+            <div class="settings-section-heading"><div><h2>Pipeline Behavior</h2><p class="muted">Search, scrape, batch, and feature controls.</p></div></div>
+            <form id="pipeline-form">
+              <div class="settings-grid">
+                <section>
+                  <h3>Scrape & Search</h3>
+                  ${formField("TOP_N", "Top N Pages to Scrape", pipelineConfig.TOP_N, { type: "number" })}
+                  ${formField("SEARCH_LIMIT", "Serper Search Limit", pipelineConfig.SEARCH_LIMIT, { type: "number" })}
+                  ${formField("SERPER_NUM_RESULTS", "Results per Serper request", pipelineConfig.SERPER_NUM_RESULTS, { type: "number" })}
+                  ${formField("INFER_MAX_SCRAPE", "Max Scrapes for Inference", pipelineConfig.INFER_MAX_SCRAPE, { type: "number" })}
+                </section>
+                <section>
+                  <h3>Pipeline</h3>
+                  ${formField("EARLY_STOP_COUNT", "Early Stop Count", pipelineConfig.EARLY_STOP_COUNT, { type: "number" })}
+                  ${formField("EARLY_STOP_SCORE", "Early Stop Score", pipelineConfig.EARLY_STOP_SCORE, { type: "number" })}
+                  ${formField("DELAY_SECONDS", "Delay Seconds", pipelineConfig.DELAY_SECONDS, { type: "number" })}
+                  ${formField("MAX_RETRIES", "Max Retries", pipelineConfig.MAX_RETRIES, { type: "number" })}
+                  ${formField("BATCH_SIZE", "Batch Size", pipelineConfig.BATCH_SIZE, { type: "number" })}
+                  ${formField("MIN_CONFIDENCE_THRESHOLD", "Min Confidence", pipelineConfig.MIN_CONFIDENCE_THRESHOLD, { type: "number" })}
+                  ${formField("MIN_SCRAPE_SCORE", "Min Scrape Score", pipelineConfig.MIN_SCRAPE_SCORE, { type: "number" })}
+                </section>
+                <section>
+                  <h3>Firecrawl Batch</h3>
+                  ${checkboxField("FIRECRAWL_BATCH_SCRAPE_ENABLED", "Enable batch scrape", pipelineConfig.FIRECRAWL_BATCH_SCRAPE_ENABLED ?? PIPELINE_CONFIG_DEFAULTS.FIRECRAWL_BATCH_SCRAPE_ENABLED)}
+                  ${formField("FIRECRAWL_MAX_CONCURRENCY", "Max Concurrency", pipelineConfig.FIRECRAWL_MAX_CONCURRENCY ?? PIPELINE_CONFIG_DEFAULTS.FIRECRAWL_MAX_CONCURRENCY, { type: "number", min: "1", step: "1" })}
+                  ${formField("FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS", "Poll Interval Seconds", pipelineConfig.FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS ?? PIPELINE_CONFIG_DEFAULTS.FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS, { type: "number" })}
+                  ${formField("FIRECRAWL_BATCH_TIMEOUT_SECONDS", "Timeout Seconds", pipelineConfig.FIRECRAWL_BATCH_TIMEOUT_SECONDS ?? PIPELINE_CONFIG_DEFAULTS.FIRECRAWL_BATCH_TIMEOUT_SECONDS, { type: "number" })}
+                </section>
+                <section>
+                  <h3>Feature Toggles</h3>
+                  ${checkboxField("GEMINI_QUICK_ENABLED", "Enable Gemini Quick Search", pipelineConfig.GEMINI_QUICK_ENABLED)}
+                  ${checkboxField("SERPER_ENABLED", "Enable Serper Search", pipelineConfig.SERPER_ENABLED)}
+                  ${checkboxField("GOOGLE_MAPS_ENABLED", "Enable Google Maps Lookup", pipelineConfig.GOOGLE_MAPS_ENABLED)}
+                  ${checkboxField("SCRAPE_LINKEDIN_ENABLED", "Enable LinkedIn Scrape", pipelineConfig.SCRAPE_LINKEDIN_ENABLED)}
+                  ${checkboxField("ENABLE_QUERY_DEDUP", "Enable Query Dedup", pipelineConfig.ENABLE_QUERY_DEDUP)}
+                  ${checkboxField("ENABLE_URL_DEDUP", "Enable URL Dedup", pipelineConfig.ENABLE_URL_DEDUP)}
+                  ${checkboxField("ENABLE_GLOBAL_CACHE", "Enable Global Cache", pipelineConfig.ENABLE_GLOBAL_CACHE)}
+                  ${formField("CACHE_TTL_DAYS", "Cache TTL (Days)", pipelineConfig.CACHE_TTL_DAYS, { type: "number" })}
+                </section>
+              </div>
+              <button type="submit" class="btn primary settings-save-wide">Save Pipeline Behavior</button>
             </form>
           </div>
-          
-          <div class="card" style="flex: 2; min-width: 300px;">
-            <h2 style="margin-bottom: 15px; font-size: 1.2rem;">Pipeline Logic</h2>
-            <form id="pipeline-form" onsubmit="savePipelineConfig(event)">
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
-                    <!-- Section A: Scrape/Search Control -->
-                    <div>
-                        <h3 style="margin-bottom: 10px; font-size: 1rem; color: var(--blue);">Scrape & Search Control</h3>
-                        ${buildInput("TOP_N", "Top N Pages to Scrape", pipelineConfig.TOP_N, "", "number")}
-                        ${buildInput("SEARCH_LIMIT", "Serper Search Limit", pipelineConfig.SEARCH_LIMIT, "", "number")}
-                        ${buildInput("SERPER_NUM_RESULTS", "Results per Serper request", pipelineConfig.SERPER_NUM_RESULTS, "", "number")}
-                        ${buildInput("INFER_MAX_SCRAPE", "Max Scrapes for Inference", pipelineConfig.INFER_MAX_SCRAPE, "", "number")}
-                    </div>
-                    
-                    <!-- Section C: Pipeline Behavior -->
-                    <div>
-                        <h3 style="margin-bottom: 10px; font-size: 1rem; color: var(--blue);">Pipeline Behavior</h3>
-                        ${buildInput("EARLY_STOP_COUNT", "Early Stop Count", pipelineConfig.EARLY_STOP_COUNT, "", "number")}
-                        ${buildInput("EARLY_STOP_SCORE", "Early Stop Score", pipelineConfig.EARLY_STOP_SCORE, "", "number")}
-                        ${buildInput("DELAY_SECONDS", "Delay Seconds", pipelineConfig.DELAY_SECONDS, "", "number")}
-                        ${buildInput("MAX_RETRIES", "Max Retries", pipelineConfig.MAX_RETRIES, "", "number")}
-                        ${buildInput("BATCH_SIZE", "Batch Size", pipelineConfig.BATCH_SIZE, "", "number")}
-                        ${buildInput("MIN_CONFIDENCE_THRESHOLD", "Min Confidence", pipelineConfig.MIN_CONFIDENCE_THRESHOLD, "", "number")}
-                        ${buildInput("MIN_SCRAPE_SCORE", "Min Scrape Score", pipelineConfig.MIN_SCRAPE_SCORE, "", "number")}
-                    </div>
-                    
-                    <!-- Section D: Feature Toggles -->
-                    <div>
-                        <h3 style="margin-bottom: 10px; font-size: 1rem; color: var(--blue);">Feature Toggles</h3>
-                        ${buildCheckbox("GEMINI_QUICK_ENABLED", "Enable Gemini Quick Search", pipelineConfig.GEMINI_QUICK_ENABLED)}
-                        ${buildCheckbox("SERPER_ENABLED", "Enable Serper Search", pipelineConfig.SERPER_ENABLED)}
-                        ${buildCheckbox("GOOGLE_MAPS_ENABLED", "Enable Google Maps Lookup", pipelineConfig.GOOGLE_MAPS_ENABLED)}
-                        ${buildCheckbox("SCRAPE_LINKEDIN_ENABLED", "Enable LinkedIn Scrape", pipelineConfig.SCRAPE_LINKEDIN_ENABLED)}
-                        ${buildCheckbox("ENABLE_QUERY_DEDUP", "Enable Query Dedup", pipelineConfig.ENABLE_QUERY_DEDUP)}
-                        ${buildCheckbox("ENABLE_URL_DEDUP", "Enable URL Dedup", pipelineConfig.ENABLE_URL_DEDUP)}
-                        ${buildCheckbox("ENABLE_GLOBAL_CACHE", "Enable Global Cache", pipelineConfig.ENABLE_GLOBAL_CACHE)}
-                        ${buildInput("CACHE_TTL_DAYS", "Cache TTL (Days)", pipelineConfig.CACHE_TTL_DAYS, "", "number")}
-                    </div>
-                </div>
-                
-                <!-- Section B: Scoring and Domains -->
-                <div style="margin-top: 20px;">
-                    <h3 style="margin-bottom: 10px; font-size: 1rem; color: var(--blue);">Scoring & Domains (JSON Format)</h3>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
-                        ${buildTextarea("DOMAIN_SCORES", "Domain Scores (JSON)", pipelineConfig.DOMAIN_SCORES, "JSON object mapping categories to scores")}
-                        ${buildTextarea("KEYWORD_SCORES", "Keyword Scores (JSON)", pipelineConfig.KEYWORD_SCORES, "JSON object mapping keywords to scores")}
-                        ${buildTextarea("BLACKLISTED_DOMAINS", "Blacklist Domains (JSON array)", pipelineConfig.BLACKLISTED_DOMAINS, "JSON array of strings")}
-                        ${buildTextarea("SKIP_DOMAINS", "Skip Domains (JSON array)", pipelineConfig.SKIP_DOMAINS, "JSON array of strings")}
-                    </div>
-                </div>
-                
-                <button type="submit" class="btn" style="background: var(--blue); color: white; margin-top: 20px; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; width: 100%;">Save Pipeline Config</button>
-            </form>
-          </div>
+          ${scoringDomainsPane(pipelineConfig)}
+        </div>
       </div>
     `;
+    bindSettingsEvents();
+    iconize();
   } catch (err) {
-      app.innerHTML = `<div class="card" style="color:red;">Error loading settings: ${err.message}</div>`;
+    app.innerHTML = `<div class="card danger-text">Error loading settings: ${escapeHtml(err.message)}</div>`;
   }
 }
+
+function clearEmptyState(container) {
+  container.querySelectorAll(".empty-state").forEach((item) => item.remove());
+}
+
+function appendScoreRow(containerId) {
+  const container = document.getElementById(containerId);
+  clearEmptyState(container);
+  container.insertAdjacentHTML("beforeend", `
+    <div class="settings-row score-row" data-row>
+      <input class="input setting-input" data-field="key" placeholder="${containerId === "domainScoreRows" ? "category" : "keyword"}">
+      <input class="input setting-input compact-number" data-field="score" type="number" step="any" placeholder="Score">
+      <button type="button" class="btn ghost danger-text" data-remove-row title="Remove"><i data-lucide="trash-2"></i></button>
+    </div>`);
+  iconize();
+}
+
+function appendKnownSourceRow() {
+  const container = document.getElementById("knownSourceRows");
+  clearEmptyState(container);
+  container.insertAdjacentHTML("beforeend", `
+    <div class="settings-row known-source-row" data-row>
+      <input class="input setting-input" data-field="domain" placeholder="example.com">
+      <input class="input setting-input" data-field="sourceType" placeholder="source type">
+      <input class="input setting-input" data-field="scoreCategory" placeholder="score category">
+      <button type="button" class="btn ghost danger-text" data-remove-row title="Remove"><i data-lucide="trash-2"></i></button>
+    </div>`);
+  iconize();
+}
+
+function appendDomainListItem(containerId, inputId) {
+  const input = document.getElementById(inputId);
+  const domain = input.value.trim().toLowerCase();
+  try {
+    parseDomainList([domain], containerId === "skipDomainRows" ? "Skip Domains" : "Blacklist");
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  const container = document.getElementById(containerId);
+  const exists = [...container.querySelectorAll("[data-row]")].some((row) => row.dataset.value === domain);
+  if (exists) {
+    alert(`${domain} is already in this list.`);
+    return;
+  }
+  clearEmptyState(container);
+  container.insertAdjacentHTML("beforeend", `
+    <div class="domain-pill-row" data-row data-value="${escapeHtml(domain)}">
+      <span class="mono">${escapeHtml(domain)}</span>
+      <button type="button" class="btn ghost danger-text" data-remove-row>Remove</button>
+    </div>`);
+  input.value = "";
+}
+
+function bindSettingsEvents() {
+  document.getElementById("settings-form").addEventListener("submit", saveSettings);
+  document.getElementById("pipeline-form").addEventListener("submit", savePipelineConfig);
+  document.getElementById("saveScoringDomains").addEventListener("click", saveScoringDomainsConfig);
+  document.querySelectorAll("[data-scoring-tab]").forEach((button) => button.addEventListener("click", () => {
+    scoringDomainsState.activeTab = button.dataset.scoringTab;
+    document.querySelectorAll("[data-scoring-tab]").forEach((tab) => tab.classList.toggle("active", tab === button));
+    document.querySelectorAll("[data-tab-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.tabPanel === scoringDomainsState.activeTab));
+  }));
+  document.querySelectorAll("[data-add-score]").forEach((button) => button.addEventListener("click", () => appendScoreRow(button.dataset.addScore)));
+  document.getElementById("addKnownSource").addEventListener("click", appendKnownSourceRow);
+  document.querySelectorAll("[data-add-domain]").forEach((button) => button.addEventListener("click", () => appendDomainListItem(button.dataset.addDomain, button.dataset.input)));
+  document.querySelectorAll(".settings-scoring-card").forEach((card) => card.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-remove-row]");
+    if (!remove) return;
+    remove.closest("[data-row]").remove();
+  }));
+}
+
 
 async function saveSettings(e) {
     e.preventDefault();
     const btn = e.target.querySelector('button');
     btn.textContent = "Saving...";
     btn.disabled = true;
-    
+
     const data = {
         GEMINI_API_KEY: document.getElementById("gemini_key").value,
         FIRECRAWL_API_KEY: document.getElementById("firecrawl_key").value,
@@ -818,7 +1049,7 @@ async function saveSettings(e) {
         AI_GROUNDING_MODEL: document.getElementById("grounding_model").value,
         AI_EXTRACTOR_MODEL: document.getElementById("extractor_model").value,
     };
-    
+
     try {
         const res = await fetch("/api/spa/settings", {
             method: "POST",
@@ -842,43 +1073,50 @@ async function saveSettings(e) {
 
 async function savePipelineConfig(e) {
     e.preventDefault();
-    const btn = e.target.querySelector('button');
+    const btn = e.target.querySelector('button[type="submit"]');
     btn.textContent = "Saving...";
     btn.disabled = true;
-    
+
     let data = {};
     try {
-        // Parse numbers
-        const numFields = ['TOP_N', 'SEARCH_LIMIT', 'SERPER_NUM_RESULTS', 'INFER_MAX_SCRAPE', 'EARLY_STOP_COUNT', 'EARLY_STOP_SCORE', 'DELAY_SECONDS', 'MAX_RETRIES', 'BATCH_SIZE', 'MIN_CONFIDENCE_THRESHOLD', 'MIN_SCRAPE_SCORE', 'CACHE_TTL_DAYS'];
-        for (const f of numFields) {
-            const val = parseFloat(document.getElementById(f).value);
-            if (isNaN(val)) throw new Error(`Invalid number for ${f}`);
-            data[f] = val;
-        }
-        
-        // Parse booleans
-        const boolFields = ['GEMINI_QUICK_ENABLED', 'SERPER_ENABLED', 'GOOGLE_MAPS_ENABLED', 'SCRAPE_LINKEDIN_ENABLED', 'ENABLE_QUERY_DEDUP', 'ENABLE_URL_DEDUP', 'ENABLE_GLOBAL_CACHE'];
-        for (const f of boolFields) {
-            data[f] = document.getElementById(f).checked;
-        }
-        
-        // Parse JSON
-        const jsonFields = ['DOMAIN_SCORES', 'KEYWORD_SCORES', 'BLACKLISTED_DOMAINS', 'SKIP_DOMAINS'];
-        for (const f of jsonFields) {
-            try {
-                data[f] = JSON.parse(document.getElementById(f).value);
-            } catch (err) {
-                throw new Error(`Invalid JSON format in ${f}`);
-            }
-        }
+        const numFields = [
+            ["TOP_N", "Top N Pages to Scrape"],
+            ["SEARCH_LIMIT", "Serper Search Limit"],
+            ["SERPER_NUM_RESULTS", "Results per Serper request"],
+            ["INFER_MAX_SCRAPE", "Max Scrapes for Inference"],
+            ["EARLY_STOP_COUNT", "Early Stop Count"],
+            ["EARLY_STOP_SCORE", "Early Stop Score"],
+            ["DELAY_SECONDS", "Delay Seconds"],
+            ["MAX_RETRIES", "Max Retries"],
+            ["BATCH_SIZE", "Batch Size"],
+            ["MIN_CONFIDENCE_THRESHOLD", "Min Confidence"],
+            ["MIN_SCRAPE_SCORE", "Min Scrape Score"],
+            ["FIRECRAWL_MAX_CONCURRENCY", "Firecrawl Max Concurrency"],
+            ["FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS", "Firecrawl Batch Poll Interval"],
+            ["FIRECRAWL_BATCH_TIMEOUT_SECONDS", "Firecrawl Batch Timeout"],
+            ["CACHE_TTL_DAYS", "Cache TTL Days"],
+        ];
+        for (const [id, label] of numFields) data[id] = numberValue(id, label);
+        if (data.FIRECRAWL_MAX_CONCURRENCY < 1) throw new Error("Firecrawl Max Concurrency must be at least 1.");
+
+        const boolFields = [
+            "GEMINI_QUICK_ENABLED",
+            "SERPER_ENABLED",
+            "GOOGLE_MAPS_ENABLED",
+            "SCRAPE_LINKEDIN_ENABLED",
+            "ENABLE_QUERY_DEDUP",
+            "ENABLE_URL_DEDUP",
+            "ENABLE_GLOBAL_CACHE",
+            "FIRECRAWL_BATCH_SCRAPE_ENABLED",
+        ];
+        for (const f of boolFields) data[f] = document.getElementById(f).checked;
     } catch (err) {
         alert(err.message);
-        btn.textContent = "Save Pipeline Config";
+        btn.textContent = "Save Pipeline Behavior";
         btn.disabled = false;
         return;
     }
-    // Send data to server
-    
+
     try {
         const res = await fetch("/api/spa/pipeline-config", {
             method: "POST",
@@ -886,16 +1124,54 @@ async function savePipelineConfig(e) {
             body: JSON.stringify(data)
         });
         if (res.ok) {
-            alert("Pipeline Config saved successfully!");
+            alert("Pipeline behavior saved successfully!");
             renderSettings();
         } else {
-            alert("Error saving pipeline config");
-            btn.textContent = "Save Pipeline Config";
+            const payload = await res.json().catch(() => ({}));
+            alert(payload.error || "Error saving pipeline behavior");
+            btn.textContent = "Save Pipeline Behavior";
             btn.disabled = false;
         }
     } catch (err) {
         alert("Error: " + err.message);
-        btn.textContent = "Save Pipeline Config";
+        btn.textContent = "Save Pipeline Behavior";
+        btn.disabled = false;
+    }
+}
+
+async function saveScoringDomainsConfig() {
+    const btn = document.getElementById("saveScoringDomains");
+    btn.textContent = "Saving...";
+    btn.disabled = true;
+
+    let data;
+    try {
+        data = collectScoringDomainsConfigFromDocument();
+    } catch (err) {
+        alert(err.message);
+        btn.textContent = "Save Scoring & Domains";
+        btn.disabled = false;
+        return;
+    }
+
+    try {
+        const res = await fetch("/api/spa/pipeline-config", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(data)
+        });
+        if (res.ok) {
+            alert("Scoring & Domains saved successfully!");
+            renderSettings();
+        } else {
+            const payload = await res.json().catch(() => ({}));
+            alert(payload.error || "Error saving scoring and domains");
+            btn.textContent = "Save Scoring & Domains";
+            btn.disabled = false;
+        }
+    } catch (err) {
+        alert("Error: " + err.message);
+        btn.textContent = "Save Scoring & Domains";
         btn.disabled = false;
     }
 }

@@ -11,6 +11,47 @@ from src.logger import PipelineLogger
 from src.errors import RetryableError, CriticalError, SkippableError, PipelineError
 from src.config import Config
 
+def _normalize_tax_code(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", "", str(value).strip()).replace("–", "-").replace("—", "-")
+
+
+def _is_masothue_source(source_type: str | None, source_url: str | None) -> bool:
+    if source_type == "masothue":
+        return True
+    parsed = urlparse(source_url or "")
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain == "masothue.com" or domain.endswith(".masothue.com")
+
+
+def _extract_masothue_tax_code_from_url(source_url: str | None) -> str:
+    parsed = urlparse(source_url or "")
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    if not (domain == "masothue.com" or domain.endswith(".masothue.com")):
+        return ""
+    match = re.search(r"(?<!\d)(\d{4,14}(?:-\d{1,5})?)(?!\d)", parsed.path or "")
+    return _normalize_tax_code(match.group(1)) if match else ""
+
+
+def _extract_tax_code_from_text(text: str | None) -> str:
+    if not text:
+        return ""
+    patterns = [
+        r"(?:mã\s*số\s*thuế|ma\s*so\s*thue|mst|tax\s*code)\s*[:：]?\s*(\d{4,14}(?:-\d{1,5})?)",
+        r"(?<!\d)(\d{10}(?:-\d{3})?)(?!\d)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _normalize_tax_code(match.group(1))
+    return ""
+
+
 class AIExtractor:
     def __init__(self, db: DatabaseManager, logger: PipelineLogger, config=None):
         self.db = db
@@ -32,6 +73,20 @@ class AIExtractor:
         if not getattr(self.config, 'GEMINI_API_KEY', None):
             raise ValueError("GEMINI_API_KEY is not provided.")
         self.client = genai.Client(api_key=self.config.GEMINI_API_KEY)
+
+
+    def _masothue_phone_allowed(self, company_record: dict | None, source_type: str, source_url: str, markdown_content: str) -> tuple[bool, str]:
+        if not _is_masothue_source(source_type, source_url):
+            return True, ""
+
+        target_mst = _normalize_tax_code(company_record.get("tax_code") if company_record else "")
+        if not target_mst:
+            return True, ""
+
+        page_mst = _extract_masothue_tax_code_from_url(source_url) or _extract_tax_code_from_text(markdown_content)
+        if page_mst and page_mst != target_mst:
+            return False, f"masothue_tax_mismatch: target_mst={target_mst}, page_mst={page_mst}"
+        return True, ""
 
     EXTRACTION_PROMPT_TEMPLATE = """
     Bạn đang trích xuất thông tin liên hệ của công ty: {company_name}
@@ -329,6 +384,14 @@ class AIExtractor:
                         elif var == "website": website = None
                         elif var == "fax": fax = None
                         elif var == "representative": representative = None
+
+                phone_allowed, mismatch_reason = self._masothue_phone_allowed(
+                    company_record, source_type, source_url, markdown_content
+                )
+                if phone and not phone_allowed:
+                    self.logger.logger.warning(f"Suppressing masothue phone for page {scraped_page_id}: {mismatch_reason}")
+                    self.logger.log_event("masothue_phone_suppressed", company_id, {"reason": mismatch_reason, "source_url": source_url})
+                    phone = None
                 
                 self.db.insert_extracted_contact(
                     company_id=company_id, 
@@ -504,9 +567,18 @@ class AIExtractor:
                         elif var == "representative": representative = None
 
                 # Store result for EACH page in batch to mark them as processed
+                company_record = self.db.get_company(company_id)
                 for page in batch_pages:
                     source_type = page.get('source_type', 'batch')
                     source_url = page.get('url', 'batch')
+                    page_phone = phone
+                    phone_allowed, mismatch_reason = self._masothue_phone_allowed(
+                        company_record, source_type, source_url, page.get('markdown_content', '') or ''
+                    )
+                    if page_phone and not phone_allowed:
+                        self.logger.logger.warning(f"Suppressing masothue phone for page {page['id']}: {mismatch_reason}")
+                        self.logger.log_event("masothue_phone_suppressed", company_id, {"reason": mismatch_reason, "source_url": source_url})
+                        page_phone = None
 
                     self.db.insert_extracted_contact(
                         company_id=company_id,
@@ -514,7 +586,7 @@ class AIExtractor:
                         source_type=source_type,
                         source_url=source_url,
                         address=address,
-                        phone=phone,
+                        phone=page_phone,
                         email=email,
                         website=website,
                         fax=fax,
