@@ -380,6 +380,7 @@ class ExcelWriter:
         """
         import json
         import os
+        import re
         import urllib.parse
         from collections import defaultdict
 
@@ -400,17 +401,46 @@ class ExcelWriter:
         
         ws1 = wb.create_sheet(title="Detail")
         
+        def normalize_phone(phone_val):
+            if phone_val is None:
+                return ""
+            raw = str(phone_val).strip()
+            if not raw:
+                return ""
+
+            has_plus = raw.lstrip().startswith("+")
+            digits = re.sub(r"\D", "", raw)
+            if not digits:
+                return raw
+
+            if digits.startswith("0084") and len(digits) > 4:
+                return "0" + digits[4:]
+            if has_plus and digits.startswith("84") and len(digits) > 2:
+                return "0" + digits[2:]
+            if digits.startswith("84") and len(digits) in (11, 12):
+                return "0" + digits[2:]
+            return digits
+
         def clean_phone(phone_str):
             if not phone_str:
                 return []
-            phone_str = str(phone_str)
+            phone_str = str(phone_str).strip()
+            collapsed = re.sub(r"[\s/|,;._-]+", "", phone_str).lower()
+            if collapsed in {"", "na", "none", "null", "khongcongkhai"}:
+                return []
             for sep in [',', ';', '|', '/', '\n']:
                 phone_str = phone_str.replace(sep, ',')
             parts = []
             for p in phone_str.split(','):
-                cleaned = p.strip()
-                if cleaned and cleaned.lower() != 'none' and cleaned != '—':
-                    parts.append(cleaned)
+                cleaned = normalize_phone(p)
+                cleaned_compact = re.sub(r"\s+", "", cleaned).lower()
+                if cleaned_compact in {"", "na", "none", "null", "khongcongkhai"}:
+                    continue
+                if cleaned in {"—", "-", "Không công khai", "không công khai"}:
+                    continue
+                if len(cleaned) <= 1 and not any(ch.isdigit() for ch in cleaned):
+                    continue
+                parts.append(cleaned)
             return parts
 
         def clean_email(email_str):
@@ -451,7 +481,9 @@ class ExcelWriter:
             'scraping': 'Scraping'
         }
         
-        unique_domains_found = set()
+        official_domain_stats = defaultdict(lambda: {"pages": set(), "phone_pages": set()})
+        companies_with_phone = set()
+        inactive_skipped_count = 0
         
         for company in companies:
             cid = company['id']
@@ -460,6 +492,11 @@ class ExcelWriter:
             t_code = company.get('tax_code', '') or '—'
             db_status = company.get('status', 'pending')
             status_display = status_map.get(db_status, db_status)
+            business_status = company.get('business_status') or '—'
+            business_status_category = company.get('business_status_category') or '—'
+            business_status_source_url = company.get('business_status_source_url') or '—'
+            if business_status_category == 'inactive_stop':
+                inactive_skipped_count += 1
             
             gemini_results = db.get_gemini_quick_results_for_company(cid)
             deep_scrape_data = db.get_deep_scrape_export_data_for_company(cid)
@@ -469,6 +506,7 @@ class ExcelWriter:
             end_time = str(time_data.get('finished_at')) if time_data.get('finished_at') else '—'
             
             phones_with_source = [] # list of (phone_list, domain, source_url)
+            seen_phones_for_company = set()
             emails = set()
             addresses = []
             websites = []
@@ -486,11 +524,16 @@ class ExcelWriter:
                     websites.append(gr['website'].strip())
             
             for row in deep_scrape_data:
-                if row.get('phone'):
-                    domain = extract_domain(row.get('source_url', ''), default="Unknown")
-                    phones = clean_phone(row['phone'])
-                    if phones:
-                        phones_with_source.append((phones, domain, row.get('source_url', '—')))
+                source_url = row.get('source_url') or row.get('search_url') or '—'
+                domain = extract_domain(source_url, default="Unknown")
+                source_type = row.get('scrape_source_type') or row.get('filter_source_type')
+                row_phones = clean_phone(row.get('phone')) if row.get('phone') else []
+                if source_type == 'official_website' and row.get('scrape_status') == 'success' and domain != 'Unknown':
+                    official_domain_stats[domain]["pages"].add(source_url)
+                    if row_phones:
+                        official_domain_stats[domain]["phone_pages"].add(source_url)
+                if row_phones:
+                    phones_with_source.append((row_phones, domain, source_url))
                 if row.get('email'):
                     emails.update(clean_email(row['email']))
                 if row.get('address') and row['address'] != '—':
@@ -515,7 +558,9 @@ class ExcelWriter:
                     
             base_row = [
                 c_name, vn_name, t_code,
-                start_time, end_time, best_address
+                start_time, end_time,
+                business_status, business_status_category, business_status_source_url,
+                best_address
             ]
             
             tail_row = [
@@ -527,15 +572,19 @@ class ExcelWriter:
                 flattened_rows.append(base_row + ['—', '—', '—'] + tail_row)
             else:
                 for (phones, domain, url) in phones_with_source:
-                    unique_domains_found.add(domain)
                     for p in phones:
+                        if p in seen_phones_for_company:
+                            continue
+                        seen_phones_for_company.add(p)
+                        companies_with_phone.add(cid)
                         flattened_rows.append(base_row + [p, domain, url] + tail_row)
 
         # --- PASS 2: Write Detail Sheet ---
         headers = [
             "Company Name", "Vietnamese Name", "Tax Code",
-            "Start Time", "End Time", "Address",
-            "Phone", "Source Domain", "Source URL",
+            "Start Time", "End Time",
+            "Business Status", "Business Status Category", "Business Status Source URL",
+            "Address", "Phone", "Source Domain", "Source URL",
             "Email", "Website", "Status"
         ]
         
@@ -566,36 +615,56 @@ class ExcelWriter:
             row_idx1 += 1
 
         # --- PASS 3: Setup Summary Sheet ---
-        ws_summary.column_dimensions['A'].width = 30
-        ws_summary.column_dimensions['B'].width = 20
+        ws_summary.column_dimensions['A'].width = 36
+        ws_summary.column_dimensions['B'].width = 24
+        ws_summary.column_dimensions['C'].width = 18
+        ws_summary.column_dimensions['D'].width = 18
         
         ws_summary.cell(row=1, column=1, value="Metric").font = Font(bold=True)
         ws_summary.cell(row=1, column=2, value="Value").font = Font(bold=True)
         
-        # Calculate summaries statically
         total_companies = len(companies)
-        completed_companies = len([c for c in companies if c.get('status') in ('done', 'permanently_failed')])
-        total_phones = len([r for r in flattened_rows if r[6] != '—'])
-        
-        ws_summary.cell(row=2, column=1, value="Total Companies")
-        ws_summary.cell(row=2, column=2, value=total_companies)
-        
-        ws_summary.cell(row=3, column=1, value="Completed Companies")
-        ws_summary.cell(row=3, column=2, value=completed_companies)
-        
-        ws_summary.cell(row=4, column=1, value="Total Phone Numbers")
-        ws_summary.cell(row=4, column=2, value=total_phones)
-        
-        current_sum_row = 5
-        for dom in sorted(list(unique_domains_found)):
-            dom_count = len([r for r in flattened_rows if r[7] == dom])
-            ws_summary.cell(row=current_sum_row, column=1, value=f"Phones from {dom}")
-            ws_summary.cell(row=current_sum_row, column=2, value=dom_count)
+        total_phones = len([r for r in flattened_rows if r[9] != '—'])
+        phone_coverage = (len(companies_with_phone) / total_companies * 100) if total_companies else 0
+        min_sample_size = 3
+        summary_rows = [
+            ("Total Companies", total_companies),
+            ("Total Phone Numbers", total_phones),
+            ("Phone Coverage Rate", f"{phone_coverage:.2f}%"),
+            ("Companies Skipped By Inactive Status", inactive_skipped_count),
+            ("Official Domains Minimum Sample Size", min_sample_size),
+        ]
+        for idx, (metric, value) in enumerate(summary_rows, start=2):
+            ws_summary.cell(row=idx, column=1, value=metric)
+            ws_summary.cell(row=idx, column=2, value=value)
+
+        current_sum_row = len(summary_rows) + 4
+        ws_summary.cell(row=current_sum_row, column=1, value="Top 5 Official Websites With Best Phone Results").font = Font(bold=True)
+        current_sum_row += 1
+        for col_idx, header in enumerate(["Domain", "Phone Pages", "Scraped Pages", "Phone Rate"], start=1):
+            ws_summary.cell(row=current_sum_row, column=col_idx, value=header).font = Font(bold=True)
+        current_sum_row += 1
+
+        ranked_domains = []
+        for domain, stat in official_domain_stats.items():
+            scraped_pages = len(stat["pages"])
+            if scraped_pages < min_sample_size:
+                continue
+            phone_pages = len(stat["phone_pages"])
+            rate = phone_pages / scraped_pages if scraped_pages else 0
+            ranked_domains.append((rate, phone_pages, scraped_pages, domain))
+        ranked_domains.sort(reverse=True)
+
+        for rate, phone_pages, scraped_pages, domain in ranked_domains[:5]:
+            ws_summary.cell(row=current_sum_row, column=1, value=domain)
+            ws_summary.cell(row=current_sum_row, column=2, value=phone_pages)
+            ws_summary.cell(row=current_sum_row, column=3, value=scraped_pages)
+            ws_summary.cell(row=current_sum_row, column=4, value=f"{rate * 100:.2f}%")
             current_sum_row += 1
         
         for r in range(1, current_sum_row):
-            ws_summary.cell(row=r, column=1).border = thin_border
-            ws_summary.cell(row=r, column=2).border = thin_border
+            for c in range(1, 5):
+                ws_summary.cell(row=r, column=c).border = thin_border
 
         # Auto-adjust column widths for Detail sheet
         for col in ws1.columns:

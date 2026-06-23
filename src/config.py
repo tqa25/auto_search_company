@@ -241,6 +241,9 @@ class Config:
         self.SCRAPE_LINKEDIN_ENABLED: bool = _parse_bool(
             os.getenv("SCRAPE_LINKEDIN_ENABLED"), default=False
         )
+        self.BUSINESS_STATUS_GATE_ENABLED: bool = _parse_bool(
+            os.getenv("BUSINESS_STATUS_GATE_ENABLED"), default=True
+        )
         
         # --- Dynamic Overrides from pipeline_config.json ---
         self._load_pipeline_config()
@@ -262,6 +265,7 @@ class Config:
                     "ENABLE_QUERY_DEDUP", "ENABLE_URL_DEDUP", "ENABLE_GLOBAL_CACHE", "CACHE_TTL_DAYS",
                     "DELAY_SECONDS", "MAX_RETRIES", "BATCH_SIZE", "MIN_CONFIDENCE_THRESHOLD",
                     "GEMINI_QUICK_ENABLED", "SERPER_ENABLED", "GOOGLE_MAPS_ENABLED", "SCRAPE_LINKEDIN_ENABLED",
+                    "BUSINESS_STATUS_GATE_ENABLED",
                     "MIN_SCRAPE_SCORE", "KNOWN_DOMAINS"
                 ]
                 
@@ -304,6 +308,7 @@ class Config:
             f"INFER_MAX_SCRAPE={self.INFER_MAX_SCRAPE!r}, "
             f"VN_LEGAL_DOMAINS={self.VN_LEGAL_DOMAINS!r}, "
             f"GOOGLE_MAPS_ENABLED={self.GOOGLE_MAPS_ENABLED!r}, "
+            f"BUSINESS_STATUS_GATE_ENABLED={self.BUSINESS_STATUS_GATE_ENABLED!r}, "
             f"AI_EXTRACTOR_MODEL={self.AI_EXTRACTOR_MODEL!r}"
             f")"
         )

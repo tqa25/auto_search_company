@@ -88,6 +88,15 @@ class DatabaseManager:
             cursor.execute("ALTER TABLE companies ADD COLUMN vn_data_source TEXT")
         except Exception:
             pass
+        for sql in (
+            "ALTER TABLE companies ADD COLUMN business_status TEXT",
+            "ALTER TABLE companies ADD COLUMN business_status_category TEXT",
+            "ALTER TABLE companies ADD COLUMN business_status_source_url TEXT",
+        ):
+            try:
+                cursor.execute(sql)
+            except Exception:
+                pass
 
         # 2. search_results
         cursor.execute("""
@@ -603,8 +612,10 @@ class DatabaseManager:
                 sr.snippet AS search_snippet,
                 sr.credits_used AS search_credits,
                 fl.should_scrape,
+                fl.source_type AS filter_source_type,
                 fl.relevance_score,
                 fl.reason AS filter_reason,
+                sp.source_type AS scrape_source_type,
                 sp.scrape_status,
                 sp.credits_used AS scrape_credits,
                 sp.error_message,

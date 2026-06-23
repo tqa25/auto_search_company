@@ -14,6 +14,7 @@ from src.ai_extractor import AIExtractor
 from src.result_aggregator import ResultAggregator
 from src.gemini_quick_search import GeminiQuickSearch
 from src.firecrawl_deep_search import FirecrawlDeepSearch
+from src.business_status import INACTIVE_STOP, extract_business_status
 from src.errors import PipelineError, RetryableError, SkippableError, CriticalError
 
 VN_TZ = timezone(timedelta(hours=7))
@@ -150,6 +151,75 @@ class Pipeline:
             (company_id,)
         )
         return (row['cnt'] if row else 0) == 0
+
+    def _status_gate_candidate_links(self, company_id: int) -> list[dict]:
+        status_domains = (
+            "masothue.com", "thuvienphapluat.vn", "congtydoanhnghiep.com",
+            "doanhnghiep.biz", "thongtincongty.vn", "tratencongty.com",
+            "yp.vn", "mytour.vn",
+        )
+        rows = self.db.fetch_all(
+            """
+            SELECT * FROM filtered_links
+            WHERE company_id = ?
+            ORDER BY should_scrape DESC, relevance_score DESC
+            """,
+            (company_id,),
+        )
+
+        def priority(row):
+            url = (row.get("url") or "").lower()
+            for idx, domain in enumerate(status_domains):
+                if domain in url:
+                    return idx
+            return len(status_domains)
+
+        candidates = [
+            row for row in rows
+            if priority(row) < len(status_domains)
+            and "masothue_tax_mismatch" not in (row.get("reason") or "")
+            and row.get("source_type") not in {"blacklisted", "social", "facebook", "linkedin"}
+        ]
+        candidates.sort(key=lambda row: (priority(row), -float(row.get("relevance_score") or 0)))
+        return candidates[:3]
+
+    def _run_business_status_gate(self, company_id: int, replay_mode: bool = False) -> dict | None:
+        if not getattr(self.cfg, "BUSINESS_STATUS_GATE_ENABLED", True):
+            return None
+
+        candidates = self._status_gate_candidate_links(company_id)
+        if not candidates:
+            return None
+
+        for link in candidates:
+            if not replay_mode:
+                self.scrape_module.scrape_url(link["id"])
+            page = self.db.fetch_one(
+                """
+                SELECT * FROM scraped_pages
+                WHERE filtered_link_id = ? AND scrape_status = 'success'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (link["id"],),
+            )
+            if not page:
+                continue
+            status = extract_business_status(page.get("markdown_content"))
+            if not status:
+                continue
+            self.db.update_company(
+                company_id,
+                business_status=status["business_status"],
+                business_status_category=status["business_status_category"],
+                business_status_source_url=page.get("url"),
+            )
+            self.logger.log_event("business_status_detected", company_id, {
+                "business_status": status["business_status"],
+                "business_status_category": status["business_status_category"],
+                "source_url": page.get("url"),
+            })
+            return status
+        return None
 
     # ------------------------------------------------------------------
     # Core run method (upgraded with resume + checkpoint + graceful shutdown
@@ -335,6 +405,14 @@ class Pipeline:
 
                         # SCRAPE
                         if self._should_do_step(next_step, 'scrape'):
+                            status_gate_result = self._run_business_status_gate(company_id, replay_mode=replay_mode)
+                            if status_gate_result and status_gate_result.get("business_status_category") == INACTIVE_STOP:
+                                self.db.update_company(company_id, status='done')
+                                self._batch_stats["status_gate_skipped"] += 1
+                                print(f"  -> Business status gate skipped scrape: {status_gate_result.get('business_status')}")
+                                success_count += 1
+                                break
+
                             if not replay_mode:
                                 print("  -> Scraping...")
                                 self.scrape_module.scrape_company(company_id, self.delay_seconds)
@@ -449,6 +527,7 @@ class Pipeline:
             "gemini_tokens_in": 0, "gemini_tokens_out": 0,
             "serper_credits": 0, "firecrawl_credits": 0,
             "urls_deduped": 0,
+            "status_gate_skipped": 0,
         }
 
     def _print_batch_summary(self):
@@ -480,6 +559,7 @@ class Pipeline:
   Gemini tokens (output):         {s['gemini_tokens_out']:,}
   Serper credits (hôm nay):       {serper_used}
   URLs trùng lặp đã loại:         {s['urls_deduped']}
+  Status gate đã bỏ qua:          {s['status_gate_skipped']}
 ═══════════════════════════════════════════""")
 
     def _save_maps_contact(self, company_id: int, maps_result: dict, gemini_result: dict = None):

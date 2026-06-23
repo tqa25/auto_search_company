@@ -32,6 +32,7 @@ const PIPELINE_CONFIG_DEFAULTS = {
   FIRECRAWL_MAX_CONCURRENCY: 10,
   FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS: 2.0,
   FIRECRAWL_BATCH_TIMEOUT_SECONDS: 300.0,
+  BUSINESS_STATUS_GATE_ENABLED: true,
 };
 
 async function api(url, options = {}) {
@@ -943,6 +944,7 @@ async function renderSettings() {
                   ${checkboxField("SERPER_ENABLED", "Enable Serper Search", pipelineConfig.SERPER_ENABLED)}
                   ${checkboxField("GOOGLE_MAPS_ENABLED", "Enable Google Maps Lookup", pipelineConfig.GOOGLE_MAPS_ENABLED)}
                   ${checkboxField("SCRAPE_LINKEDIN_ENABLED", "Enable LinkedIn Scrape", pipelineConfig.SCRAPE_LINKEDIN_ENABLED)}
+                  ${checkboxField("BUSINESS_STATUS_GATE_ENABLED", "Enable Business Status Gate", pipelineConfig.BUSINESS_STATUS_GATE_ENABLED ?? PIPELINE_CONFIG_DEFAULTS.BUSINESS_STATUS_GATE_ENABLED)}
                   ${checkboxField("ENABLE_QUERY_DEDUP", "Enable Query Dedup", pipelineConfig.ENABLE_QUERY_DEDUP)}
                   ${checkboxField("ENABLE_URL_DEDUP", "Enable URL Dedup", pipelineConfig.ENABLE_URL_DEDUP)}
                   ${checkboxField("ENABLE_GLOBAL_CACHE", "Enable Global Cache", pipelineConfig.ENABLE_GLOBAL_CACHE)}
@@ -1104,6 +1106,7 @@ async function savePipelineConfig(e) {
             "SERPER_ENABLED",
             "GOOGLE_MAPS_ENABLED",
             "SCRAPE_LINKEDIN_ENABLED",
+            "BUSINESS_STATUS_GATE_ENABLED",
             "ENABLE_QUERY_DEDUP",
             "ENABLE_URL_DEDUP",
             "ENABLE_GLOBAL_CACHE",
