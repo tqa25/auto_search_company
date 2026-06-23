@@ -1,7 +1,9 @@
+import json
 import os
 import openpyxl
 import pytest
 import logging
+from src.database import DatabaseManager
 from src.excel_handler import ExcelReader, ExcelWriter
 
 logging.basicConfig(level=logging.INFO)
@@ -141,3 +143,258 @@ def test_excel_writer(tmp_path):
     row4 = [cell.value for cell in ws[4]]
     assert row4[1] == "Công ty B"
     assert row4[3] == "topcv"
+
+
+def test_consolidated_report_plain_text_domains_steps_and_phone_normalization(tmp_path):
+    db = DatabaseManager(str(tmp_path / "export.db"))
+    db.init_db()
+
+    gemini_grounding_id = db.insert_company(
+        "Gemini Grounding Corp",
+        vietnamese_name="Cong ty Gemini Grounding",
+        tax_code="0123456789",
+        status="done",
+    )
+    db.execute_query(
+        """
+        INSERT INTO gemini_quick_results
+            (company_id, address, phone, email, website, tax_code, confidence,
+             sources_json, grounding_sources_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            gemini_grounding_id,
+            "Grounding Address",
+            "+842812345678",
+            "grounding@example.com",
+            "https://grounding.example.com",
+            "0123456789",
+            0.95,
+            json.dumps(["https://wrong.example.vn/company"]),
+            json.dumps([
+                "https://www.masothue.com/company/gemini-grounding",
+                "https://other.example.vn/source",
+            ]),
+            "2026-04-01 10:11:12",
+        ),
+    )
+
+    gemini_fallback_id = db.insert_company("Gemini Fallback Corp", tax_code="0000000001")
+    db.execute_query(
+        """
+        INSERT INTO gemini_quick_results
+            (company_id, address, phone, sources_json, grounding_sources_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            gemini_fallback_id,
+            "Fallback Address",
+            "84901234567",
+            json.dumps([{"url": "https://www.fallback.vn/contact"}]),
+            json.dumps([]),
+            "2026-04-02T03:04:05+07:00",
+        ),
+    )
+
+    gemini_no_source_id = db.insert_company("Gemini No Source Corp")
+    db.execute_query(
+        """
+        INSERT INTO gemini_quick_results
+            (company_id, address, phone, sources_json, grounding_sources_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            gemini_no_source_id,
+            "No Source Address",
+            "0909 888 777",
+            json.dumps([]),
+            json.dumps([]),
+            "2026-04-03 00:00:00",
+        ),
+    )
+
+    deep_id = db.insert_company("Deep Scrape Corp", tax_code="0987654321")
+    search_id = db.insert_search_result(
+        deep_id,
+        "deep scrape query",
+        "organic",
+        1,
+        "https://search-result.example.vn/company",
+        "Deep Result",
+        "Snippet",
+    )
+    db.execute_query(
+        "UPDATE search_results SET created_at = ? WHERE id = ?",
+        ("2026-04-04 01:02:03", search_id),
+    )
+    filtered_id = db.insert_filtered_link(
+        search_id,
+        deep_id,
+        "https://www.deep.vn/contact",
+        "official_website",
+    )
+    scraped_id = db.insert_scraped_page(
+        filtered_id,
+        deep_id,
+        "https://www.deep.vn/contact",
+        "official_website",
+        "phone 0901-234-567",
+        20,
+        "success",
+    )
+    db.insert_extracted_contact(
+        deep_id,
+        scraped_id,
+        "official_website",
+        "https://www.deep.vn/contact",
+        "Deep Address",
+        "0901-234-567",
+        "deep@example.vn",
+        "https://www.deep.vn",
+        None,
+        None,
+        "{}",
+        0.9,
+    )
+
+
+    gemini_placeholder_id = db.insert_company("Gemini Placeholder Corp", tax_code="0000000002")
+    db.execute_query(
+        """
+        INSERT INTO gemini_quick_results
+            (company_id, address, phone, email, sources_json, grounding_sources_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            gemini_placeholder_id,
+            "Placeholder Address",
+            "N/A",
+            "N/A",
+            json.dumps(["https://placeholder.example.vn/contact"]),
+            json.dumps([]),
+            "2026-04-05 09:08:07",
+        ),
+    )
+
+    deep_placeholder_id = db.insert_company("Deep Placeholder Corp", tax_code="0000000003")
+    placeholder_search_id = db.insert_search_result(
+        deep_placeholder_id,
+        "placeholder query",
+        "organic",
+        1,
+        "https://placeholder-search.example.vn/company",
+        "Placeholder Result",
+        "Snippet",
+    )
+    db.execute_query(
+        "UPDATE search_results SET created_at = ? WHERE id = ?",
+        ("2026-04-06 01:02:03", placeholder_search_id),
+    )
+    placeholder_filtered_id = db.insert_filtered_link(
+        placeholder_search_id,
+        deep_placeholder_id,
+        "https://www.placeholder.vn/contact",
+        "official_website",
+    )
+    placeholder_scraped_id = db.insert_scraped_page(
+        placeholder_filtered_id,
+        deep_placeholder_id,
+        "https://www.placeholder.vn/contact",
+        "official_website",
+        "placeholder markdown",
+        20,
+        "success",
+    )
+    db.insert_extracted_contact(
+        deep_placeholder_id,
+        placeholder_scraped_id,
+        "official_website",
+        "https://www.placeholder.vn/contact",
+        "Placeholder Deep Address",
+        "A / N / -",
+        "N/A",
+        None,
+        None,
+        None,
+        "{}",
+        0.9,
+    )
+
+    output_path = tmp_path / "consolidated.xlsx"
+    ExcelWriter().write_consolidated_report(
+        db,
+        str(output_path),
+        company_ids=[
+            gemini_grounding_id,
+            gemini_fallback_id,
+            gemini_no_source_id,
+            deep_id,
+            gemini_placeholder_id,
+            deep_placeholder_id,
+        ],
+    )
+
+    wb = openpyxl.load_workbook(output_path)
+    detail = wb["Detail"]
+    summary = wb["Summary"]
+
+    headers = [cell.value for cell in detail[1]]
+    assert headers == [
+        "Company Name", "Vietnamese Name", "Tax Code", "Result Date",
+        "Business Status", "Business Status Category", "Business Status Source URL",
+        "Address", "Phone", "Source Domain", "Source URL", "Source Step",
+        "Email", "Website", "Status",
+    ]
+    assert "Start Time" not in headers
+    assert "End Time" not in headers
+
+    for row in detail.iter_rows():
+        for cell in row:
+            if cell.value is not None:
+                assert cell.number_format == "@"
+
+    rows = {
+        detail.cell(row=row_idx, column=1).value: [cell.value for cell in detail[row_idx]]
+        for row_idx in range(2, detail.max_row + 1)
+    }
+
+    grounding = rows["Gemini Grounding Corp"]
+    assert grounding[2] == "0123456789"
+    assert grounding[3] == "2026-04-01"
+    assert grounding[8] == "02812345678"
+    assert grounding[9] == "masothue.com"
+    assert grounding[10] == "https://www.masothue.com/company/gemini-grounding"
+    assert grounding[11] == "Gemini Quick"
+
+    fallback = rows["Gemini Fallback Corp"]
+    assert fallback[8] == "0901234567"
+    assert fallback[9] == "fallback.vn"
+    assert fallback[10] == "https://www.fallback.vn/contact"
+    assert fallback[11] == "Gemini Quick"
+
+    no_source = rows["Gemini No Source Corp"]
+    assert no_source[9] == "—"
+    assert no_source[10] == "—"
+    assert no_source[11] == "Gemini Quick"
+
+    deep = rows["Deep Scrape Corp"]
+    assert deep[3] == "2026-04-04"
+    assert deep[8] == "0901234567"
+    assert deep[9] == "deep.vn"
+    assert deep[10] == "https://www.deep.vn/contact"
+    assert deep[11] == "Deep Scrape"
+
+
+    gemini_placeholder = rows["Gemini Placeholder Corp"]
+    assert gemini_placeholder[8] == "—"
+    assert gemini_placeholder[9] == "—"
+    assert gemini_placeholder[10] == "—"
+    assert gemini_placeholder[11] == "—"
+    assert gemini_placeholder[12] == "—"
+
+    deep_placeholder = rows["Deep Placeholder Corp"]
+    assert deep_placeholder[8] == "—"
+    assert deep_placeholder[9] == "—"
+    assert deep_placeholder[10] == "—"
+    assert deep_placeholder[11] == "—"
+    assert deep_placeholder[12] == "—"

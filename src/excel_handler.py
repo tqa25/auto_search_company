@@ -374,7 +374,7 @@ class ExcelWriter:
 
     def write_consolidated_report(self, db, output_path: str, company_ids: List[int] = None):
         """
-        Writes a consolidated Excel report with dynamic domain columns for phones.
+        Writes a consolidated Excel report with one row per unique company phone.
         Tab 1: "Summary"
         Tab 2: "Detail"
         """
@@ -391,16 +391,14 @@ class ExcelWriter:
             companies = [c for c in all_companies if c['id'] in company_ids]
         else:
             companies = all_companies
-            
+
         wb = openpyxl.Workbook()
-        
-        # We will create Summary first, but we need data from Detail.
-        # So we'll build Detail first, then Summary, but we can set Summary as active and first sheet.
+
         ws_summary = wb.active
         ws_summary.title = "Summary"
-        
+
         ws1 = wb.create_sheet(title="Detail")
-        
+
         def normalize_phone(phone_val):
             if phone_val is None:
                 return ""
@@ -425,9 +423,11 @@ class ExcelWriter:
             if not phone_str:
                 return []
             phone_str = str(phone_str).strip()
+
             collapsed = re.sub(r"[\s/|,;._-]+", "", phone_str).lower()
             if collapsed in {"", "na", "none", "null", "khongcongkhai"}:
                 return []
+
             for sep in [',', ';', '|', '/', '\n']:
                 phone_str = phone_str.replace(sep, ',')
             parts = []
@@ -446,21 +446,36 @@ class ExcelWriter:
         def clean_email(email_str):
             if not email_str:
                 return []
-            email_str = str(email_str)
+            email_str = str(email_str).strip()
+
+            collapsed = re.sub(r"[\s/|,;._-]+", "", email_str).lower()
+            if collapsed in {"", "na", "none", "null", "khongcongkhai"}:
+                return []
+
             for sep in [',', ';', '|', '/', '\n']:
                 email_str = email_str.replace(sep, ',')
             parts = []
             for p in email_str.split(','):
                 cleaned = p.strip().lower()
-                if cleaned and cleaned != 'none' and cleaned != '—':
-                    parts.append(cleaned)
+                cleaned_compact = re.sub(r"[\s._-]+", "", cleaned)
+                if cleaned_compact in {"", "na", "none", "null", "khongcongkhai"}:
+                    continue
+                if cleaned in {"—", "-"}:
+                    continue
+                if len(cleaned) <= 1 and "@" not in cleaned:
+                    continue
+                parts.append(cleaned)
             return parts
 
         def extract_domain(url, default="Unknown"):
             if not url or url == '—':
                 return default
             try:
-                # Add scheme if missing so urlparse works correctly
+                if isinstance(url, dict):
+                    url = url.get("url") or url.get("uri") or ""
+                url = str(url).strip()
+                if not url:
+                    return default
                 if not url.startswith('http'):
                     url = 'http://' + url
                 domain = urllib.parse.urlparse(url).netloc
@@ -470,7 +485,55 @@ class ExcelWriter:
             except Exception:
                 return default
 
-        # --- PASS 1: Process data into flattened rows ---
+        def format_result_date(*values):
+            for val in values:
+                if not val or val == '—':
+                    continue
+                match = re.search(r"\d{4}-\d{2}-\d{2}", str(val))
+                if match:
+                    return match.group(0)
+            return "—"
+
+        def load_json_list(raw):
+            if not raw:
+                return []
+            if isinstance(raw, list):
+                return raw
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                return []
+            return parsed if isinstance(parsed, list) else []
+
+        def source_url_value(source):
+            if isinstance(source, dict):
+                return source.get("url") or source.get("uri") or source.get("link") or ""
+            return str(source).strip() if source else ""
+
+        def first_gemini_source_url(result):
+            sources = load_json_list(result.get('grounding_sources_json'))
+            if not sources:
+                sources = load_json_list(result.get('sources_json'))
+            for source in sources:
+                url = source_url_value(source)
+                if url:
+                    return url
+            return "—"
+
+        def write_text_cell(ws, row, column, value, border=None, alignment=None):
+            if value is None or value == "":
+                value = "—"
+            value = str(value)
+            if len(value) > 200:
+                value = value[:197] + "..."
+            cell = ws.cell(row=row, column=column, value=value)
+            cell.number_format = "@"
+            if border:
+                cell.border = border
+            if alignment:
+                cell.alignment = alignment
+            return cell
+
         flattened_rows = []
         status_map = {
             'done': 'Done',
@@ -478,13 +541,13 @@ class ExcelWriter:
             'permanently_failed': 'Failed',
             'pending': 'Pending',
             'running': 'Running',
-            'scraping': 'Scraping'
+            'scraping': 'Scraping',
         }
-        
+
         official_domain_stats = defaultdict(lambda: {"pages": set(), "phone_pages": set()})
         companies_with_phone = set()
         inactive_skipped_count = 0
-        
+
         for company in companies:
             cid = company['id']
             c_name = company['original_name']
@@ -497,32 +560,37 @@ class ExcelWriter:
             business_status_source_url = company.get('business_status_source_url') or '—'
             if business_status_category == 'inactive_stop':
                 inactive_skipped_count += 1
-            
+
             gemini_results = db.get_gemini_quick_results_for_company(cid)
             deep_scrape_data = db.get_deep_scrape_export_data_for_company(cid)
             time_data = db.get_pipeline_time_for_company(cid)
-            
-            start_time = str(time_data.get('started_at')) if time_data.get('started_at') else '—'
-            end_time = str(time_data.get('finished_at')) if time_data.get('finished_at') else '—'
-            
-            phones_with_source = [] # list of (phone_list, domain, source_url)
+
+            fallback_result_date = format_result_date(
+                time_data.get('finished_at'),
+                time_data.get('started_at')
+            )
+
+            phones_with_source = []
             seen_phones_for_company = set()
             emails = set()
             addresses = []
             websites = []
-            
+
             for gr in gemini_results:
                 if gr.get('phone'):
                     phones = clean_phone(gr['phone'])
                     if phones:
-                        phones_with_source.append((phones, 'Gemini', '—'))
+                        source_url = first_gemini_source_url(gr)
+                        domain = extract_domain(source_url, default="—")
+                        result_date = format_result_date(gr.get('created_at'), fallback_result_date)
+                        phones_with_source.append((phones, domain, source_url, "Gemini Quick", result_date))
                 if gr.get('email'):
                     emails.update(clean_email(gr['email']))
                 if gr.get('address') and gr['address'] != '—':
                     addresses.append(gr['address'].strip())
                 if gr.get('website') and gr['website'] != '—':
                     websites.append(gr['website'].strip())
-            
+
             for row in deep_scrape_data:
                 source_url = row.get('source_url') or row.get('search_url') or '—'
                 domain = extract_domain(source_url, default="Unknown")
@@ -533,98 +601,94 @@ class ExcelWriter:
                     if row_phones:
                         official_domain_stats[domain]["phone_pages"].add(source_url)
                 if row_phones:
-                    phones_with_source.append((row_phones, domain, source_url))
+                    result_date = format_result_date(row.get('timestamp'), fallback_result_date)
+                    phones_with_source.append((row_phones, domain, source_url, "Deep Scrape", result_date))
                 if row.get('email'):
                     emails.update(clean_email(row['email']))
                 if row.get('address') and row['address'] != '—':
                     addresses.append(row['address'].strip())
                 if row.get('website') and row['website'] != '—':
                     websites.append(row['website'].strip())
-                    
+
             email_list = sorted(list(emails))
             best_email = ", ".join(email_list) if email_list else "—"
-            
+
             best_address = "—"
             if addresses:
                 valid_addresses = [a for a in addresses if a and a != '—']
                 if valid_addresses:
                     best_address = max(valid_addresses, key=len)
-            
+
             best_website = "—"
             if websites:
                 valid_sites = [w for w in websites if w and w != '—']
                 if valid_sites:
                     best_website = valid_sites[0]
-                    
-            base_row = [
-                c_name, vn_name, t_code,
-                start_time, end_time,
-                business_status, business_status_category, business_status_source_url,
-                best_address
-            ]
-            
-            tail_row = [
-                best_email, best_website, status_display
-            ]
-            
-            if not phones_with_source:
-                # Company has no phones, still write 1 row
-                flattened_rows.append(base_row + ['—', '—', '—'] + tail_row)
-            else:
-                for (phones, domain, url) in phones_with_source:
-                    for p in phones:
-                        if p in seen_phones_for_company:
-                            continue
-                        seen_phones_for_company.add(p)
-                        companies_with_phone.add(cid)
-                        flattened_rows.append(base_row + [p, domain, url] + tail_row)
 
-        # --- PASS 2: Write Detail Sheet ---
+            base_row = [
+                c_name, vn_name, t_code, fallback_result_date,
+                business_status, business_status_category, business_status_source_url,
+                best_address,
+            ]
+            tail_row = [best_email, best_website, status_display]
+
+            if not phones_with_source:
+                flattened_rows.append(base_row + ['—', '—', '—', '—'] + tail_row)
+            else:
+                for phones, domain, url, source_step, result_date in phones_with_source:
+                    for phone in phones:
+                        if phone in seen_phones_for_company:
+                            continue
+                        seen_phones_for_company.add(phone)
+                        companies_with_phone.add(cid)
+                        flattened_rows.append([
+                            c_name, vn_name, t_code, result_date,
+                            business_status, business_status_category, business_status_source_url,
+                            best_address, phone, domain, url, source_step,
+                            best_email, best_website, status_display,
+                        ])
+
         headers = [
-            "Company Name", "Vietnamese Name", "Tax Code",
-            "Start Time", "End Time",
+            "Company Name", "Vietnamese Name", "Tax Code", "Result Date",
             "Business Status", "Business Status Category", "Business Status Source URL",
-            "Address", "Phone", "Source Domain", "Source URL",
-            "Email", "Website", "Status"
+            "Address", "Phone", "Source Domain", "Source URL", "Source Step",
+            "Email", "Website", "Status",
         ]
-        
-        for col_idx, h in enumerate(headers, start=1):
-            cell = ws1.cell(row=1, column=col_idx, value=h)
+
+        for col_idx, header in enumerate(headers, start=1):
+            cell = write_text_cell(ws1, 1, col_idx, header)
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
             cell.alignment = Alignment(horizontal="center", vertical="center")
             ws1.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
-        
+
         ws1.freeze_panes = "A2"
-        
+
         thin_border = Border(
-            left=Side(style='thin'), 
-            right=Side(style='thin'), 
-            top=Side(style='thin'), 
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
             bottom=Side(style='thin')
         )
-        
-        row_idx1 = 2
-        for row_data in flattened_rows:
-            for col_idx, val in enumerate(row_data, start=1):
-                if isinstance(val, str) and len(val) > 200:
-                    val = val[:197] + "..."
-                cell = ws1.cell(row=row_idx1, column=col_idx, value=val)
-                cell.border = thin_border
-                cell.alignment = Alignment(vertical="top")
-            row_idx1 += 1
 
-        # --- PASS 3: Setup Summary Sheet ---
-        ws_summary.column_dimensions['A'].width = 36
+        for row_idx, row_data in enumerate(flattened_rows, start=2):
+            for col_idx, val in enumerate(row_data, start=1):
+                write_text_cell(
+                    ws1, row_idx, col_idx, val,
+                    border=thin_border,
+                    alignment=Alignment(vertical="top")
+                )
+
+        ws_summary.column_dimensions['A'].width = 46
         ws_summary.column_dimensions['B'].width = 24
         ws_summary.column_dimensions['C'].width = 18
         ws_summary.column_dimensions['D'].width = 18
-        
-        ws_summary.cell(row=1, column=1, value="Metric").font = Font(bold=True)
-        ws_summary.cell(row=1, column=2, value="Value").font = Font(bold=True)
-        
+
+        write_text_cell(ws_summary, 1, 1, "Metric").font = Font(bold=True)
+        write_text_cell(ws_summary, 1, 2, "Value").font = Font(bold=True)
+
         total_companies = len(companies)
-        total_phones = len([r for r in flattened_rows if r[9] != '—'])
+        total_phones = len([row for row in flattened_rows if row[8] != '—'])
         phone_coverage = (len(companies_with_phone) / total_companies * 100) if total_companies else 0
         min_sample_size = 3
         summary_rows = [
@@ -639,10 +703,15 @@ class ExcelWriter:
             ws_summary.cell(row=idx, column=2, value=value)
 
         current_sum_row = len(summary_rows) + 4
-        ws_summary.cell(row=current_sum_row, column=1, value="Top 5 Official Websites With Best Phone Results").font = Font(bold=True)
+        write_text_cell(
+            ws_summary,
+            current_sum_row,
+            1,
+            "Top 5 Official Websites With Best Phone Results"
+        ).font = Font(bold=True)
         current_sum_row += 1
         for col_idx, header in enumerate(["Domain", "Phone Pages", "Scraped Pages", "Phone Rate"], start=1):
-            ws_summary.cell(row=current_sum_row, column=col_idx, value=header).font = Font(bold=True)
+            write_text_cell(ws_summary, current_sum_row, col_idx, header).font = Font(bold=True)
         current_sum_row += 1
 
         ranked_domains = []
@@ -656,17 +725,16 @@ class ExcelWriter:
         ranked_domains.sort(reverse=True)
 
         for rate, phone_pages, scraped_pages, domain in ranked_domains[:5]:
-            ws_summary.cell(row=current_sum_row, column=1, value=domain)
+            write_text_cell(ws_summary, current_sum_row, 1, domain)
             ws_summary.cell(row=current_sum_row, column=2, value=phone_pages)
             ws_summary.cell(row=current_sum_row, column=3, value=scraped_pages)
-            ws_summary.cell(row=current_sum_row, column=4, value=f"{rate * 100:.2f}%")
+            write_text_cell(ws_summary, current_sum_row, 4, f"{rate * 100:.2f}%")
             current_sum_row += 1
-        
-        for r in range(1, current_sum_row):
-            for c in range(1, 5):
-                ws_summary.cell(row=r, column=c).border = thin_border
 
-        # Auto-adjust column widths for Detail sheet
+        for row_idx in range(1, current_sum_row):
+            for col_idx in range(1, 5):
+                ws_summary.cell(row=row_idx, column=col_idx).border = thin_border
+
         for col in ws1.columns:
             max_len = 0
             col_letter = openpyxl.utils.get_column_letter(col[0].column)
@@ -675,6 +743,8 @@ class ExcelWriter:
                     max_len = max(max_len, min(len(str(cell.value)), 50))
             ws1.column_dimensions[col_letter].width = max(max_len + 3, 12)
 
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         wb.save(output_path)
         logger.info(f"Successfully saved consolidated report to {output_path}")
