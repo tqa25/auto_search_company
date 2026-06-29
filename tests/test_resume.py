@@ -56,6 +56,37 @@ def _make_pipeline_with_db(test_db, config):
                                             return pipeline
 
 
+def _seed_strict_completion_data(test_db, company_id):
+    """Create the minimum persisted data for strict completion."""
+    search_result_id = test_db.execute_query(
+        "INSERT INTO search_results (company_id, search_query, url) VALUES (?, ?, ?)",
+        (company_id, "test query", "https://example.com"),
+    )
+    filtered_link_id = test_db.insert_filtered_link(
+        search_result_id=search_result_id,
+        company_id=company_id,
+        url="https://example.com",
+        source_type="official_website",
+        should_scrape=True,
+        reason="test",
+    )
+    scraped_page_id = test_db.insert_scraped_page(
+        filtered_link_id=filtered_link_id,
+        company_id=company_id,
+        url="https://example.com",
+        source_type="official_website",
+        markdown_content="ok",
+        content_length=2,
+        scrape_status="success",
+        credits_used=1,
+        error_message=None,
+    )
+    test_db.execute_query(
+        "INSERT INTO extracted_contacts (company_id, scraped_page_id, source_type, phone) VALUES (?, ?, ?, ?)",
+        (company_id, scraped_page_id, "official_website", "0123456789"),
+    )
+
+
 # ------------------------------------------------------------------
 # Test: _get_next_step
 # ------------------------------------------------------------------
@@ -201,6 +232,7 @@ class TestCheckpointProgression:
     def test_full_pipeline_sets_done(self, test_db, pipeline_config):
         """A company going through all steps should end with status='done'."""
         cid = test_db.insert_company("Test Corp", status="pending")
+        _seed_strict_completion_data(test_db, cid)
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
 
         # Mock all pipeline steps to succeed (they are already mocked via _make_pipeline_with_db)
@@ -246,6 +278,7 @@ class TestCheckpointProgression:
     def test_resume_scraped_only_does_ai_extract(self, test_db, pipeline_config):
         """A company with status='scraped' should only do AI extraction."""
         cid = test_db.insert_company("Scraped Corp", status="scraped")
+        _seed_strict_completion_data(test_db, cid)
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
 
         pipeline.search_module.search_company = MagicMock()
@@ -262,6 +295,22 @@ class TestCheckpointProgression:
         # Status should be 'done' (no AI extractor configured)
         company = test_db.get_company(cid)
         assert company['status'] == 'done'
+
+    def test_incomplete_company_is_not_promoted_to_done(self, test_db, pipeline_config):
+        cid = test_db.insert_company("Incomplete Corp", status="gemini_quick_done")
+        test_db.execute_query(
+            "INSERT INTO gemini_quick_results (company_id, core_name, confidence) VALUES (?, ?, ?)",
+            (cid, "Incomplete Corp", 0.9),
+        )
+        pipeline = _make_pipeline_with_db(test_db, pipeline_config)
+        pipeline.search_module.search_company = MagicMock()
+        pipeline.filter_module.filter_company_links = MagicMock()
+        pipeline.scrape_module.scrape_company = MagicMock()
+
+        pipeline.run(company_ids=[cid])
+
+        company = test_db.get_company(cid)
+        assert company['status'] == 'gemini_quick_done'
 
     def test_done_company_is_skipped(self, test_db, pipeline_config):
         """A company with status='done' should be completely skipped."""
@@ -295,6 +344,7 @@ class TestGracefulShutdown:
         cid1 = test_db.insert_company("Corp 1", status="pending")
         cid2 = test_db.insert_company("Corp 2", status="pending")
         cid3 = test_db.insert_company("Corp 3", status="pending")
+        _seed_strict_completion_data(test_db, cid1)
 
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
         pipeline.search_module.search_company = MagicMock()
@@ -344,6 +394,7 @@ class TestRetryFailed:
     def test_retry_resets_status_to_pending(self, test_db, pipeline_config):
         """Failed companies should be reset to pending for retry."""
         cid = test_db.insert_company("Failed Corp", status="failed")
+        _seed_strict_completion_data(test_db, cid)
         pipeline = _make_pipeline_with_db(test_db, pipeline_config)
 
         pipeline.search_module.search_company = MagicMock()

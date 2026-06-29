@@ -4,8 +4,10 @@ const app = document.getElementById("app");
 const monitor = {
   socket: null,
   jobs: new Map(),
-  counts: { running: 0, queued: 0, failed: 0, stopped: 0 },
+  counts: { running: 0, queued: 0, failed: 0, stopped: 0, stale: 0 },
+  worker: { online: false, workers: [], message: "Worker status unknown" },
   events: [],
+  showStaleOnly: false,
 };
 const companiesState = {
   page: 1,
@@ -13,6 +15,9 @@ const companiesState = {
   status: "",
   search: "",
   importBatchId: "",
+  importOutcome: "",
+  completion: "",
+  showNormalizedNames: false,
   dateMode: "created",
   dateFrom: "",
   dateTo: "",
@@ -27,6 +32,31 @@ const SCORING_DOMAIN_TABS = [
   { id: "skip", label: "Skip Domains" },
   { id: "blacklist", label: "Blacklist" },
 ];
+const VN_TIMEZONE = "Asia/Ho_Chi_Minh";
+const VN_DATE_PARTS = new Intl.DateTimeFormat("en-CA", {
+  timeZone: VN_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const VN_DATETIME_FORMATTER = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: VN_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+const VN_TIME_FORMATTER = new Intl.DateTimeFormat("en-GB", {
+  timeZone: VN_TIMEZONE,
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
 const PIPELINE_CONFIG_DEFAULTS = {
   FIRECRAWL_BATCH_SCRAPE_ENABLED: false,
   FIRECRAWL_MAX_CONCURRENCY: 10,
@@ -53,11 +83,11 @@ function setRouteActive(route) {
 }
 
 function statusClass(status) {
-  return ["gemini_quick", "searching", "scraping", "extracting"].includes(status) ? "running" : status;
+  return ["gemini_quick", "searching", "scraping", "extracting", "running", "stopping"].includes(status) ? "running" : status;
 }
 
-function rowMessage(message) {
-  return `<tr><td colspan="8" class="muted" style="text-align:center;padding:36px">${message}</td></tr>`;
+function rowMessage(message, colspan = 8) {
+  return `<tr><td colspan="${colspan}" class="muted" style="text-align:center;padding:36px">${message}</td></tr>`;
 }
 
 function setConnection(state, label) {
@@ -121,7 +151,7 @@ async function renderDashboard() {
     <div class="card" style="margin-top:16px">
       <h3>Recent Activity</h3>
       <div class="terminal">
-        ${logs.length ? logs.map((l) => `<div class="terminal-line">${l.started_at || l.finished_at || ""} ${l.company_id ? `#${l.company_id}` : ""} ${l.step || "event"} ${l.status || ""} ${l.error_message || ""}</div>`).join("") : '<div class="terminal-line">No activity yet.</div>'}
+        ${logs.length ? logs.map((l) => `<div class="terminal-line">${formatDashboardTimestamp(l.started_at || l.finished_at || "")} ${l.company_id ? `#${l.company_id}` : ""} ${l.step || "event"} ${l.status || ""} ${l.error_message || ""}</div>`).join("") : '<div class="terminal-line">No activity yet.</div>'}
       </div>
     </div>
   `;
@@ -219,24 +249,52 @@ function companyQueryParams({ includePaging = true } = {}) {
   if (companiesState.status) params.set("status", companiesState.status);
   if (companiesState.search) params.set("search", companiesState.search);
   if (companiesState.importBatchId) params.set("import_batch_id", companiesState.importBatchId);
+  if (companiesState.importOutcome) params.set("import_outcome", companiesState.importOutcome);
+  if (companiesState.completion) params.set("completion", companiesState.completion);
   if (companiesState.dateFrom) params.set(`${companiesState.dateMode}_from`, companiesState.dateFrom);
   if (companiesState.dateTo) params.set(`${companiesState.dateMode}_to`, companiesState.dateTo);
   return params;
 }
 
-function localDate(offsetDays = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + offsetDays);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function datePartsMap(formatter, value) {
+  return formatter.formatToParts(value).reduce((acc, part) => {
+    if (part.type !== "literal") acc[part.type] = part.value;
+    return acc;
+  }, {});
+}
+
+export function localDate(offsetDays = 0) {
+  const parts = datePartsMap(VN_DATE_PARTS, new Date());
+  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function parseDashboardTimestamp(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const normalized = text.includes("T")
+    ? text
+    : `${text.replace(" ", "T")}+07:00`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function formatDashboardTimestamp(value) {
+  const parsed = parseDashboardTimestamp(value);
+  return parsed ? VN_DATETIME_FORMATTER.format(parsed).replace(",", "") : (value || "");
+}
+
+function formatVnTime(value = new Date()) {
+  return VN_TIME_FORMATTER.format(value);
 }
 
 function batchOptions(batches) {
   const selected = String(companiesState.importBatchId || "");
   const options = batches.map((batch) => {
-    const label = `#${batch.id} ${batch.source_filename || "Import"} (${batch.imported}/${batch.total})`;
+    const reviewCount = (batch.ambiguous || 0) + (batch.duplicate_in_file || 0);
+    const suffix = reviewCount ? `, review ${reviewCount}` : "";
+    const label = `#${batch.id} ${batch.source_filename || "Import"} (${batch.imported}/${batch.total}${suffix})`;
     return `<option value="${batch.id}" ${selected === String(batch.id) ? "selected" : ""}>${escapeHtml(label)}</option>`;
   }).join("");
   return `<option value="">All imports</option><option value="latest">Latest import</option>${options}`;
@@ -253,15 +311,41 @@ async function renderCompanies(patch = {}) {
   const batches = batchesData.batches || [];
   const counts = data.counts || {};
   const p = data.pagination || {};
-  const allSelected = companies.length > 0 && companies.every(c => companiesState.selected.has(c.id));
+  const importSummary = data.import_summary || null;
+  const isBatchView = Boolean(companiesState.importBatchId && importSummary);
+  const showNormalized = Boolean(companiesState.showNormalizedNames);
+  const selectableCompanies = companies.filter(c => c.id);
+  const allSelected = selectableCompanies.length > 0 && selectableCompanies.every(c => companiesState.selected.has(c.id));
+  const selectedStaleIds = companies.filter(c => c.id && c.can_reset_resume && companiesState.selected.has(c.id)).map(c => c.id);
+  const selectedIncompleteIds = companies.filter(c => c.id && c.can_resume_incomplete && companiesState.selected.has(c.id)).map(c => c.id);
+  const tableColspan = 8 + (isBatchView ? 1 : 0) + (showNormalized ? 1 : 0);
+  const normalizedHeader = showNormalized ? "<th>Normalized</th>" : "";
+  const importHeader = isBatchView ? "<th>Import Status</th>" : "";
+  const statusHeader = isBatchView ? "Pipeline Status" : "Status";
+  const importFilters = isBatchView ? `
+    <div class="toolbar import-outcome-toolbar">
+      ${importChip("All import rows", "", importSummary.total_items || 0)}
+      ${importChip("Imported", "imported", importSummary.imported || 0)}
+      ${importChip("MST match", "matched_by_tax_code", importSummary.matched_by_tax_code || 0)}
+      ${importChip("Score match", "matched_by_score", importSummary.matched_by_score || 0)}
+      ${importChip("Review", "ambiguous", importSummary.ambiguous || 0)}
+      ${importChip("Duplicate in file", "duplicate_in_file", importSummary.duplicate_in_file || 0)}
+      ${importChip("Invalid", "invalid", importSummary.invalid || 0)}
+      <span class="spacer"></span>
+      <label class="inline-check"><input type="checkbox" id="showNormalizedNames" ${showNormalized ? "checked" : ""}> Show normalized names</label>
+    </div>` : `
+    <div class="toolbar import-outcome-toolbar">
+      <span class="spacer"></span>
+      <label class="inline-check"><input type="checkbox" id="showNormalizedNames" ${showNormalized ? "checked" : ""}> Show normalized names</label>
+    </div>`;
   app.innerHTML = `
     <div class="page-title">
-      <div><h1>Companies</h1><div class="subtitle">${p.total || 0} companies, server-side pagination</div></div>
+      <div><h1>Companies</h1><div class="subtitle">${p.total || 0} ${isBatchView ? "import rows" : "companies"}, server-side pagination</div></div>
       <div class="toolbar">
         <button class="btn success" id="exportExcelBtn"><i data-lucide="file-spreadsheet"></i>Export Excel</button>
         <button class="btn" id="exportLogs"><i data-lucide="download"></i>Export Logs</button>
         <button class="btn primary" id="importBtn"><i data-lucide="upload"></i>Import</button>
-        <input type="file" id="importInput" accept=".csv,.txt" hidden>
+        <input type="file" id="importInput" accept=".csv,.txt,.md" hidden>
       </div>
     </div>
     <div class="toolbar">
@@ -271,6 +355,9 @@ async function renderCompanies(patch = {}) {
       ${chip("Failed", "failed", counts.failed)}
       <span class="selection-summary">${p.total || 0} shown · ${companiesState.selected.size} selected</span>
       <span class="spacer"></span>
+      <button class="btn" id="smartResetSelected" ${selectedStaleIds.length ? "" : "style='display:none'"}><i data-lucide="rotate-ccw"></i>Smart Reset Selected</button>
+      <button class="btn primary" id="resumeSelectedStale" ${selectedStaleIds.length ? "" : "style='display:none'"}><i data-lucide="play"></i>Reset & Resume Selected</button>
+      <button class="btn primary" id="resumeSelectedIncomplete" ${selectedIncompleteIds.length ? "" : "style='display:none'"}><i data-lucide="play"></i>Resume Incomplete Selected</button>
       <button class="btn primary" id="runSelected" ${companiesState.selected.size ? "" : "style='display:none'"}><i data-lucide="play"></i>Run Selected</button>
       <button class="btn danger" id="deleteSelected" ${companiesState.selected.size ? "" : "style='display:none'"}><i data-lucide="trash-2"></i>Delete Selected</button>
       <input class="input" id="search" value="${escapeHtml(companiesState.search)}" placeholder="Search companies...">
@@ -286,17 +373,23 @@ async function renderCompanies(patch = {}) {
       <input class="input date-input" type="date" id="dateFrom" value="${escapeHtml(companiesState.dateFrom)}">
       <input class="input date-input" type="date" id="dateTo" value="${escapeHtml(companiesState.dateTo)}">
       <select class="select import-batch-select" id="importBatch">${batchOptions(batches)}</select>
+      <select class="select" id="completionFilter">
+        <option value="" ${companiesState.completion === "" ? "selected" : ""}>All completion</option>
+        <option value="incomplete" ${companiesState.completion === "incomplete" ? "selected" : ""}>Incomplete</option>
+        <option value="strict_done" ${companiesState.completion === "strict_done" ? "selected" : ""}>Strict done</option>
+      </select>
       <button class="btn" id="clearFilters"><i data-lucide="x"></i>Clear filters</button>
       <button class="btn" id="selectAllFiltered"><i data-lucide="list-checks"></i>Select all filtered</button>
     </div>
+    ${importFilters}
     <div id="selectAllBanner" class="alert info" style="display: none; text-align: center; margin-bottom: 10px; background: var(--blue-light, #e0f2fe); color: var(--blue, #0284c7); padding: 8px; border-radius: 4px;">
       All <b id="bannerCurrentCount">0</b> companies on this page are selected.
       <a href="#" id="bannerSelectAllLink" style="font-weight: bold; cursor: pointer; text-decoration: underline;">Select all <span id="bannerTotalCount">0</span> companies matching this filter</a>
     </div>
     <div class="table-wrap fixed">
       <table>
-        <thead><tr><th><input type="checkbox" id="selectPage" ${allSelected ? "checked" : ""}></th><th>ID</th><th>Name</th><th>Status</th><th>Checkpoint</th><th>Data</th><th>Updated</th><th>Actions</th></tr></thead>
-        <tbody>${companies.length ? companies.map(companyRow).join("") : rowMessage("No companies found.")}</tbody>
+        <thead><tr><th><input type="checkbox" id="selectPage" ${allSelected ? "checked" : ""}></th><th>ID</th><th>Name</th>${normalizedHeader}${importHeader}<th>${statusHeader}</th><th>Checkpoint</th><th>Data</th><th>Updated</th><th>Actions</th></tr></thead>
+        <tbody>${companies.length ? companies.map(companyRow).join("") : rowMessage("No companies found.", tableColspan)}</tbody>
       </table>
     </div>
     <div class="pagination">
@@ -309,32 +402,86 @@ async function renderCompanies(patch = {}) {
   iconize();
 }
 
+
 function chip(label, status, count) {
   const active = companiesState.status === status ? "primary" : "";
   return `<button class="btn ${active}" data-status="${status}">${label} (${count || 0})</button>`;
 }
 
+function importChip(label, outcome, count) {
+  const active = companiesState.importOutcome === outcome ? "primary" : "";
+  return `<button class="btn ${active}" data-import-outcome="${outcome}">${label} (${count || 0})</button>`;
+}
+
 function companyRow(c) {
-  const selected = companiesState.selected.has(c.id);
+  const isBatchView = Boolean(companiesState.importBatchId && c.is_import_item);
+  const showNormalized = Boolean(companiesState.showNormalizedNames);
+  const selected = c.id ? companiesState.selected.has(c.id) : false;
+  const checkbox = c.id
+    ? `<input type="checkbox" class="row-check" data-id="${c.id}" ${selected ? "checked" : ""}>`
+    : "";
+  const idCell = c.id ? `#${c.id}` : "—";
+  const nameCell = c.id
+    ? `<a href="#/company/${c.id}">${escapeHtml(c.name || "")}</a>`
+    : `<span>${escapeHtml(c.name || "")}</span>`;
+  const normalizedCell = showNormalized ? `<td class="mono muted normalized-cell">${escapeHtml(c.normalized_key || "")}</td>` : "";
+  const importStatusCell = isBatchView ? `<td><span class="badge import-${escapeHtml(c.outcome || "")}">${escapeHtml(c.display_status || c.outcome || "")}</span></td>` : "";
+  const pipelineStatus = c.pipeline_status || c.status || "";
+  const staleBadge = c.is_stale ? `<span class="badge stale" title="${escapeHtml(c.stale_reason || "")}">Stale</span>` : "";
+  const completionBadge = c.completion_status === "incomplete"
+    ? `<span class="badge failed" title="${escapeHtml(c.completion_reason || "")}">Incomplete</span>`
+    : (c.completion_status === "strict_done" ? `<span class="badge success">Strict Done</span>` : "");
+  const checkpoint = c.is_stale && c.suggested_status
+    ? `${c.checkpoint || "pipeline_init"} → ${c.suggested_status}`
+    : c.checkpoint || "pipeline_init";
+  const lastActivity = c.last_activity_step ? `<div class="muted small-text">Last: ${escapeHtml(c.last_activity_step)}</div>` : "";
+  const staleActions = c.can_reset_resume
+    ? `<button class="btn ghost smart-reset-company" data-id="${c.id}" title="Smart Reset"><i data-lucide="rotate-ccw"></i></button><button class="btn ghost primary resume-stale-company" data-id="${c.id}" title="Reset & Resume"><i data-lucide="play"></i></button>`
+    : "";
+  const incompleteActions = c.can_resume_incomplete
+    ? `<button class="btn ghost primary resume-incomplete-company" data-id="${c.id}" title="Resume Incomplete"><i data-lucide="play"></i></button>`
+    : "";
+  const actions = c.id
+    ? `${staleActions}${incompleteActions}<button class="btn ghost run-one" data-id="${c.id}" title="Run"><i data-lucide="play"></i></button><button class="btn ghost" onclick="location.hash='#/company/${c.id}'" title="Open"><i data-lucide="eye"></i></button><button class="btn ghost danger-text delete-one" data-id="${c.id}" title="Delete"><i data-lucide="trash-2"></i></button>`
+    : `<span class="muted">No company</span>`;
   return `
     <tr class="${selected ? "selected" : ""}">
-      <td><input type="checkbox" class="row-check" data-id="${c.id}" ${selected ? "checked" : ""}></td>
-      <td class="muted">#${c.id}</td>
-      <td><a href="#/company/${c.id}">${escapeHtml(c.name || "")}</a></td>
-      <td><span class="badge ${statusClass(c.status)}">${c.status}</span></td>
-      <td class="mono">${c.checkpoint || "pipeline_init"}</td>
+      <td>${checkbox}</td>
+      <td class="muted">${idCell}</td>
+      <td>${nameCell}${isBatchView && c.input_name && c.input_name !== c.canonical_name ? `<div class="muted small-text">Input: ${escapeHtml(c.input_name)}</div>` : ""}</td>
+      ${normalizedCell}
+      ${importStatusCell}
+      <td><span class="badge ${statusClass(pipelineStatus)}">${escapeHtml(pipelineStatus)}</span> ${staleBadge} ${completionBadge}</td>
+      <td class="mono">${escapeHtml(checkpoint)}${lastActivity}</td>
       <td>${c.has_phone ? '<span class="success">phone</span>' : '<span class="muted">phone</span>'} · ${c.has_email ? '<span class="success">email</span>' : '<span class="muted">email</span>'}</td>
-      <td class="muted">${c.updated_at || ""}</td>
-      <td><button class="btn ghost run-one" data-id="${c.id}" title="Run"><i data-lucide="play"></i></button><button class="btn ghost" onclick="location.hash='#/company/${c.id}'" title="Open"><i data-lucide="eye"></i></button><button class="btn ghost danger-text delete-one" data-id="${c.id}" title="Delete"><i data-lucide="trash-2"></i></button></td>
+      <td class="muted">${formatDashboardTimestamp(c.updated_at || c.import_item_created_at || "")}</td>
+      <td>${actions}</td>
     </tr>
   `;
 }
 
 function bindCompanyEvents(companies, pagination) {
+  const selectedStaleIds = () => companies
+    .filter(c => c.id && c.can_reset_resume && companiesState.selected.has(c.id))
+    .map(c => c.id);
+  const selectedIncompleteIds = () => companies
+    .filter(c => c.id && c.can_resume_incomplete && companiesState.selected.has(c.id))
+    .map(c => c.id);
+
   document.querySelectorAll("[data-status]").forEach((btn) => btn.addEventListener("click", () => {
     companiesState.selected.clear();
     renderCompanies({ status: btn.dataset.status, page: 1 });
   }));
+  document.querySelectorAll("[data-import-outcome]").forEach((btn) => btn.addEventListener("click", () => {
+    companiesState.selected.clear();
+    renderCompanies({ importOutcome: btn.dataset.importOutcome, page: 1 });
+  }));
+  const normalizedToggle = document.getElementById("showNormalizedNames");
+  if (normalizedToggle) {
+    normalizedToggle.addEventListener("change", (event) => {
+      renderCompanies({ showNormalizedNames: event.target.checked, page: companiesState.page });
+    });
+  }
   let searchTimer;
   document.getElementById("search").addEventListener("input", (event) => {
     clearTimeout(searchTimer);
@@ -373,20 +520,32 @@ function bindCompanyEvents(companies, pagination) {
     if (value === "latest") {
       const data = await api("/api/spa/import-batches?limit=1");
       const latest = (data.batches || [])[0];
-      return renderCompanies({ importBatchId: latest ? String(latest.id) : "", page: 1 });
+      return renderCompanies({ importBatchId: latest ? String(latest.id) : "", importOutcome: "", page: 1 });
     }
-    renderCompanies({ importBatchId: value, page: 1 });
+    renderCompanies({ importBatchId: value, importOutcome: "", page: 1 });
+  });
+  document.getElementById("completionFilter").addEventListener("change", (event) => {
+    companiesState.selected.clear();
+    renderCompanies({ completion: event.target.value, page: 1 });
   });
   document.getElementById("clearFilters").addEventListener("click", () => {
     companiesState.selected.clear();
-    renderCompanies({ status: "", search: "", importBatchId: "", dateMode: "created", dateFrom: "", dateTo: "", page: 1 });
+    renderCompanies({ status: "", search: "", importBatchId: "", importOutcome: "", completion: "", dateMode: "created", dateFrom: "", dateTo: "", page: 1 });
   });
   const updateSelectedUI = () => {
     const runBtn = document.getElementById("runSelected");
     const delBtn = document.getElementById("deleteSelected");
+    const smartResetBtn = document.getElementById("smartResetSelected");
+    const resumeStaleBtn = document.getElementById("resumeSelectedStale");
+    const resumeIncompleteBtn = document.getElementById("resumeSelectedIncomplete");
     const show = companiesState.selected.size ? "" : "none";
     if (runBtn) runBtn.style.display = show;
     if (delBtn) delBtn.style.display = show;
+    const staleShow = selectedStaleIds().length ? "" : "none";
+    const incompleteShow = selectedIncompleteIds().length ? "" : "none";
+    if (smartResetBtn) smartResetBtn.style.display = staleShow;
+    if (resumeStaleBtn) resumeStaleBtn.style.display = staleShow;
+    if (resumeIncompleteBtn) resumeIncompleteBtn.style.display = incompleteShow;
 
     // Update banner
     const selectPageChecked = document.getElementById("selectPage").checked;
@@ -445,8 +604,31 @@ function bindCompanyEvents(companies, pagination) {
     renderCompanies();
   });
   document.querySelectorAll(".run-one").forEach((button) => button.addEventListener("click", () => runCompanies([Number(button.dataset.id)])));
+  document.querySelectorAll(".smart-reset-company").forEach((button) => button.addEventListener("click", async () => {
+    await resetCompanyStatus([Number(button.dataset.id)], "smart_resume");
+    await renderCompanies({ page: companiesState.page });
+  }));
+  document.querySelectorAll(".resume-stale-company").forEach((button) => button.addEventListener("click", () => runCompanies([Number(button.dataset.id)], { resumeStale: true })));
+  document.querySelectorAll(".resume-incomplete-company").forEach((button) => button.addEventListener("click", () => runCompanies([Number(button.dataset.id)], { resumeIncomplete: true })));
   document.querySelectorAll(".delete-one").forEach((button) => button.addEventListener("click", () => deleteCompanies([Number(button.dataset.id)])));
   document.getElementById("runSelected").addEventListener("click", () => runCompanies([...companiesState.selected]));
+  document.getElementById("smartResetSelected").addEventListener("click", async () => {
+    const ids = selectedStaleIds();
+    if (!ids.length) return alert("No stale selected companies on this page.");
+    await resetCompanyStatus(ids, "smart_resume");
+    companiesState.selected.clear();
+    await renderCompanies({ page: companiesState.page });
+  });
+  document.getElementById("resumeSelectedStale").addEventListener("click", async () => {
+    const ids = selectedStaleIds();
+    if (!ids.length) return alert("No stale selected companies on this page.");
+    await runCompanies(ids, { resumeStale: true });
+  });
+  document.getElementById("resumeSelectedIncomplete").addEventListener("click", async () => {
+    const ids = selectedIncompleteIds();
+    if (!ids.length) return alert("No incomplete selected companies on this page.");
+    await runCompanies(ids, { resumeIncomplete: true });
+  });
   document.getElementById("deleteSelected").addEventListener("click", () => deleteCompanies([...companiesState.selected]));
   document.getElementById("prevPage").addEventListener("click", () => renderCompanies({ page: Math.max(1, companiesState.page - 1) }));
   document.getElementById("nextPage").addEventListener("click", () => renderCompanies({ page: Math.min(pagination.total_pages || 1, companiesState.page + 1) }));
@@ -497,15 +679,19 @@ function bindCompanyEvents(companies, pagination) {
   document.getElementById("importInput").addEventListener("change", (event) => importCompanies(event.target.files[0]));
 }
 
-async function runCompanies(ids) {
+async function runCompanies(ids, options = {}) {
   if (!ids.length) return;
   const result = await api("/api/spa/runner/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ company_ids: ids }),
+    body: JSON.stringify({ company_ids: ids, resume_stale: Boolean(options.resumeStale), resume_incomplete: Boolean(options.resumeIncomplete) }),
   });
   companiesState.selected.clear();
-  alert(`Started: ${result.started.length}. Skipped: ${result.skipped.length}.`);
+  const worker = result.worker || {};
+  const workerText = worker.online
+    ? "Worker online"
+    : (worker.auto_started ? "Worker auto-start requested" : (worker.message || "Worker offline"));
+  alert(`Queued: ${(result.started || []).length}. Skipped: ${(result.skipped || []).length}. ${workerText}.`);
   location.hash = "#/monitor";
 }
 
@@ -537,11 +723,12 @@ async function importCompanies(file) {
   const result = await api("/api/companies/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names, source_filename: file.name }),
+    body: JSON.stringify({ companies: names, source_filename: file.name }),
   });
-  alert(`Imported ${result.imported}; skipped ${result.skipped}.`);
+  const summary = result.summary || {};
+  alert(`Imported ${result.imported}; MST match ${summary.matched_by_tax_code || 0}; review ${summary.ambiguous || 0}; duplicate in file ${summary.duplicate_in_file || 0}; invalid ${summary.invalid || 0}.`);
   companiesState.selected.clear();
-  renderCompanies({ importBatchId: String(result.batch_id || ""), page: 1 });
+  renderCompanies({ importBatchId: String(result.batch_id || ""), importOutcome: "", page: 1 });
 }
 
 async function renderCompanyDetail(id) {
@@ -651,7 +838,7 @@ async function renderCompanyDetail(id) {
         </div>
     </div>
 
-    <div class="card" style="margin-top:16px"><h3>Timeline</h3><div class="terminal">${logs.length ? logs.map((l) => `<div class="terminal-line">${l.started_at || ""} ${l.step} ${l.status} ${l.error_message || ""}</div>`).join("") : '<div class="terminal-line">No logs yet.</div>'}</div></div>
+    <div class="card" style="margin-top:16px"><h3>Timeline</h3><div class="terminal">${logs.length ? logs.map((l) => `<div class="terminal-line">${formatDashboardTimestamp(l.started_at || l.finished_at || "")} ${l.step} ${l.status} ${l.error_message || ""}</div>`).join("") : '<div class="terminal-line">No logs yet.</div>'}</div></div>
   `;
 }
 
@@ -663,6 +850,10 @@ async function renderMonitor() {
     </div>
     <div class="toolbar">
       <button class="btn danger" id="stopAll"><i data-lucide="square"></i>Stop All</button>
+      <button class="btn" id="smartResetStale"><i data-lucide="rotate-ccw"></i>Smart Reset Stale</button>
+      <button class="btn primary" id="resumeStale"><i data-lucide="play"></i>Reset & Resume Stale</button>
+      <button class="btn danger" id="hardResetStale"><i data-lucide="rotate-cw"></i>Hard Reset to Pending</button>
+      <button class="btn" id="toggleStaleOnly"><i data-lucide="filter"></i>Show stale only</button>
       <button class="btn" id="refreshMonitor"><i data-lucide="refresh-cw"></i>Refresh Snapshot</button>
     </div>
     <div class="grid stats" id="monitorSummary"></div>
@@ -672,6 +863,13 @@ async function renderMonitor() {
     <div class="card" style="margin-top:16px"><h3>Latest Events</h3><div class="terminal" id="monitorEvents"></div></div>
   `;
   document.getElementById("stopAll").addEventListener("click", stopAll);
+  document.getElementById("smartResetStale").addEventListener("click", () => resetStaleJobs(false));
+  document.getElementById("resumeStale").addEventListener("click", () => resetStaleJobs(true));
+  document.getElementById("hardResetStale").addEventListener("click", () => hardResetStaleJobs());
+  document.getElementById("toggleStaleOnly").addEventListener("click", () => {
+    monitor.showStaleOnly = !monitor.showStaleOnly;
+    renderMonitorState();
+  });
   document.getElementById("refreshMonitor").addEventListener("click", loadMonitorSnapshot);
   iconize();
   await loadMonitorSnapshot();
@@ -719,44 +917,102 @@ function connectMonitorSocket() {
 function applyMonitorSnapshot(data) {
   monitor.jobs = new Map((data.jobs || []).map((job) => [job.id, job]));
   monitor.counts = data.counts || monitor.counts;
+  monitor.worker = data.worker || monitor.worker;
   renderMonitorState();
 }
 
 function renderMonitorState() {
-  const jobs = [...monitor.jobs.values()].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+  const allJobs = [...monitor.jobs.values()].sort((a, b) => {
+    if (Boolean(a.stale) !== Boolean(b.stale)) return a.stale ? -1 : 1;
+    return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+  });
+  const jobs = monitor.showStaleOnly ? allJobs.filter((job) => job.stale) : allJobs;
+  const workerOnline = Boolean(monitor.worker && monitor.worker.online);
+  const workerLabel = workerOnline ? `Online (${(monitor.worker.workers || []).length})` : "Offline";
   document.getElementById("monitorSummary").innerHTML = `
+    ${stat("Worker", workerLabel, workerOnline ? "success" : "danger-text")}
     ${stat("Running", monitor.counts.running || 0, "warning")}
     ${stat("Queued", monitor.counts.queued || 0)}
     ${stat("Failed", monitor.counts.failed || 0, "danger-text")}
     ${stat("Stopped", monitor.counts.stopped || 0)}
+    ${stat("Stale", monitor.counts.stale || allJobs.filter((job) => job.stale).length, "warning")}
   `;
+  const toggle = document.getElementById("toggleStaleOnly");
+  if (toggle) toggle.classList.toggle("primary", monitor.showStaleOnly);
   document.getElementById("monitorRows").innerHTML = jobs.length ? jobs.map(jobRow).join("") : rowMessage("No companies are currently in the monitor list.");
   document.getElementById("monitorEvents").innerHTML = monitor.events.length ? monitor.events.map((event) => `<div class="terminal-line">${escapeHtml(event)}</div>`).join("") : '<div class="terminal-line">Waiting for workflow events...</div>';
   document.querySelectorAll(".remove-job").forEach((button) => button.addEventListener("click", () => removeJob(Number(button.dataset.id))));
+  document.querySelectorAll(".smart-reset-job").forEach((button) => button.addEventListener("click", () => resetCompanyStatus([Number(button.dataset.id)], "smart_resume")));
+  document.querySelectorAll(".resume-stale-job").forEach((button) => button.addEventListener("click", () => runCompanies([Number(button.dataset.id)], { resumeStale: true })));
+  document.querySelectorAll(".hard-reset-job").forEach((button) => button.addEventListener("click", () => resetCompanyStatus([Number(button.dataset.id)], "to_pending")));
   iconize();
 }
 
 function jobRow(job) {
+  const staleBadge = job.stale ? `<span class="badge stale">Stale</span>` : "";
+  const checkpoint = job.stale && job.suggested_status
+    ? `${job.checkpoint || ""} → ${job.suggested_status}`
+    : job.checkpoint || "";
+  const resetActions = job.stale
+    ? `<button class="btn ghost smart-reset-job" data-id="${job.id}" title="Smart Reset"><i data-lucide="rotate-ccw"></i></button><button class="btn ghost primary resume-stale-job" data-id="${job.id}" title="Reset & Resume"><i data-lucide="play"></i></button><button class="btn ghost danger-text hard-reset-job" data-id="${job.id}" title="Hard Reset to Pending"><i data-lucide="rotate-cw"></i></button>`
+    : "";
   return `
     <tr>
       <td><strong>${escapeHtml(job.name || "")}</strong><div class="muted">#${job.id}</div></td>
-      <td><span class="badge ${statusClass(job.status)}">${job.status}</span></td>
+      <td><span class="badge ${statusClass(job.status)}">${job.status}</span> ${staleBadge}</td>
       <td>${escapeHtml(job.step || "")}</td>
-      <td class="mono">${escapeHtml(job.checkpoint || "")}</td>
+      <td class="mono">${escapeHtml(checkpoint)}</td>
       <td><div class="progress"><div style="width:${job.progress || 0}%"></div></div><div class="muted">${job.progress || 0}%</div></td>
-      <td class="muted">${job.updated_at || job.started || ""}</td>
-      <td><button class="btn ghost" onclick="location.hash='#/company/${job.id}'"><i data-lucide="eye"></i></button><button class="btn ghost remove-job" data-id="${job.id}"><i data-lucide="trash-2"></i></button></td>
+      <td class="muted">${formatDashboardTimestamp(job.updated_at || job.started || "")}</td>
+      <td>${resetActions}<button class="btn ghost" onclick="location.hash='#/company/${job.id}'"><i data-lucide="eye"></i></button><button class="btn ghost remove-job" data-id="${job.id}"><i data-lucide="trash-2"></i></button></td>
     </tr>
   `;
 }
 
 function pushMonitorEvent(text) {
-  monitor.events.unshift(`${new Date().toLocaleTimeString()} ${text}`);
+  monitor.events.unshift(`${formatVnTime()} ${text}`);
   monitor.events = monitor.events.slice(0, 200);
 }
 
 async function stopAll() {
   await api("/api/spa/runner/stop-all", { method: "POST" });
+}
+
+async function resetCompanyStatus(ids, mode = "smart_resume") {
+  if (!ids.length) return;
+  const result = await api("/api/spa/runner/reset-status", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ company_ids: ids, mode }),
+  });
+  pushMonitorEvent(`status_reset: ${result.reset || 0} companies`);
+  if ((location.hash || "#/dashboard") === "#/monitor") {
+    await loadMonitorSnapshot();
+  }
+  return result;
+}
+
+async function resetStaleJobs(resume = false) {
+  const staleIds = [...monitor.jobs.values()].filter((job) => job.stale).map((job) => job.id);
+  if (!staleIds.length) {
+    alert("No stale jobs found.");
+    return;
+  }
+  if (resume) {
+    await runCompanies(staleIds, { resumeStale: true });
+  } else {
+    await resetCompanyStatus(staleIds, "smart_resume");
+  }
+}
+
+async function hardResetStaleJobs() {
+  const staleIds = [...monitor.jobs.values()].filter((job) => job.stale).map((job) => job.id);
+  if (!staleIds.length) {
+    alert("No stale jobs found.");
+    return;
+  }
+  if (!confirm(`Hard reset ${staleIds.length} stale jobs to pending? This can rerun search/scrape steps.`)) return;
+  await resetCompanyStatus(staleIds, "to_pending");
 }
 
 async function removeJob(id) {
