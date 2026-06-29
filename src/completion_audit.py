@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
 from typing import Any
+
+
+_NON_BLOCKING_SCRAPE_STATUSES = {"success", "timeout", "skipped", "unsupported"}
+_TOP_N = max(1, int(os.getenv("TOP_N", "10") or "10"))
 
 
 def _latest_activity(db, company_id: int) -> dict[str, Any]:
@@ -17,16 +22,28 @@ def _latest_activity(db, company_id: int) -> dict[str, Any]:
     return row or {"step": None, "status": None, "error_message": None}
 
 
-def _scrape_candidate_rows(db, company_id: int) -> list[dict[str, Any]]:
+def _top_scrape_candidate_rows(db, company_id: int) -> list[dict[str, Any]]:
     return db.fetch_all(
         """
         SELECT
             fl.id AS filtered_link_id,
             fl.url,
-            latest.scrape_status AS latest_scrape_status
-        FROM filtered_links fl
+            fl.source_type,
+            fl.relevance_score,
+            latest.scrape_status AS latest_scrape_status,
+            latest.error_message AS latest_error_message,
+            latest.credits_used AS latest_credits_used,
+            latest.created_at AS latest_created_at
+        FROM (
+            SELECT *
+            FROM filtered_links
+            WHERE company_id = ?
+              AND should_scrape = 1
+            ORDER BY relevance_score DESC, id
+            LIMIT ?
+        ) fl
         LEFT JOIN (
-            SELECT sp.filtered_link_id, sp.scrape_status
+            SELECT sp.filtered_link_id, sp.scrape_status, sp.error_message, sp.credits_used, sp.created_at
             FROM scraped_pages sp
             INNER JOIN (
                 SELECT filtered_link_id, MAX(id) AS max_id
@@ -35,12 +52,35 @@ def _scrape_candidate_rows(db, company_id: int) -> list[dict[str, Any]]:
                 GROUP BY filtered_link_id
             ) last_sp ON last_sp.max_id = sp.id
         ) latest ON latest.filtered_link_id = fl.id
-        WHERE fl.company_id = ?
-          AND fl.should_scrape = 1
-        ORDER BY fl.id
+        ORDER BY fl.relevance_score DESC, fl.id
         """,
-        (company_id, company_id),
+        (company_id, _TOP_N, company_id),
     )
+
+
+def _classify_scrape_result(status: str | None, error_message: str | None) -> str:
+    if not status:
+        return "missing"
+
+    status_norm = str(status).strip().lower()
+    error_norm = (error_message or "").strip().lower()
+
+    if status_norm in _NON_BLOCKING_SCRAPE_STATUSES:
+        return "terminal"
+
+    unsupported_markers = (
+        "unsupported",
+        "not support",
+        "not supported",
+        "cannot scrape",
+        "can't scrape",
+        "khong ho tro",
+        "không hỗ trợ",
+    )
+    if any(marker in error_norm for marker in unsupported_markers):
+        return "terminal"
+
+    return "blocking"
 
 
 def audit_company_completion(db, company_id: int, company: dict | None = None) -> dict[str, Any]:
@@ -61,22 +101,27 @@ def audit_company_completion(db, company_id: int, company: dict | None = None) -
         (company_id, company_id, company_id, company_id, company_id),
     ) or {}
 
-    scrape_candidates = _scrape_candidate_rows(db, company_id)
-    missing_scrapes = sum(1 for row in scrape_candidates if not row.get("latest_scrape_status"))
-    failed_scrapes = sum(
-        1 for row in scrape_candidates
-        if row.get("latest_scrape_status") and row.get("latest_scrape_status") != "success"
-    )
-    successful_scrapes = sum(1 for row in scrape_candidates if row.get("latest_scrape_status") == "success")
+    scrape_candidates = _top_scrape_candidate_rows(db, company_id)
+    scrape_missing = 0
+    scrape_blocking = 0
+    scrape_terminal = 0
+    for row in scrape_candidates:
+        classification = _classify_scrape_result(row.get("latest_scrape_status"), row.get("latest_error_message"))
+        if classification == "missing":
+            scrape_missing += 1
+        elif classification == "blocking":
+            scrape_blocking += 1
+        else:
+            scrape_terminal += 1
 
     data_counts = {
         "gemini_results": counts.get("gemini_results", 0) or 0,
         "search_results": counts.get("search_results", 0) or 0,
         "filtered_links": counts.get("filtered_links", 0) or 0,
         "scrape_candidates": len(scrape_candidates),
-        "scraped_success": successful_scrapes,
-        "scraped_missing": missing_scrapes,
-        "scraped_failed": failed_scrapes,
+        "scraped_success": scrape_terminal,
+        "scraped_missing": scrape_missing,
+        "scraped_failed": scrape_blocking,
         "contacts": counts.get("contacts", 0) or 0,
         "ai_extract_logs": counts.get("ai_extract_logs", 0) or 0,
     }
@@ -94,7 +139,7 @@ def audit_company_completion(db, company_id: int, company: dict | None = None) -
     }
 
     if scrape_candidates:
-        if missing_scrapes:
+        if scrape_missing:
             result.update({
                 "completion_reason": "scrape_missing",
                 "resume_status": "searched",
@@ -102,7 +147,7 @@ def audit_company_completion(db, company_id: int, company: dict | None = None) -
                 "current_step": "Scrape",
             })
             return result
-        if failed_scrapes:
+        if scrape_blocking:
             result.update({
                 "completion_reason": "scrape_failed",
                 "resume_status": "searched",
@@ -110,7 +155,7 @@ def audit_company_completion(db, company_id: int, company: dict | None = None) -
                 "current_step": "Scrape",
             })
             return result
-        if data_counts["ai_extract_logs"] > 0 or data_counts["contacts"] > 0:
+        if data_counts["contacts"] > 0:
             result.update({
                 "completion_status": "strict_done",
                 "completion_reason": "strict_done",

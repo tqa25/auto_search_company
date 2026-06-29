@@ -46,6 +46,25 @@ class TestDashboardImportFilters(unittest.TestCase):
             if os.path.exists(path):
                 os.remove(path)
 
+    def _seed_top_scrape_links(self, company_id, total=10):
+        link_ids = []
+        for index in range(total):
+            sr_id = self.db.execute_query(
+                "INSERT INTO search_results (company_id, search_query, url) VALUES (?, ?, ?)",
+                (company_id, f"query-{index}", f"https://example{index}.com"),
+            )
+            link_id = self.db.insert_filtered_link(
+                search_result_id=sr_id,
+                company_id=company_id,
+                url=f"https://example{index}.com",
+                source_type="official_website",
+                should_scrape=True,
+                reason="test",
+            )
+            self.db.update_filtered_link_score(link_id, 100 - index)
+            link_ids.append(link_id)
+        return link_ids
+
     def test_import_returns_batch_and_filters_by_batch_and_search(self):
         response = asyncio.run(
             dashboard_app.api_import(
@@ -289,6 +308,192 @@ class TestDashboardImportFilters(unittest.TestCase):
 
         self.assertEqual(row["completion_status"], "strict_done")
         self.assertFalse(row["can_resume_incomplete"])
+
+
+    def test_completion_filter_marks_timeout_as_terminal_but_ai_extract_still_required(self):
+        company_id = self.db.insert_company("Timeout Co", status="done")
+        link_ids = self._seed_top_scrape_links(company_id, total=10)
+        for link_id in link_ids[:9]:
+            self.db.insert_scraped_page(
+                filtered_link_id=link_id,
+                company_id=company_id,
+                url=f"https://example{link_id}.com",
+                source_type="official_website",
+                markdown_content="ok",
+                content_length=2,
+                scrape_status="success",
+                credits_used=1,
+                error_message=None,
+            )
+        self.db.insert_scraped_page(
+            filtered_link_id=link_ids[9],
+            company_id=company_id,
+            url=f"https://example{link_ids[9]}.com",
+            source_type="official_website",
+            markdown_content=None,
+            content_length=0,
+            scrape_status="timeout",
+            credits_used=0,
+            error_message="timeout",
+        )
+
+        payload = response_json(dashboard_app.api_spa_companies(status="done", completion="incomplete"))
+        row = next(c for c in payload["companies"] if c["id"] == company_id)
+
+        self.assertEqual(row["completion_status"], "incomplete")
+        self.assertEqual(row["completion_reason"], "ai_extract_incomplete")
+        self.assertEqual(row["resume_status"], "ai_extract_pending")
+
+    def test_completion_filter_marks_unsupported_as_terminal(self):
+        company_id = self.db.insert_company("Unsupported Co", status="done")
+        link_ids = self._seed_top_scrape_links(company_id, total=10)
+        for link_id in link_ids[:9]:
+            self.db.insert_scraped_page(
+                filtered_link_id=link_id,
+                company_id=company_id,
+                url=f"https://example{link_id}.com",
+                source_type="official_website",
+                markdown_content="ok",
+                content_length=2,
+                scrape_status="success",
+                credits_used=1,
+                error_message=None,
+            )
+        last_link_id = link_ids[9]
+        self.db.insert_scraped_page(
+            filtered_link_id=last_link_id,
+            company_id=company_id,
+            url=f"https://example{last_link_id}.com",
+            source_type="official_website",
+            markdown_content=None,
+            content_length=0,
+            scrape_status="failed",
+            credits_used=0,
+            error_message="Firecrawl does not support scraping this site",
+        )
+        self.db.execute_query(
+            "INSERT INTO extracted_contacts (company_id, scraped_page_id, source_type, phone) VALUES (?, ?, ?, ?)",
+            (company_id, 1, "official_website", "0123456789"),
+        )
+
+        payload = response_json(dashboard_app.api_spa_companies(status="done", completion="strict_done"))
+        row = next(c for c in payload["companies"] if c["id"] == company_id)
+
+        self.assertEqual(row["completion_status"], "strict_done")
+
+    def test_completion_filter_keeps_insufficient_credits_blocking(self):
+        company_id = self.db.insert_company("Credits Co", status="done")
+        link_ids = self._seed_top_scrape_links(company_id, total=10)
+        for link_id in link_ids[:9]:
+            self.db.insert_scraped_page(
+                filtered_link_id=link_id,
+                company_id=company_id,
+                url=f"https://example{link_id}.com",
+                source_type="official_website",
+                markdown_content="ok",
+                content_length=2,
+                scrape_status="success",
+                credits_used=1,
+                error_message=None,
+            )
+        self.db.insert_scraped_page(
+            filtered_link_id=link_ids[9],
+            company_id=company_id,
+            url=f"https://example{link_ids[9]}.com",
+            source_type="official_website",
+            markdown_content=None,
+            content_length=0,
+            scrape_status="failed",
+            credits_used=0,
+            error_message="HTTP 402: Insufficient credits",
+        )
+
+        payload = response_json(dashboard_app.api_spa_companies(status="done", completion="incomplete"))
+        row = next(c for c in payload["companies"] if c["id"] == company_id)
+
+        self.assertEqual(row["completion_status"], "incomplete")
+        self.assertEqual(row["completion_reason"], "scrape_failed")
+        self.assertEqual(row["resume_status"], "searched")
+
+    def test_completion_filter_ignores_should_scrape_links_outside_top_n(self):
+        company_id = self.db.insert_company("Top N Co", status="done")
+        link_ids = self._seed_top_scrape_links(company_id, total=11)
+        for link_id in link_ids[:10]:
+            self.db.insert_scraped_page(
+                filtered_link_id=link_id,
+                company_id=company_id,
+                url=f"https://example{link_id}.com",
+                source_type="official_website",
+                markdown_content="ok",
+                content_length=2,
+                scrape_status="success",
+                credits_used=1,
+                error_message=None,
+            )
+        self.db.insert_scraped_page(
+            filtered_link_id=link_ids[10],
+            company_id=company_id,
+            url=f"https://example{link_ids[10]}.com",
+            source_type="official_website",
+            markdown_content=None,
+            content_length=0,
+            scrape_status="failed",
+            credits_used=0,
+            error_message="HTTP 402: Insufficient credits",
+        )
+        self.db.execute_query(
+            "INSERT INTO extracted_contacts (company_id, scraped_page_id, source_type, phone) VALUES (?, ?, ?, ?)",
+            (company_id, 1, "official_website", "0123456789"),
+        )
+
+        payload = response_json(dashboard_app.api_spa_companies(status="done", completion="strict_done"))
+        row = next(c for c in payload["companies"] if c["id"] == company_id)
+
+        self.assertEqual(row["completion_status"], "strict_done")
+
+    def test_company_detail_dedupes_scraped_urls_and_counts_attempts(self):
+        company_id = self.db.insert_company("Detail Co", status="done")
+        self.db.insert_scraped_page(
+            filtered_link_id=1,
+            company_id=company_id,
+            url="https://example.com/contact",
+            source_type="official_website",
+            markdown_content="ok",
+            content_length=2,
+            scrape_status="success",
+            credits_used=1,
+            error_message=None,
+        )
+        self.db.insert_scraped_page(
+            filtered_link_id=1,
+            company_id=company_id,
+            url="https://example.com/contact",
+            source_type="official_website",
+            markdown_content="ok again",
+            content_length=8,
+            scrape_status="success",
+            credits_used=0,
+            error_message=None,
+        )
+        self.db.insert_scraped_page(
+            filtered_link_id=2,
+            company_id=company_id,
+            url="https://example.com/about",
+            source_type="official_website",
+            markdown_content=None,
+            content_length=0,
+            scrape_status="timeout",
+            credits_used=0,
+            error_message="timeout",
+        )
+
+        payload = response_json(dashboard_app.api_spa_company_detail(company_id))
+        scraped_pages = payload["scraped_pages"]
+
+        self.assertEqual(len(scraped_pages), 2)
+        contact_row = next(row for row in scraped_pages if row["url"] == "https://example.com/contact")
+        self.assertEqual(contact_row["attempt_count"], 2)
+        self.assertEqual(contact_row["content_length"], 8)
 
     def test_stale_jobs_detects_crashed_running_company(self):
         company_id = self.db.insert_company("Stale Scrape Co", status="scraping")

@@ -831,6 +831,26 @@ def _safe_json(value, fallback):
         return fallback
 
 
+def _scraped_url_rows(db: DatabaseManager, company_id: int) -> list[dict]:
+    return db.fetch_all(
+        """
+        SELECT latest.id, latest.url, latest.source_type, latest.content_length,
+               latest.scrape_status, latest.credits_used, latest.error_message,
+               latest.created_at, counts.attempt_count
+        FROM scraped_pages latest
+        INNER JOIN (
+            SELECT url, MAX(id) AS latest_id, COUNT(*) AS attempt_count
+            FROM scraped_pages
+            WHERE company_id = ?
+            GROUP BY url
+        ) counts ON counts.latest_id = latest.id
+        WHERE latest.company_id = ?
+        ORDER BY latest.id
+        """,
+        (company_id, company_id),
+    )
+
+
 def _company_step(status: str) -> tuple[str, str, int]:
     return _STEP_BY_STATUS.get(status or "pending", ("Unknown", status or "pending", 0))
 
@@ -1397,7 +1417,7 @@ def api_spa_company_detail(company_id: int):
         "gemini_quick": gemini,
         "search_results": db.fetch_all("SELECT * FROM search_results WHERE company_id = ? ORDER BY search_type, result_rank", (company_id,)),
         "filtered_links": db.fetch_all("SELECT * FROM filtered_links WHERE company_id = ? ORDER BY relevance_score DESC", (company_id,)),
-        "scraped_pages": db.fetch_all("SELECT id, url, source_type, content_length, scrape_status, credits_used, error_message, created_at FROM scraped_pages WHERE company_id = ? ORDER BY id", (company_id,)),
+        "scraped_pages": _scraped_url_rows(db, company_id),
         "contacts": db.fetch_all("SELECT * FROM extracted_contacts WHERE company_id = ? ORDER BY confidence_score DESC", (company_id,)),
         "timeline": db.fetch_all("SELECT * FROM pipeline_logs WHERE company_id = ? ORDER BY id", (company_id,)),
     })

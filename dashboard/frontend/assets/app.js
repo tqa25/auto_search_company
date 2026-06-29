@@ -763,17 +763,18 @@ async function renderCompanyDetail(id) {
       </div>`;
   }).join("");
 
-  // Scraped URLs table
+  // Scraped URLs table (deduped by latest row per URL)
   let scrapedHtml = '<p class="muted">No scraped pages.</p>';
   if (scrapedPages.length) {
       scrapedHtml = `
       <div class="table-wrap" style="max-height: 300px; overflow-y: auto;">
           <table>
-              <thead><tr><th>URL</th><th>Status</th><th>Length</th></tr></thead>
+              <thead><tr><th>URL</th><th>Status</th><th>Attempts</th><th>Length</th></tr></thead>
               <tbody>
                   ${scrapedPages.map(p => `<tr>
                       <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${p.url}"><a href="${p.url}" target="_blank">${p.url}</a></td>
-                      <td><span class="badge ${p.scrape_status === 'success' ? 'success' : 'failed'}">${p.scrape_status}</span></td>
+                      <td><span class="badge ${p.scrape_status === 'success' ? 'success' : (p.scrape_status === 'timeout' || p.scrape_status === 'skipped' || p.scrape_status === 'unsupported' ? 'warning' : 'failed')}">${p.scrape_status}</span></td>
+                      <td>${p.attempt_count || 1}</td>
                       <td>${p.content_length || 0}</td>
                   </tr>`).join("")}
               </tbody>
