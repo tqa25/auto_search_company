@@ -771,12 +771,29 @@ async function renderCompanyDetail(id) {
           <table>
               <thead><tr><th>URL</th><th>Status</th><th>Attempts</th><th>Length</th></tr></thead>
               <tbody>
-                  ${scrapedPages.map(p => `<tr>
+                  ${scrapedPages.map(p => {
+                      const normalizedStatus = String(p.scrape_status || '').toLowerCase();
+                      const label = normalizedStatus === 'success'
+                        ? 'Success'
+                        : normalizedStatus === 'timeout'
+                          ? 'Timeout (Complete)'
+                          : normalizedStatus === 'unsupported'
+                            ? 'Unsupported (Complete)'
+                            : normalizedStatus === 'skipped'
+                              ? 'Skipped (Complete)'
+                              : normalizedStatus === 'failed'
+                                ? 'Failed'
+                                : (p.scrape_status || 'Unknown');
+                      const badgeClass = normalizedStatus === 'success'
+                        ? 'success'
+                        : (normalizedStatus === 'timeout' || normalizedStatus === 'skipped' || normalizedStatus === 'unsupported' ? 'warning' : 'failed');
+                      return `<tr>
                       <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${p.url}"><a href="${p.url}" target="_blank">${p.url}</a></td>
-                      <td><span class="badge ${p.scrape_status === 'success' ? 'success' : (p.scrape_status === 'timeout' || p.scrape_status === 'skipped' || p.scrape_status === 'unsupported' ? 'warning' : 'failed')}">${p.scrape_status}</span></td>
+                      <td><span class="badge ${badgeClass}">${label}</span></td>
                       <td>${p.attempt_count || 1}</td>
                       <td>${p.content_length || 0}</td>
-                  </tr>`).join("")}
+                  </tr>`;
+                  }).join("")}
               </tbody>
           </table>
       </div>`;
