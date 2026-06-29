@@ -17,6 +17,7 @@ const companiesState = {
   importBatchId: "",
   importOutcome: "",
   completion: "",
+  checkpoint: "",
   showNormalizedNames: false,
   dateMode: "created",
   dateFrom: "",
@@ -251,6 +252,7 @@ function companyQueryParams({ includePaging = true } = {}) {
   if (companiesState.importBatchId) params.set("import_batch_id", companiesState.importBatchId);
   if (companiesState.importOutcome) params.set("import_outcome", companiesState.importOutcome);
   if (companiesState.completion) params.set("completion", companiesState.completion);
+  if (companiesState.checkpoint) params.set("checkpoint", companiesState.checkpoint);
   if (companiesState.dateFrom) params.set(`${companiesState.dateMode}_from`, companiesState.dateFrom);
   if (companiesState.dateTo) params.set(`${companiesState.dateMode}_to`, companiesState.dateTo);
   return params;
@@ -298,6 +300,22 @@ function batchOptions(batches) {
     return `<option value="${batch.id}" ${selected === String(batch.id) ? "selected" : ""}>${escapeHtml(label)}</option>`;
   }).join("");
   return `<option value="">All imports</option><option value="latest">Latest import</option>${options}`;
+}
+
+function checkpointOptions() {
+  const options = [
+    ["", "All checkpoints"],
+    ["pipeline_init", "Waiting"],
+    ["gemini_quick", "Gemini Quick"],
+    ["deep_search", "Deep Search"],
+    ["filter", "Filter"],
+    ["scrape", "Scrape"],
+    ["ai_extract", "AI Extract"],
+    ["done", "Done"],
+    ["failed", "Failed"],
+    ["permanently_failed", "Permanently Failed"],
+  ];
+  return options.map(([value, label]) => `<option value="${value}" ${companiesState.checkpoint === value ? "selected" : ""}>${label}</option>`).join("");
 }
 
 async function renderCompanies(patch = {}) {
@@ -378,6 +396,7 @@ async function renderCompanies(patch = {}) {
         <option value="incomplete" ${companiesState.completion === "incomplete" ? "selected" : ""}>Incomplete</option>
         <option value="strict_done" ${companiesState.completion === "strict_done" ? "selected" : ""}>Strict done</option>
       </select>
+      <select class="select" id="checkpointFilter">${checkpointOptions()}</select>
       <button class="btn" id="clearFilters"><i data-lucide="x"></i>Clear filters</button>
       <button class="btn" id="selectAllFiltered"><i data-lucide="list-checks"></i>Select all filtered</button>
     </div>
@@ -528,9 +547,13 @@ function bindCompanyEvents(companies, pagination) {
     companiesState.selected.clear();
     renderCompanies({ completion: event.target.value, page: 1 });
   });
+  document.getElementById("checkpointFilter").addEventListener("change", (event) => {
+    companiesState.selected.clear();
+    renderCompanies({ checkpoint: event.target.value, page: 1 });
+  });
   document.getElementById("clearFilters").addEventListener("click", () => {
     companiesState.selected.clear();
-    renderCompanies({ status: "", search: "", importBatchId: "", importOutcome: "", completion: "", dateMode: "created", dateFrom: "", dateTo: "", page: 1 });
+    renderCompanies({ status: "", search: "", importBatchId: "", importOutcome: "", completion: "", checkpoint: "", dateMode: "created", dateFrom: "", dateTo: "", page: 1 });
   });
   const updateSelectedUI = () => {
     const runBtn = document.getElementById("runSelected");

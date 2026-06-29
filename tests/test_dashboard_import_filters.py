@@ -495,6 +495,43 @@ class TestDashboardImportFilters(unittest.TestCase):
         self.assertEqual(contact_row["attempt_count"], 2)
         self.assertEqual(contact_row["content_length"], 8)
 
+
+    def test_checkpoint_filter_matches_effective_checkpoint(self):
+        pending_id = self.db.insert_company("Pending Co", status="pending")
+        scraping_id = self.db.insert_company("Scraping Co", status="scraping")
+        extracting_id = self.db.insert_company("Extracting Co", status="extracting")
+
+        payload = response_json(dashboard_app.api_spa_companies(checkpoint="scrape"))
+        self.assertEqual([row["id"] for row in payload["companies"]], [scraping_id])
+
+        ids_payload = response_json(dashboard_app.api_spa_company_ids(checkpoint="ai_extract"))
+        self.assertEqual(ids_payload["company_ids"], [extracting_id])
+
+        waiting_payload = response_json(dashboard_app.api_spa_companies(checkpoint="pipeline_init"))
+        self.assertEqual([row["id"] for row in waiting_payload["companies"]], [pending_id])
+
+    def test_import_batch_checkpoint_filter_nests_with_batch_view(self):
+        response = asyncio.run(
+            dashboard_app.api_import(
+                FakeJsonRequest({
+                    "source_filename": "companies.csv",
+                    "names": ["Checkpoint Import A", "Checkpoint Import B"],
+                })
+            )
+        )
+        payload = response_json(response)
+        companies = response_json(dashboard_app.api_spa_companies(import_batch_id=payload["batch_id"]))["companies"]
+        first_id = companies[0]["id"]
+        second_id = companies[1]["id"]
+        self.db.update_company(first_id, status="scraping")
+        self.db.update_company(second_id, status="extracting")
+
+        scrape_payload = response_json(dashboard_app.api_spa_companies(import_batch_id=payload["batch_id"], checkpoint="scrape"))
+        self.assertEqual([row["id"] for row in scrape_payload["companies"]], [first_id])
+
+        ai_payload = response_json(dashboard_app.api_spa_import_batch_items(batch_id=payload["batch_id"], checkpoint="ai_extract"))
+        self.assertEqual([row["id"] for row in ai_payload["companies"]], [second_id])
+
     def test_stale_jobs_detects_crashed_running_company(self):
         company_id = self.db.insert_company("Stale Scrape Co", status="scraping")
         old_time = vn_timestamp(vn_now() - timedelta(minutes=30))

@@ -933,6 +933,30 @@ def _completion_matches(audit: dict, completion: str | None) -> bool:
     return audit.get("completion_status") == completion
 
 
+def _effective_checkpoint(row: dict, audit: dict) -> str:
+    pipeline_status = row.get("pipeline_status") or row.get("status") or "pending"
+    _, fallback_checkpoint, _ = _company_step(pipeline_status)
+    audit_checkpoint = str(audit.get("checkpoint") or "").strip()
+    if pipeline_status in {"done", "ai_done"}:
+        return audit_checkpoint or fallback_checkpoint or ""
+    return fallback_checkpoint or audit_checkpoint or ""
+
+
+def _effective_current_step(row: dict, audit: dict) -> str:
+    pipeline_status = row.get("pipeline_status") or row.get("status") or "pending"
+    fallback_step, _, _ = _company_step(pipeline_status)
+    audit_step = str(audit.get("current_step") or "").strip()
+    if pipeline_status in {"done", "ai_done"}:
+        return audit_step or fallback_step or ""
+    return fallback_step or audit_step or ""
+
+
+def _checkpoint_matches(row: dict, audit: dict, checkpoint: str | None) -> bool:
+    if not checkpoint:
+        return True
+    return _effective_checkpoint(row, audit) == checkpoint
+
+
 def _audit_map(db: DatabaseManager, rows: list[dict], id_key: str = "id") -> dict[int, dict]:
     audits = {}
     for row in rows:
@@ -1010,6 +1034,7 @@ def _import_batch_items_payload(
     search: str = None,
     import_outcome: str = None,
     completion: str = None,
+    checkpoint: str = None,
     pipeline_status: str = None,
     created_from: str = None,
     created_to: str = None,
@@ -1020,7 +1045,7 @@ def _import_batch_items_payload(
     page = max(1, page)
     where, params_without_batch = _import_item_filter_sql(search, import_outcome, pipeline_status, created_from, created_to)
     params = [batch_id] + params_without_batch
-    if not completion:
+    if not completion and not checkpoint:
         total_row = db.fetch_one(
             f"""
             SELECT COUNT(*) AS cnt
@@ -1068,7 +1093,9 @@ def _import_batch_items_payload(
         audit_by_id = _audit_map(db, rows, id_key="resolved_company_id")
         rows = [
             row for row in rows
-            if row.get("resolved_company_id") and _completion_matches(audit_by_id.get(int(row["resolved_company_id"]), {}), completion)
+            if row.get("resolved_company_id")
+            and _completion_matches(audit_by_id.get(int(row["resolved_company_id"]), {}), completion)
+            and _checkpoint_matches(row, audit_by_id.get(int(row["resolved_company_id"]), {}), checkpoint)
         ]
         total = len(rows)
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -1111,8 +1138,8 @@ def _import_batch_items_payload(
             "pipeline_status": pipeline_status,
             "has_phone": bool(contact.get("has_phone")),
             "has_email": bool(contact.get("has_email")),
-            "checkpoint": audit.get("checkpoint") or checkpoint,
-            "current_step": audit.get("current_step") or step,
+            "checkpoint": _effective_checkpoint(row, audit),
+            "current_step": _effective_current_step(row, audit),
             "last_activity_step": audit.get("last_activity_step"),
             "completion_status": audit.get("completion_status"),
             "completion_reason": audit.get("completion_reason"),
@@ -1198,6 +1225,7 @@ def api_spa_companies(
     import_batch_id: int = None,
     import_outcome: str = None,
     completion: str = None,
+    checkpoint: str = None,
     created_from: str = None,
     created_to: str = None,
     completed_from: str = None,
@@ -1216,6 +1244,7 @@ def api_spa_companies(
             search=search,
             import_outcome=import_outcome,
             completion=completion,
+            checkpoint=checkpoint,
             pipeline_status=status,
             created_from=created_from,
             created_to=created_to,
@@ -1233,7 +1262,7 @@ def api_spa_companies(
         completed_from=completed_from,
         completed_to=completed_to,
     )
-    if not completion:
+    if not completion and not checkpoint:
         total_row = db.fetch_one(
             f"SELECT COUNT(*) AS cnt FROM companies {where}",
             tuple(params),
@@ -1267,7 +1296,11 @@ def api_spa_companies(
         )
 
         audit_by_id = _audit_map(db, rows)
-        rows = [row for row in rows if _completion_matches(audit_by_id.get(int(row["id"]), {}), completion)]
+        rows = [
+            row for row in rows
+            if _completion_matches(audit_by_id.get(int(row["id"]), {}), completion)
+            and _checkpoint_matches(row, audit_by_id.get(int(row["id"]), {}), checkpoint)
+        ]
         total = len(rows)
         total_pages = max(1, (total + page_size - 1) // page_size)
         page = min(page, total_pages)
@@ -1297,8 +1330,8 @@ def api_spa_companies(
             "normalized_key": row.get("original_name_key"),
             "has_phone": bool(contact.get("has_phone")),
             "has_email": bool(contact.get("has_email")),
-            "checkpoint": audit.get("checkpoint") or checkpoint,
-            "current_step": audit.get("current_step") or step,
+            "checkpoint": _effective_checkpoint(row, audit),
+            "current_step": _effective_current_step(row, audit),
             "last_activity_step": audit.get("last_activity_step"),
             "completion_status": audit.get("completion_status"),
             "completion_reason": audit.get("completion_reason"),
@@ -1322,6 +1355,7 @@ def api_spa_company_ids(
     import_batch_id: int = None,
     import_outcome: str = None,
     completion: str = None,
+    checkpoint: str = None,
     created_from: str = None,
     created_to: str = None,
     completed_from: str = None,
@@ -1342,8 +1376,15 @@ def api_spa_company_ids(
             """,
             tuple(params),
         )
-        if completion:
-            rows = [row for row in rows if _completion_matches(audit_company_completion(db, int(row["id"])), completion)]
+        if completion or checkpoint:
+            filtered_rows = []
+            for row in rows:
+                company = db.get_company(int(row["id"]))
+                audit = audit_company_completion(db, int(row["id"]), company)
+                checkpoint_row = {"id": row["id"], "status": company.get("status") if company else "pending"}
+                if _completion_matches(audit, completion) and _checkpoint_matches(checkpoint_row, audit, checkpoint):
+                    filtered_rows.append(row)
+            rows = filtered_rows
         return JSONResponse({"company_ids": [r["id"] for r in rows], "count": len(rows)})
 
     where, params = _company_filter_sql(
@@ -1356,8 +1397,15 @@ def api_spa_company_ids(
         completed_to=completed_to,
     )
     rows = db.fetch_all(f"SELECT id FROM companies {where} ORDER BY id", tuple(params))
-    if completion:
-        rows = [row for row in rows if _completion_matches(audit_company_completion(db, int(row["id"])), completion)]
+    if completion or checkpoint:
+        filtered_rows = []
+        for row in rows:
+            company = db.get_company(int(row["id"]))
+            audit = audit_company_completion(db, int(row["id"]), company)
+            checkpoint_row = {"id": row["id"], "status": company.get("status") if company else "pending"}
+            if _completion_matches(audit, completion) and _checkpoint_matches(checkpoint_row, audit, checkpoint):
+                filtered_rows.append(row)
+        rows = filtered_rows
     return JSONResponse({"company_ids": [r["id"] for r in rows], "count": len(rows)})
 
 
@@ -1381,6 +1429,7 @@ def api_spa_import_batch_items(
     search: str = None,
     import_outcome: str = None,
     completion: str = None,
+    checkpoint: str = None,
     created_from: str = None,
     created_to: str = None,
     page: int = 1,
@@ -1393,6 +1442,7 @@ def api_spa_import_batch_items(
         search=search,
         import_outcome=import_outcome,
         completion=completion,
+        checkpoint=checkpoint,
         created_from=created_from,
         created_to=created_to,
         page=page,
