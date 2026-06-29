@@ -1000,31 +1000,61 @@ def _import_batch_items_payload(
     page = max(1, page)
     where, params_without_batch = _import_item_filter_sql(search, import_outcome, pipeline_status, created_from, created_to)
     params = [batch_id] + params_without_batch
-    rows = db.fetch_all(
-        f"""
-        SELECT i.id as import_item_id, i.row_number, i.input_name, i.canonical_name,
-               i.normalized_key, i.outcome, i.company_id, i.matched_company_id, i.reason,
-               i.match_score, i.match_method, i.evidence_json, i.created_at as import_item_created_at,
-               c.id as resolved_company_id, c.original_name, c.vietnamese_name, c.tax_code,
-               c.status as pipeline_status, c.updated_at, c.created_at, c.import_batch_id, c.completed_at
-        FROM company_import_items i
-        LEFT JOIN companies c ON c.id = COALESCE(i.company_id, i.matched_company_id)
-        {where}
-        ORDER BY i.row_number, i.id
-        """,
-        tuple(params),
-    )
-    audit_by_id = _audit_map(db, rows, id_key="resolved_company_id")
-    if completion:
+    if not completion:
+        total_row = db.fetch_one(
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM company_import_items i
+            LEFT JOIN companies c ON c.id = COALESCE(i.company_id, i.matched_company_id)
+            {where}
+            """,
+            tuple(params),
+        ) or {}
+        total = int(total_row.get("cnt", 0) or 0)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = db.fetch_all(
+            f"""
+            SELECT i.id as import_item_id, i.row_number, i.input_name, i.canonical_name,
+                   i.normalized_key, i.outcome, i.company_id, i.matched_company_id, i.reason,
+                   i.match_score, i.match_method, i.evidence_json, i.created_at as import_item_created_at,
+                   c.id as resolved_company_id, c.original_name, c.vietnamese_name, c.tax_code,
+                   c.status as pipeline_status, c.updated_at, c.created_at, c.import_batch_id, c.completed_at
+            FROM company_import_items i
+            LEFT JOIN companies c ON c.id = COALESCE(i.company_id, i.matched_company_id)
+            {where}
+            ORDER BY i.row_number, i.id
+            LIMIT ? OFFSET ?
+            """,
+            tuple([*params, page_size, offset]),
+        )
+        audit_by_id = _audit_map(db, rows, id_key="resolved_company_id")
+    else:
+        rows = db.fetch_all(
+            f"""
+            SELECT i.id as import_item_id, i.row_number, i.input_name, i.canonical_name,
+                   i.normalized_key, i.outcome, i.company_id, i.matched_company_id, i.reason,
+                   i.match_score, i.match_method, i.evidence_json, i.created_at as import_item_created_at,
+                   c.id as resolved_company_id, c.original_name, c.vietnamese_name, c.tax_code,
+                   c.status as pipeline_status, c.updated_at, c.created_at, c.import_batch_id, c.completed_at
+            FROM company_import_items i
+            LEFT JOIN companies c ON c.id = COALESCE(i.company_id, i.matched_company_id)
+            {where}
+            ORDER BY i.row_number, i.id
+            """,
+            tuple(params),
+        )
+        audit_by_id = _audit_map(db, rows, id_key="resolved_company_id")
         rows = [
             row for row in rows
             if row.get("resolved_company_id") and _completion_matches(audit_by_id.get(int(row["resolved_company_id"]), {}), completion)
         ]
-    total = len(rows)
-    total_pages = max(1, (total + page_size - 1) // page_size)
-    page = min(page, total_pages)
-    offset = (page - 1) * page_size
-    rows = rows[offset:offset + page_size]
+        total = len(rows)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = rows[offset:offset + page_size]
     company_ids = [r["resolved_company_id"] for r in rows if r.get("resolved_company_id")]
     contacts = _company_contact_flags(db, company_ids)
     stale_input = [
@@ -1183,25 +1213,46 @@ def api_spa_companies(
         completed_from=completed_from,
         completed_to=completed_to,
     )
-    rows = db.fetch_all(
-        f"""
-        SELECT id, original_name, original_name_key, vietnamese_name, tax_code, status, updated_at, created_at,
-               import_batch_id, completed_at
-        FROM companies
-        {where}
-        ORDER BY id
-        """,
-        tuple(params),
-    )
+    if not completion:
+        total_row = db.fetch_one(
+            f"SELECT COUNT(*) AS cnt FROM companies {where}",
+            tuple(params),
+        ) or {}
+        total = int(total_row.get("cnt", 0) or 0)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = db.fetch_all(
+            f"""
+            SELECT id, original_name, original_name_key, vietnamese_name, tax_code, status, updated_at, created_at,
+                   import_batch_id, completed_at
+            FROM companies
+            {where}
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
+            tuple([*params, page_size, offset]),
+        )
+        audit_by_id = _audit_map(db, rows)
+    else:
+        rows = db.fetch_all(
+            f"""
+            SELECT id, original_name, original_name_key, vietnamese_name, tax_code, status, updated_at, created_at,
+                   import_batch_id, completed_at
+            FROM companies
+            {where}
+            ORDER BY id
+            """,
+            tuple(params),
+        )
 
-    audit_by_id = _audit_map(db, rows)
-    if completion:
+        audit_by_id = _audit_map(db, rows)
         rows = [row for row in rows if _completion_matches(audit_by_id.get(int(row["id"]), {}), completion)]
-    total = len(rows)
-    total_pages = max(1, (total + page_size - 1) // page_size)
-    page = min(page, total_pages)
-    offset = (page - 1) * page_size
-    rows = rows[offset:offset + page_size]
+        total = len(rows)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = rows[offset:offset + page_size]
 
     ids = [r["id"] for r in rows]
     contact_by_id = _company_contact_flags(db, ids)

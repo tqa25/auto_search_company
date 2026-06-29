@@ -23,19 +23,23 @@ def _scrape_candidate_rows(db, company_id: int) -> list[dict[str, Any]]:
         SELECT
             fl.id AS filtered_link_id,
             fl.url,
-            (
-                SELECT sp.scrape_status
-                FROM scraped_pages sp
-                WHERE sp.filtered_link_id = fl.id
-                ORDER BY sp.id DESC
-                LIMIT 1
-            ) AS latest_scrape_status
+            latest.scrape_status AS latest_scrape_status
         FROM filtered_links fl
+        LEFT JOIN (
+            SELECT sp.filtered_link_id, sp.scrape_status
+            FROM scraped_pages sp
+            INNER JOIN (
+                SELECT filtered_link_id, MAX(id) AS max_id
+                FROM scraped_pages
+                WHERE company_id = ?
+                GROUP BY filtered_link_id
+            ) last_sp ON last_sp.max_id = sp.id
+        ) latest ON latest.filtered_link_id = fl.id
         WHERE fl.company_id = ?
           AND fl.should_scrape = 1
         ORDER BY fl.id
         """,
-        (company_id,),
+        (company_id, company_id),
     )
 
 

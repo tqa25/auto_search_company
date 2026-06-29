@@ -213,6 +213,32 @@ class TestDashboardImportFilters(unittest.TestCase):
         counts = dashboard_app._company_data_counts(self.db, company_id)
         self.assertEqual(dashboard_app._suggest_resume_status(company, counts)[0], "ai_extract_pending")
 
+
+    def test_companies_page_audits_only_current_page_without_completion_filter(self):
+        for index in range(60):
+            self.db.insert_company(f"Company {index:03d}", status="pending")
+
+        audited_ids = []
+
+        def fake_audit(db, company_id, company=None):
+            audited_ids.append(company_id)
+            return {
+                "checkpoint": "pipeline_init",
+                "current_step": "Waiting",
+                "last_activity_step": None,
+                "completion_status": "incomplete",
+                "completion_reason": "no_intermediate_data",
+                "resume_status": "pending",
+            }
+
+        with patch.object(dashboard_app, "audit_company_completion", side_effect=fake_audit):
+            payload = response_json(dashboard_app.api_spa_companies(page=2, page_size=10))
+
+        self.assertEqual(len(payload["companies"]), 10)
+        self.assertEqual(payload["pagination"]["total"], 60)
+        self.assertEqual(audited_ids, [row["id"] for row in payload["companies"]])
+        self.assertEqual(audited_ids, list(range(11, 21)))
+
     def test_completion_filter_marks_done_company_incomplete_when_only_gemini_exists(self):
         company_id = self.db.insert_company("Gemini Only Co", status="done")
         self.db.execute_query(

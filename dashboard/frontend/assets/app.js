@@ -1446,12 +1446,12 @@ async function router() {
   }
   try {
     const hash = location.hash || "#/dashboard";
-    if (hash.startsWith("#/company/")) return renderCompanyDetail(hash.split("/")[2]);
-    if (hash === "#/companies") return renderCompanies();
-    if (hash === "#/monitor" || hash === "#/runner") return renderMonitor();
-    if (hash === "#/logs") return renderLogs();
-    if (hash === "#/settings") return renderSettings();
-    return renderDashboard();
+    if (hash.startsWith("#/company/")) return await renderCompanyDetail(hash.split("/")[2]);
+    if (hash === "#/companies") return await renderCompanies();
+    if (hash === "#/monitor" || hash === "#/runner") return await renderMonitor();
+    if (hash === "#/logs") return await renderLogs();
+    if (hash === "#/settings") return await renderSettings();
+    return await renderDashboard();
   } catch (error) {
     app.innerHTML = `<div class="card"><h1 class="danger-text">Request failed</h1><p>${escapeHtml(error.message)}</p></div>`;
   }
