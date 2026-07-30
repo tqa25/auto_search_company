@@ -3,6 +3,8 @@ from openpyxl.styles import Font, Border, Side, Alignment, PatternFill
 import logging
 from typing import List, Dict, Optional
 
+from src.company_matcher import extract_province_from_address
+
 logger = logging.getLogger(__name__)
 
 class ExcelReader:
@@ -419,19 +421,20 @@ class ExcelWriter:
                 return "0" + digits[2:]
             return digits
 
-        def clean_phone(phone_str):
+        def raw_phone_parts(phone_str):
             if not phone_str:
                 return []
             phone_str = str(phone_str).strip()
-
             collapsed = re.sub(r"[\s/|,;._-]+", "", phone_str).lower()
             if collapsed in {"", "na", "none", "null", "khongcongkhai"}:
                 return []
-
             for sep in [',', ';', '|', '/', '\n']:
                 phone_str = phone_str.replace(sep, ',')
+            return [p.strip() for p in phone_str.split(',') if p and p.strip()]
+
+        def clean_phone(phone_str):
             parts = []
-            for p in phone_str.split(','):
+            for p in raw_phone_parts(phone_str):
                 cleaned = normalize_phone(p)
                 cleaned_compact = re.sub(r"\s+", "", cleaned).lower()
                 if cleaned_compact in {"", "na", "none", "null", "khongcongkhai"}:
@@ -442,6 +445,37 @@ class ExcelWriter:
                     continue
                 parts.append(cleaned)
             return parts
+
+        def classify_phone_parts(phone_str):
+            vn_phones = []
+            foreign_phones = []
+            for raw in raw_phone_parts(phone_str):
+                cleaned = normalize_phone(raw)
+                digits = re.sub(r"\D", "", str(raw))
+                raw_text = str(raw).strip()
+                if not cleaned or cleaned in {"—", "-"}:
+                    continue
+                is_vn = (
+                    cleaned.startswith("0") and len(cleaned) in (10, 11)
+                ) or raw_text.startswith("+84") or digits.startswith("0084") or digits.startswith("84")
+                is_foreign = (raw_text.startswith("+") and not raw_text.startswith("+84")) or (
+                    digits.startswith("00") and not digits.startswith("0084")
+                )
+                if is_vn:
+                    vn_phones.append(cleaned)
+                elif is_foreign:
+                    foreign_phones.append(cleaned)
+            return vn_phones, foreign_phones
+
+        foreign_tld_suffixes = (
+            ".jp", ".kr", ".cn", ".sg", ".de", ".uk", ".co.uk", ".fr", ".it",
+            ".es", ".nl", ".au", ".ca", ".us", ".tw", ".hk", ".my", ".th",
+            ".id", ".in", ".br", ".mx", ".ru", ".pl", ".se", ".ch",
+        )
+
+        def is_foreign_domain(domain):
+            domain = str(domain or "").lower()
+            return any(domain == suffix.lstrip(".") or domain.endswith(suffix) for suffix in foreign_tld_suffixes)
 
         def clean_email(email_str):
             if not email_str:
@@ -467,8 +501,10 @@ class ExcelWriter:
                 parts.append(cleaned)
             return parts
 
+        unreliable_source_marker = "[old or unreliable source]"
+
         def extract_domain(url, default="Unknown"):
-            if not url or url == '—':
+            if not url or url == '—' or url == unreliable_source_marker:
                 return default
             try:
                 if isinstance(url, dict):
@@ -518,7 +554,7 @@ class ExcelWriter:
                 url = source_url_value(source)
                 if url:
                     return url
-            return "—"
+            return unreliable_source_marker
 
         def write_text_cell(ws, row, column, value, border=None, alignment=None):
             if value is None or value == "":
@@ -547,6 +583,21 @@ class ExcelWriter:
         official_domain_stats = defaultdict(lambda: {"pages": set(), "phone_pages": set()})
         companies_with_phone = set()
         inactive_skipped_count = 0
+        foreign_exclusions = []
+        companies_with_foreign_only = set()
+        foreign_urls_skipped_before_scrape = 0
+        if hasattr(db, "fetch_one"):
+            row = db.fetch_one(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM filtered_links
+                WHERE should_scrape = 0
+                  AND (reason LIKE 'foreign_tld_skip:%'
+                       OR reason LIKE 'name_overmatch_skip:%'
+                       OR reason LIKE '%weak_vietnam_identity%')
+                """
+            ) or {}
+            foreign_urls_skipped_before_scrape = row.get("cnt", 0) or 0
 
         for company in companies:
             cid = company['id']
@@ -570,88 +621,121 @@ class ExcelWriter:
                 time_data.get('started_at')
             )
 
-            phones_with_source = []
-            seen_phones_for_company = set()
-            emails = set()
-            addresses = []
-            websites = []
+            source_rows = []
+            company_foreign_contacts = False
+
+            def append_source_rows(phone_values, address, email, website, domain, source_url, source_step, result_date):
+                address = address.strip() if isinstance(address, str) and address.strip() else "—"
+                province = extract_province_from_address(address) if address != "—" else None
+                province = province if province else "—"
+
+                email_values = clean_email(email)
+                email_value = ", ".join(email_values) if email_values else "—"
+                website_value = website.strip() if isinstance(website, str) and website.strip() else "—"
+
+                if phone_values:
+                    for phone in phone_values:
+                        companies_with_phone.add(cid)
+                        source_rows.append([
+                            c_name, vn_name, t_code, result_date,
+                            business_status, business_status_category, business_status_source_url,
+                            address, province, phone, domain, source_url, source_step,
+                            email_value, website_value, status_display,
+                        ])
+                elif any(value != "—" for value in [address, email_value, website_value]):
+                    source_rows.append([
+                        c_name, vn_name, t_code, result_date,
+                        business_status, business_status_category, business_status_source_url,
+                        address, province, "—", domain, source_url, source_step,
+                        email_value, website_value, status_display,
+                    ])
 
             for gr in gemini_results:
-                if gr.get('phone'):
-                    phones = clean_phone(gr['phone'])
-                    if phones:
-                        source_url = first_gemini_source_url(gr)
-                        domain = extract_domain(source_url, default="—")
-                        result_date = format_result_date(gr.get('created_at'), fallback_result_date)
-                        phones_with_source.append((phones, domain, source_url, "Gemini Quick", result_date))
-                if gr.get('email'):
-                    emails.update(clean_email(gr['email']))
-                if gr.get('address') and gr['address'] != '—':
-                    addresses.append(gr['address'].strip())
-                if gr.get('website') and gr['website'] != '—':
-                    websites.append(gr['website'].strip())
+                source_url = first_gemini_source_url(gr)
+                domain = extract_domain(source_url, default="—")
+                result_date = format_result_date(gr.get('created_at'), fallback_result_date)
+                phones, foreign_phones = classify_phone_parts(gr.get('phone')) if gr.get('phone') else ([], [])
+                if foreign_phones:
+                    company_foreign_contacts = True
+                    foreign_exclusions.append({
+                        "company_name": c_name,
+                        "tax_code": t_code,
+                        "domain": domain,
+                        "source_url": source_url,
+                        "reason": "foreign_phone_only" if not phones else "foreign_phone_excluded",
+                        "phones": ", ".join(foreign_phones),
+                    })
+                append_source_rows(
+                    phones,
+                    gr.get('address'),
+                    gr.get('email'),
+                    gr.get('website'),
+                    domain,
+                    source_url,
+                    "Gemini Quick",
+                    result_date,
+                )
 
             for row in deep_scrape_data:
                 source_url = row.get('source_url') or row.get('search_url') or '—'
                 domain = extract_domain(source_url, default="Unknown")
                 source_type = row.get('scrape_source_type') or row.get('filter_source_type')
-                row_phones = clean_phone(row.get('phone')) if row.get('phone') else []
+                row_phones, foreign_phones = classify_phone_parts(row.get('phone')) if row.get('phone') else ([], [])
+                foreign_domain = is_foreign_domain(domain)
+                exclude_row = foreign_domain or (foreign_phones and not row_phones)
+                if exclude_row:
+                    company_foreign_contacts = True
+                    reason = "foreign_domain_scraped" if foreign_domain else "foreign_phone_only"
+                    foreign_exclusions.append({
+                        "company_name": c_name,
+                        "tax_code": t_code,
+                        "domain": domain,
+                        "source_url": source_url,
+                        "reason": reason,
+                        "phones": ", ".join(foreign_phones),
+                    })
+                    continue
+                if foreign_phones:
+                    company_foreign_contacts = True
+                    foreign_exclusions.append({
+                        "company_name": c_name,
+                        "tax_code": t_code,
+                        "domain": domain,
+                        "source_url": source_url,
+                        "reason": "foreign_phone_excluded",
+                        "phones": ", ".join(foreign_phones),
+                    })
                 if source_type == 'official_website' and row.get('scrape_status') == 'success' and domain != 'Unknown':
                     official_domain_stats[domain]["pages"].add(source_url)
                     if row_phones:
                         official_domain_stats[domain]["phone_pages"].add(source_url)
-                if row_phones:
-                    result_date = format_result_date(row.get('timestamp'), fallback_result_date)
-                    phones_with_source.append((row_phones, domain, source_url, "Deep Scrape", result_date))
-                if row.get('email'):
-                    emails.update(clean_email(row['email']))
-                if row.get('address') and row['address'] != '—':
-                    addresses.append(row['address'].strip())
-                if row.get('website') and row['website'] != '—':
-                    websites.append(row['website'].strip())
+                result_date = format_result_date(row.get('timestamp'), fallback_result_date)
+                append_source_rows(
+                    row_phones,
+                    row.get('address'),
+                    row.get('email'),
+                    row.get('website'),
+                    domain,
+                    source_url,
+                    "Deep Scrape",
+                    result_date,
+                )
 
-            email_list = sorted(list(emails))
-            best_email = ", ".join(email_list) if email_list else "—"
-
-            best_address = "—"
-            if addresses:
-                valid_addresses = [a for a in addresses if a and a != '—']
-                if valid_addresses:
-                    best_address = max(valid_addresses, key=len)
-
-            best_website = "—"
-            if websites:
-                valid_sites = [w for w in websites if w and w != '—']
-                if valid_sites:
-                    best_website = valid_sites[0]
-
-            base_row = [
-                c_name, vn_name, t_code, fallback_result_date,
-                business_status, business_status_category, business_status_source_url,
-                best_address,
-            ]
-            tail_row = [best_email, best_website, status_display]
-
-            if not phones_with_source:
-                flattened_rows.append(base_row + ['—', '—', '—', '—'] + tail_row)
+            if not source_rows:
+                if company_foreign_contacts:
+                    companies_with_foreign_only.add(cid)
+                flattened_rows.append([
+                    c_name, vn_name, t_code, fallback_result_date,
+                    business_status, business_status_category, business_status_source_url,
+                    "—", "—", "—", "—", "—", "—", "—", "—", status_display,
+                ])
             else:
-                for phones, domain, url, source_step, result_date in phones_with_source:
-                    for phone in phones:
-                        if phone in seen_phones_for_company:
-                            continue
-                        seen_phones_for_company.add(phone)
-                        companies_with_phone.add(cid)
-                        flattened_rows.append([
-                            c_name, vn_name, t_code, result_date,
-                            business_status, business_status_category, business_status_source_url,
-                            best_address, phone, domain, url, source_step,
-                            best_email, best_website, status_display,
-                        ])
+                flattened_rows.extend(source_rows)
 
         headers = [
             "Company Name", "Vietnamese Name", "Tax Code", "Result Date",
             "Business Status", "Business Status Category", "Business Status Source URL",
-            "Address", "Phone", "Source Domain", "Source URL", "Source Step",
+            "Address", "Province", "Phone", "Source Domain", "Source URL", "Source Step",
             "Email", "Website", "Status",
         ]
 
@@ -688,7 +772,7 @@ class ExcelWriter:
         write_text_cell(ws_summary, 1, 2, "Value").font = Font(bold=True)
 
         total_companies = len(companies)
-        total_phones = len([row for row in flattened_rows if row[8] != '—'])
+        total_phones = len([row for row in flattened_rows if row[9] != '—'])
         phone_coverage = (len(companies_with_phone) / total_companies * 100) if total_companies else 0
         min_sample_size = 3
         summary_rows = [
@@ -696,6 +780,9 @@ class ExcelWriter:
             ("Total Phone Numbers", total_phones),
             ("Phone Coverage Rate", f"{phone_coverage:.2f}%"),
             ("Companies Skipped By Inactive Status", inactive_skipped_count),
+            ("Foreign URLs Skipped Before Scrape", foreign_urls_skipped_before_scrape),
+            ("Scraped Pages Excluded From Report", len(foreign_exclusions)),
+            ("Companies With Only Foreign Contact", len(companies_with_foreign_only)),
             ("Official Domains Minimum Sample Size", min_sample_size),
         ]
         for idx, (metric, value) in enumerate(summary_rows, start=2):
@@ -731,8 +818,38 @@ class ExcelWriter:
             write_text_cell(ws_summary, current_sum_row, 4, f"{rate * 100:.2f}%")
             current_sum_row += 1
 
+        current_sum_row += 2
+        write_text_cell(ws_summary, current_sum_row, 1, "Foreign Exclusions").font = Font(bold=True)
+        current_sum_row += 1
+        for col_idx, header in enumerate(["Company", "Tax Code", "Domain", "Reason", "Phones", "Source URL"], start=1):
+            write_text_cell(ws_summary, current_sum_row, col_idx, header).font = Font(bold=True)
+        current_sum_row += 1
+        for item in foreign_exclusions[:50]:
+            write_text_cell(ws_summary, current_sum_row, 1, item.get("company_name"))
+            write_text_cell(ws_summary, current_sum_row, 2, item.get("tax_code"))
+            write_text_cell(ws_summary, current_sum_row, 3, item.get("domain"))
+            write_text_cell(ws_summary, current_sum_row, 4, item.get("reason"))
+            write_text_cell(ws_summary, current_sum_row, 5, item.get("phones"))
+            write_text_cell(ws_summary, current_sum_row, 6, item.get("source_url"))
+            current_sum_row += 1
+
+        ws_foreign = wb.create_sheet(title="Foreign Exclusions")
+        for col_idx, header in enumerate(["Company", "Tax Code", "Domain", "Reason", "Phones", "Source URL"], start=1):
+            cell = write_text_cell(ws_foreign, 1, col_idx, header)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        for row_idx, item in enumerate(foreign_exclusions, start=2):
+            write_text_cell(ws_foreign, row_idx, 1, item.get("company_name"), border=thin_border)
+            write_text_cell(ws_foreign, row_idx, 2, item.get("tax_code"), border=thin_border)
+            write_text_cell(ws_foreign, row_idx, 3, item.get("domain"), border=thin_border)
+            write_text_cell(ws_foreign, row_idx, 4, item.get("reason"), border=thin_border)
+            write_text_cell(ws_foreign, row_idx, 5, item.get("phones"), border=thin_border)
+            write_text_cell(ws_foreign, row_idx, 6, item.get("source_url"), border=thin_border)
+        for col_idx in range(1, 7):
+            ws_foreign.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 24
+
         for row_idx in range(1, current_sum_row):
-            for col_idx in range(1, 5):
+            for col_idx in range(1, 7):
                 ws_summary.cell(row=row_idx, column=col_idx).border = thin_border
 
         for col in ws1.columns:

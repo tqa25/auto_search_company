@@ -18,4 +18,9 @@ assert.deepEqual(
   ["ABC COMPANY"],
 );
 
+assert.deepEqual(
+  parseCompanyImportText(`company name,tax code\nABC COMPANY,0123456789\n`, "companies.csv"),
+  [{ name: "ABC COMPANY", tax_code: "0123456789" }],
+);
+
 console.log("company import parser tests passed");

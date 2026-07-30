@@ -15,7 +15,6 @@ import json
 import time
 import logging
 import re
-from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict
 
 from google import genai
@@ -24,12 +23,10 @@ from dotenv import load_dotenv
 
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
+from src.time_utils import vn_date_str, vn_now, vn_timestamp
 
-load_dotenv()
+load_dotenv(override=True)
 logger = logging.getLogger(__name__)
-
-# Vietnam timezone (UTC+7)
-VN_TZ = timezone(timedelta(hours=7))
 
 
 class GeminiQuickSearch:
@@ -68,7 +65,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
 
     def _get_today_str(self) -> str:
         """Return today's date string in VN timezone (YYYY-MM-DD)."""
-        return datetime.now(VN_TZ).strftime("%Y-%m-%d")
+        return vn_date_str()
 
     def _get_quota_used_today(self) -> int:
         """Return the number of Gemini grounding requests used today."""
@@ -84,11 +81,11 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
         today = self._get_today_str()
         self.db.execute_query(
             """INSERT INTO daily_quota (date, gemini_grounding_used, updated_at)
-               VALUES (?, 1, CURRENT_TIMESTAMP)
+               VALUES (?, 1, ?)
                ON CONFLICT(date) DO UPDATE SET
                    gemini_grounding_used = gemini_grounding_used + 1,
-                   updated_at = CURRENT_TIMESTAMP""",
-            (today,)
+                   updated_at = excluded.updated_at""",
+            (today, vn_timestamp())
         )
 
     def _check_quota(self) -> bool:
@@ -145,7 +142,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             raw_request={"company_name": company_name, "model": self.config.AI_GROUNDING_MODEL}
         )
 
-        started_at = datetime.now(VN_TZ)
+        started_at = vn_now()
         start_time = time.time()
 
         try:
@@ -199,7 +196,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
                     )
 
             duration = time.time() - start_time
-            finished_at = datetime.now(VN_TZ)
+            finished_at = vn_now()
 
             # Increment quota
             self._increment_quota()
@@ -373,8 +370,8 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
                (company_id, core_name, core_name_vi, abbreviation, address, phone, email,
                 website, tax_code, fax, representative, confidence, sources_json,
                 grounding_sources_json, input_tokens, output_tokens, total_tokens,
-                duration_seconds, is_sufficient, fallback_reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                duration_seconds, is_sufficient, fallback_reason, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (company_id,
              parsed.get("core_name"), parsed.get("core_name_vi"),
              parsed.get("abbreviation"), parsed.get("address"),
@@ -385,7 +382,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
              json.dumps(parsed.get("sources", []), ensure_ascii=False),
              json.dumps(grounding_sources, ensure_ascii=False),
              input_tokens, output_tokens, total_tokens,
-             round(duration, 2), is_sufficient, fallback_reason)
+             round(duration, 2), is_sufficient, fallback_reason, vn_timestamp())
         )
 
     def _update_company(self, company_id, parsed):
@@ -395,8 +392,6 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             updates["vietnamese_name"] = parsed["core_name_vi"]
         if parsed.get("tax_code"):
             updates["tax_code"] = parsed["tax_code"]
-        if parsed.get("address"):
-            updates["address"] = parsed["address"]
         if updates:
             self.db.update_company(company_id, **updates)
 
@@ -404,7 +399,7 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
         """Save extracted contact to extracted_contacts table. One record per source URL."""
         sources = parsed.get("sources", [])
         if not sources:
-            sources = ["unknown"]
+            sources = ["[old or unreliable source]"]
         else:
             sources = sources[:3] # keep max 3 to avoid spam
             
@@ -412,15 +407,16 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
             self.db.execute_query(
                 """INSERT INTO extracted_contacts
                    (company_id, source_type, source_url, address, phone, email, website,
-                    fax, representative, raw_ai_response, confidence_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    fax, representative, raw_ai_response, confidence_score, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (company_id, "gemini_grounding",
                  source_url,
                  parsed.get("address"), parsed.get("phone"),
                  parsed.get("email"), parsed.get("website"),
                  parsed.get("fax"), parsed.get("representative"),
                  json.dumps(parsed, ensure_ascii=False),
-                 parsed.get("confidence", 0))
+                 parsed.get("confidence", 0),
+                 vn_timestamp())
             )
 
     def _empty_result(self, reason: str) -> Dict:

@@ -3,7 +3,7 @@ import unittest
 import asyncio
 import json
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 os.environ["DB_PATH"] = "data/test_dashboard_company_data.db"
 os.environ["DASHBOARD_PASS"] = ""
@@ -53,13 +53,25 @@ class TestDashboardImportFilters(unittest.TestCase):
                 "INSERT INTO search_results (company_id, search_query, url) VALUES (?, ?, ?)",
                 (company_id, f"query-{index}", f"https://example{index}.com"),
             )
+            # Insert under a distinct seed namespace, then rename to the link_id
+            # scheme the scraped_pages use. The seed URL must not collide with any
+            # example{id}.com, otherwise insert_filtered_link's (company, url) dedup
+            # would fold two rows together.
             link_id = self.db.insert_filtered_link(
                 search_result_id=sr_id,
                 company_id=company_id,
-                url=f"https://example{index}.com",
+                url=f"https://seed{index}.example.test",
                 source_type="official_website",
                 should_scrape=True,
                 reason="test",
+            )
+            # The completion audit matches scraped_pages to candidates by URL (in
+            # production scraped_pages.url == filtered_links.url). These tests insert
+            # scraped_pages keyed on the link_id, so align the filtered link URL to
+            # the same scheme.
+            self.db.execute_query(
+                "UPDATE filtered_links SET url = ? WHERE id = ?",
+                (f"https://example{link_id}.com", link_id),
             )
             self.db.update_filtered_link_score(link_id, 100 - index)
             link_ids.append(link_id)
@@ -95,6 +107,31 @@ class TestDashboardImportFilters(unittest.TestCase):
         ))
         self.assertEqual(ids_payload["count"], 1)
         self.assertEqual(len(ids_payload["company_ids"]), 1)
+
+    def test_reported_status_api_filters_reported_and_unreported(self):
+        first_id = self.db.insert_company("Report A")
+        second_id = self.db.insert_company("Report B")
+
+        response = asyncio.run(dashboard_app.api_spa_companies_report_status(
+            FakeJsonRequest({"company_ids": [first_id], "action": "mark", "report_window": "today"})
+        ))
+        payload = response_json(response)
+        self.assertEqual(payload["marked"], 1)
+
+        reported = response_json(dashboard_app.api_spa_companies(report_state="reported"))["companies"]
+        unreported = response_json(dashboard_app.api_spa_companies(report_state="unreported"))["companies"]
+
+        self.assertIn(first_id, [row["id"] for row in reported])
+        self.assertNotIn(second_id, [row["id"] for row in reported])
+        self.assertIn(second_id, [row["id"] for row in unreported])
+        self.assertTrue(next(row for row in reported if row["id"] == first_id)["is_reported"])
+
+        response = asyncio.run(dashboard_app.api_spa_companies_report_status(
+            FakeJsonRequest({"company_ids": [first_id], "action": "unmark"})
+        ))
+        self.assertEqual(response_json(response)["unmarked"], 1)
+        unreported = response_json(dashboard_app.api_spa_companies(report_state="unreported"))["companies"]
+        self.assertIn(first_id, [row["id"] for row in unreported])
 
     def test_import_records_ambiguous_name_only_items_in_batch_view(self):
         existing_id = self.db.insert_company(r"LOCK & LOCK VINA")
@@ -675,6 +712,89 @@ class TestDashboardImportFilters(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(payload["skipped"][0]["reason"], "already_running")
         self.assertEqual(self.db.get_company(company_id)["status"], "scraping")
+
+    def test_company_counts_include_status_breakdown(self):
+        self.db.insert_company("Scraping Count Co", status="scraping")
+        self.db.insert_company("Extracting Count Co", status="extracting")
+        dashboard_app._invalidate_dashboard_cache()
+
+        payload = response_json(dashboard_app.api_spa_companies())
+
+        self.assertEqual(payload["counts"]["by_status"]["scraping"], 1)
+        self.assertEqual(payload["counts"]["by_status"]["extracting"], 1)
+
+    def test_company_ids_complement_selects_outside_current_filter(self):
+        done_id = self.db.insert_company("Done Complement Co", status="done")
+        pending_id = self.db.insert_company("Pending Complement Co", status="pending")
+        scraping_id = self.db.insert_company("Scraping Complement Co", status="scraping")
+
+        payload = response_json(dashboard_app.api_spa_company_ids(status="done", complement=True))
+
+        self.assertEqual(payload["company_ids"], [pending_id, scraping_id])
+        self.assertEqual(payload["count"], 2)
+        self.assertNotIn(done_id, payload["company_ids"])
+
+    def test_runtime_health_marks_worker_env_mismatch(self):
+        self.db.register_pipeline_worker("host-4321-abcdef", status="idle", message="running")
+        with patch.object(dashboard_app, "_iter_runtime_worker_processes", return_value=[{
+            "pid": 4321,
+            "cmdline": "python scripts/pipeline_worker.py --db data/company_data.db",
+            "cwd": "/tmp",
+            "db_path": dashboard_app._normalize_path(dashboard_app.DB_PATH),
+            "firecrawl_key_mask": "oldk...9999",
+        }]):
+            payload = response_json(dashboard_app.api_spa_runtime_health())
+
+        self.assertTrue(payload["has_env_mismatch"])
+        self.assertEqual(payload["db_workers"][0]["pid"], 4321)
+        self.assertTrue(payload["db_workers"][0]["env_mismatch"])
+        self.assertEqual(payload["runtime_processes"][0]["pid"], 4321)
+
+    def test_runtime_health_firecrawl_test_returns_status(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 402
+        mock_response.headers = {"content-type": "application/json"}
+        mock_response.json.return_value = {"error": "insufficient credits"}
+        mock_response.text = '{"error":"insufficient credits"}'
+
+        with patch.object(dashboard_app.requests, "post", return_value=mock_response):
+            response = dashboard_app.api_spa_runtime_health_firecrawl_test()
+        payload = response_json(response)
+
+        self.assertEqual(payload["status_code"], 402)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["message"], "insufficient credits")
+
+    def test_runner_restart_worker_starts_new_process_after_terminating_runtime_workers(self):
+        before = {
+            "runtime_processes": [{"pid": 4321, "firecrawl_key_mask": "oldk...9999"}],
+            "db_workers": [],
+            "worker_online": True,
+            "current_firecrawl_key_mask": "newk...1111",
+            "message": None,
+            "has_env_mismatch": True,
+            "orphaned_db_workers": [],
+        }
+        after = {
+            "runtime_processes": [{"pid": 9876, "firecrawl_key_mask": "newk...1111"}],
+            "db_workers": [],
+            "worker_online": True,
+            "current_firecrawl_key_mask": "newk...1111",
+            "message": None,
+            "has_env_mismatch": False,
+            "orphaned_db_workers": [],
+        }
+        with patch.object(dashboard_app, "_runtime_health_payload", side_effect=[before, after]), \
+             patch.object(dashboard_app, "_terminate_runtime_workers", return_value=[4321]), \
+             patch.object(dashboard_app, "_iter_runtime_worker_processes", return_value=[]), \
+             patch.object(dashboard_app, "_start_worker_process", return_value={"pid": 9876, "message": "started"}):
+            response = dashboard_app.api_spa_runner_restart_worker()
+        payload = response_json(response)
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(payload["stopped_pids"], [4321])
+        self.assertEqual(payload["started_pid"], 9876)
+        self.assertFalse(payload["runtime_health"]["has_env_mismatch"])
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
+from src.time_utils import parse_timestamp_as_vn, vn_date_str
 
 @pytest.fixture
 def db_manager():
@@ -26,6 +27,7 @@ def db_manager():
 
 def test_pipeline_logger(db_manager, caplog):
     logger = PipelineLogger(db_manager)
+    expected_date = vn_date_str()
     
     # Test log_step_start
     log_id = logger.log_step_start(company_id=1, step='SEARCH', source_url="https://google.com")
@@ -35,6 +37,7 @@ def test_pipeline_logger(db_manager, caplog):
     log_record = db_manager.fetch_one("SELECT * FROM pipeline_logs WHERE id=?", (log_id,))
     assert log_record['status'] == 'started'
     assert log_record['step'] == 'SEARCH'
+    assert log_record['started_at'].startswith(expected_date)
     
     # Test log_step_end
     metadata = {'links_found': 10}
@@ -46,6 +49,11 @@ def test_pipeline_logger(db_manager, caplog):
     assert log_record['credits_used'] == 2.5
     assert 'links_found' in log_record['metadata_json']
     assert log_record['duration_seconds'] >= 0
+    assert log_record['finished_at'].startswith(expected_date)
+    assert parse_timestamp_as_vn(log_record['finished_at']) >= parse_timestamp_as_vn(log_record['started_at'])
+
+    jsonl_path = os.path.join('output', 'logs', f'pipeline_{expected_date}.jsonl')
+    assert os.path.exists(jsonl_path)
     
     # Test format check
     assert any("SUCCESS" in record.message for record in caplog.records)

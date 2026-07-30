@@ -138,5 +138,32 @@ class TestLinkFilter(unittest.TestCase):
         self.assertEqual(second_good, 1)
         self.assertIn("masothue.com", seen_domains)
 
+    def test_foreign_cctld_without_vietnam_identity_is_skipped(self):
+        result = self.filter.classify_url(
+            "https://abc.jp/contact",
+            "ABC",
+            title="ABC Japan Contact",
+        )
+        self.assertFalse(result["should_scrape"])
+        self.assertIn("foreign_tld_skip", result["reason"])
+
+    def test_name_overmatch_without_vietnam_identity_is_skipped(self):
+        result = self.filter.classify_url(
+            "https://abcde.com/contact",
+            "ABC",
+            title="ABCDE Contact",
+        )
+        self.assertFalse(result["should_scrape"])
+        self.assertIn("name_overmatch_skip", result["reason"])
+
+    def test_foreign_cctld_with_vietnam_identity_can_scrape(self):
+        result = self.filter.classify_url(
+            "https://abc.sg/vietnam/1234567890-contact",
+            "ABC",
+            title="ABC Vietnam 1234567890",
+            tax_code="1234567890",
+        )
+        self.assertTrue(result["should_scrape"])
+
 if __name__ == '__main__':
     unittest.main()

@@ -342,7 +342,7 @@ def test_consolidated_report_plain_text_domains_steps_and_phone_normalization(tm
     assert headers == [
         "Company Name", "Vietnamese Name", "Tax Code", "Result Date",
         "Business Status", "Business Status Category", "Business Status Source URL",
-        "Address", "Phone", "Source Domain", "Source URL", "Source Step",
+        "Address", "Province", "Phone", "Source Domain", "Source URL", "Source Step",
         "Email", "Website", "Status",
     ]
     assert "Start Time" not in headers
@@ -361,40 +361,41 @@ def test_consolidated_report_plain_text_domains_steps_and_phone_normalization(tm
     grounding = rows["Gemini Grounding Corp"]
     assert grounding[2] == "0123456789"
     assert grounding[3] == "2026-04-01"
-    assert grounding[8] == "02812345678"
-    assert grounding[9] == "masothue.com"
-    assert grounding[10] == "https://www.masothue.com/company/gemini-grounding"
-    assert grounding[11] == "Gemini Quick"
+    assert grounding[8] == "—"
+    assert grounding[9] == "02812345678"
+    assert grounding[10] == "masothue.com"
+    assert grounding[11] == "https://www.masothue.com/company/gemini-grounding"
+    assert grounding[12] == "Gemini Quick"
 
     fallback = rows["Gemini Fallback Corp"]
-    assert fallback[8] == "0901234567"
-    assert fallback[9] == "fallback.vn"
-    assert fallback[10] == "https://www.fallback.vn/contact"
-    assert fallback[11] == "Gemini Quick"
+    assert fallback[9] == "0901234567"
+    assert fallback[10] == "fallback.vn"
+    assert fallback[11] == "https://www.fallback.vn/contact"
+    assert fallback[12] == "Gemini Quick"
 
     no_source = rows["Gemini No Source Corp"]
-    assert no_source[9] == "—"
     assert no_source[10] == "—"
-    assert no_source[11] == "Gemini Quick"
+    assert no_source[11] == "[old or unreliable source]"
+    assert no_source[12] == "Gemini Quick"
 
     deep = rows["Deep Scrape Corp"]
     assert deep[3] == "2026-04-04"
-    assert deep[8] == "0901234567"
-    assert deep[9] == "deep.vn"
-    assert deep[10] == "https://www.deep.vn/contact"
-    assert deep[11] == "Deep Scrape"
+    assert deep[9] == "0901234567"
+    assert deep[10] == "deep.vn"
+    assert deep[11] == "https://www.deep.vn/contact"
+    assert deep[12] == "Deep Scrape"
 
 
     gemini_placeholder = rows["Gemini Placeholder Corp"]
-    assert gemini_placeholder[8] == "—"
     assert gemini_placeholder[9] == "—"
-    assert gemini_placeholder[10] == "—"
-    assert gemini_placeholder[11] == "—"
-    assert gemini_placeholder[12] == "—"
+    assert gemini_placeholder[10] == "placeholder.example.vn"
+    assert gemini_placeholder[11] == "https://placeholder.example.vn/contact"
+    assert gemini_placeholder[12] == "Gemini Quick"
+    assert gemini_placeholder[13] == "—"
 
     deep_placeholder = rows["Deep Placeholder Corp"]
-    assert deep_placeholder[8] == "—"
     assert deep_placeholder[9] == "—"
-    assert deep_placeholder[10] == "—"
-    assert deep_placeholder[11] == "—"
-    assert deep_placeholder[12] == "—"
+    assert deep_placeholder[10] == "placeholder.vn"
+    assert deep_placeholder[11] == "https://www.placeholder.vn/contact"
+    assert deep_placeholder[12] == "Deep Scrape"
+    assert deep_placeholder[13] == "—"

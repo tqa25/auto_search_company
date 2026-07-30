@@ -16,9 +16,10 @@ Dependencies:
 
 import time
 import logging
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+from src.time_utils import vn_iso, vn_now
 
 
 class AdaptiveRateLimiter:
@@ -60,7 +61,7 @@ class AdaptiveRateLimiter:
         self._total_blocks = 0         # HTTP 403/503
         self._total_wait_time = 0.0
         self._delay_changes: list[dict] = []
-        self._created_at = datetime.now()
+        self._created_at = vn_now()
 
     # ------------------------------------------------------------------
     # Core public methods
@@ -157,7 +158,7 @@ class AdaptiveRateLimiter:
                 total_rate_limits, total_blocks, total_wait_time,
                 consecutive_successes, uptime_seconds, delay_changes_count
         """
-        uptime = (datetime.now() - self._created_at).total_seconds()
+        uptime = (vn_now() - self._created_at).total_seconds()
 
         return {
             "current_delay": self._current_delay,
@@ -197,7 +198,7 @@ class AdaptiveRateLimiter:
     def _log_delay_change(self, old_delay: float, new_delay: float, reason: str):
         """Record and log a delay change event."""
         change_record = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": vn_iso(),
             "old_delay": old_delay,
             "new_delay": new_delay,
             "reason": reason,

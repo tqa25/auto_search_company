@@ -28,7 +28,7 @@ import logging
 import requests
 import re
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 
@@ -36,9 +36,10 @@ from src.database import DatabaseManager
 from src.logger import PipelineLogger
 from src.errors import RetryableError, CriticalError, PipelineError
 from src.schemas import validate_search_result
+from src.time_utils import vn_cache_expiry, vn_timestamp
 
-# Load .env file at module level
-load_dotenv()
+# Load .env file at module level and override stale shell exports.
+load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
@@ -146,10 +147,7 @@ class SearchModule:
                 return all_results
         else:
             logger.info(f"[{company_id}] No tax code found. Skipping step 3.")
-            self.db.execute_query(
-                "UPDATE companies SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (company_id,)
-            )
+            self.db.update_company(company_id)
 
         # Step 4: Bare Query
         step4_results = self._step4_bare_query(company_id, company_name, vn_name)
@@ -296,7 +294,6 @@ class SearchModule:
         updates = {}
         if data.get("vn_name"): updates["vietnamese_name"] = data["vn_name"]
         if data.get("tax_code"): updates["tax_code"] = data["tax_code"]
-        if data.get("address"): updates["address"] = data["address"]
         if data.get("source"): updates["vn_data_source"] = data["source"]
         if updates:
             self.db.update_company(company_id, **updates)
@@ -477,20 +474,55 @@ class SearchModule:
                     company_id,
                     {"query": query, "hash": query_hash},
                 )
-                # Retrieve previously saved results for this query
+                # Results this company already has for the query.
                 cached_results = self.db.fetch_all(
                     "SELECT * FROM search_results WHERE search_query = ? AND company_id = ?",
                     (query, company_id),
                 )
-                return cached_results, True
+                if cached_results:
+                    return cached_results, True
+                # The query cache is keyed globally by query hash, but the actual
+                # results live per-company in search_results. When a DIFFERENT
+                # company first cached this query, this company has no rows — a bare
+                # cache hit would return [] and silently starve the pipeline. Copy
+                # one origin company's results across (no new API cost) instead.
+                origin_results = self.db.fetch_all(
+                    """
+                    SELECT * FROM search_results
+                    WHERE search_query = ?
+                      AND company_id = (
+                          SELECT company_id FROM search_results
+                          WHERE search_query = ? ORDER BY company_id LIMIT 1
+                      )
+                    ORDER BY result_rank
+                    """,
+                    (query, query),
+                )
+                if origin_results:
+                    for r in origin_results:
+                        self.db.insert_search_result(
+                            company_id=company_id,
+                            search_query=query,
+                            search_type=r.get("search_type") or "cached",
+                            result_rank=r.get("result_rank") or 0,
+                            url=r.get("url"),
+                            title=r.get("title") or "",
+                            snippet=r.get("snippet") or "",
+                            credits_used=0,  # reused from cache, no new API cost
+                        )
+                    copied = self.db.fetch_all(
+                        "SELECT * FROM search_results WHERE search_query = ? AND company_id = ?",
+                        (query, company_id),
+                    )
+                    return copied, True
+                # Cache row exists but no results survive anywhere → fall through
+                # to a live search rather than returning nothing.
 
         # Live API call
         results = self._firecrawl_search(query, limit=limit)
 
         # Populate query cache
-        expires_at = (
-            datetime.utcnow() + timedelta(days=self.config.CACHE_TTL_DAYS)
-        ).strftime("%Y-%m-%d %H:%M:%S")
+        expires_at = vn_cache_expiry(self.config.CACHE_TTL_DAYS)
         self.db.insert_query_cache(
             query_hash=query_hash,
             query_text=query,

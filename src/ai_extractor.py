@@ -219,6 +219,69 @@ class AIExtractor:
         # Return True if >= 2 keywords found
         return keyword_count >= 2
 
+    def _normalize_evidence_text(self, value: str | None) -> str:
+        if value is None:
+            return ""
+        return re.sub(r"\s+", " ", str(value).strip().lower())
+
+    def _value_supported_by_markdown(self, value: str | None, markdown: str, field: str) -> bool:
+        """Return True only when the extracted value is traceable to this page."""
+        if value is None or str(value).strip() == "":
+            return True
+
+        markdown_text = self._normalize_evidence_text(markdown)
+        value_text = self._normalize_evidence_text(value)
+        if not markdown_text or not value_text:
+            return False
+
+        if field in {"phone", "fax"}:
+            value_digits = re.sub(r"\D", "", str(value))
+            markdown_digits = re.sub(r"\D", "", markdown)
+            return bool(value_digits) and value_digits in markdown_digits
+
+        if field == "email":
+            emails = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", str(value))
+            return all(email.lower() in markdown_text for email in emails) if emails else value_text in markdown_text
+
+        if field == "website":
+            parsed = urlparse(str(value).strip())
+            candidates = [value_text]
+            if parsed.netloc:
+                candidates.append(parsed.netloc.lower().removeprefix("www."))
+            return any(candidate and candidate in markdown_text for candidate in candidates)
+
+        return value_text in markdown_text
+
+    def _filter_values_to_page_markdown(self, values: dict, markdown: str, company_id: int, source_url: str) -> dict:
+        filtered = dict(values)
+        for field in ["address", "phone", "email", "website", "fax", "representative"]:
+            value = filtered.get(field)
+            if not value:
+                continue
+
+            if field in {"phone", "fax"}:
+                kept_parts = []
+                for part in re.split(r"[,;|/\n]+", str(value)):
+                    part = part.strip()
+                    if part and self._value_supported_by_markdown(part, markdown, field):
+                        kept_parts.append(part)
+                if kept_parts:
+                    filtered[field] = ", ".join(kept_parts)
+                    continue
+            elif self._value_supported_by_markdown(value, markdown, field):
+                continue
+
+            self.logger.logger.warning(
+                f"Suppressing {field} for {source_url}: value is not present in the page markdown"
+            )
+            self.logger.log_event(
+                "extracted_field_suppressed",
+                company_id,
+                {"field": field, "source_url": source_url, "reason": "not_in_page_markdown"},
+            )
+            filtered[field] = None
+        return filtered
+
     def _batch_short_pages(self, pages: list[dict], max_chars: int = 5000) -> list[list[dict]]:
         """
         Batch multiple short pages into single API calls.
@@ -385,6 +448,26 @@ class AIExtractor:
                         elif var == "fax": fax = None
                         elif var == "representative": representative = None
 
+                supported_values = self._filter_values_to_page_markdown(
+                    {
+                        "address": address,
+                        "phone": phone,
+                        "email": email,
+                        "website": website,
+                        "fax": fax,
+                        "representative": representative,
+                    },
+                    markdown_content,
+                    company_id,
+                    source_url,
+                )
+                address = supported_values["address"]
+                phone = supported_values["phone"]
+                email = supported_values["email"]
+                website = supported_values["website"]
+                fax = supported_values["fax"]
+                representative = supported_values["representative"]
+
                 phone_allowed, mismatch_reason = self._masothue_phone_allowed(
                     company_record, source_type, source_url, markdown_content
                 )
@@ -461,198 +544,6 @@ class AIExtractor:
         self.logger.log_step_end(log_id, "FAILED", error_message="max_retries reached")
         return {"status": "failed", "reason": "max_retries"}
 
-    def _extract_batch(self, batch_pages: list[dict], company_id: int, company_name: str) -> dict:
-        """
-        Sub-task C: Extract from multiple pages as a single batch.
-        Returns merged contact info from all pages in batch.
-        """
-        if not batch_pages:
-            return {"status": "skipped", "reason": "empty_batch"}
-
-        # Build markdown content with page headers
-        markdown_parts = []
-        page_urls = []
-        for idx, page in enumerate(batch_pages, 1):
-            markdown = page.get('markdown_content', '') or ''
-            url = page.get('url', 'unknown')
-            page_urls.append(url)
-            markdown_parts.append(f"Trang {idx} (từ {url}):\n{markdown}")
-
-        batch_markdown = "\n\n---TRANG MỚI---\n\n".join(markdown_parts)
-
-        # Truncate if too long
-        if len(batch_markdown) > 30000:
-            self.logger.logger.warning(f"Batch markdown too long, truncating to 30,000 chars.")
-            batch_markdown = batch_markdown[:30000]
-
-        prompt = self.BATCH_EXTRACTION_PROMPT_TEMPLATE.replace(
-            "{company_name}", company_name
-        ).replace(
-            "{markdown_content}", batch_markdown
-        )
-
-        log_id = self.logger.log_step_start(company_id, "AI_EXT_BATCH", source_url=",".join(page_urls), source_name="batch")
-
-        attempt = 0
-        max_retries = 3
-        current_model = self.config.AI_EXTRACTOR_MODEL
-        fallback_used = False
-
-        while attempt < max_retries:
-            try:
-                self.logger.logger.info(f"Calling Gemini API ({current_model}) for batch extraction ({len(batch_pages)} pages)...")
-
-                response = self.client.models.generate_content(
-                    model=current_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.1,
-                        response_mime_type="application/json"
-                    )
-                )
-                raw_response = response.text
-
-                # Parse JSON
-                try:
-                    data = json.loads(raw_response)
-                except json.JSONDecodeError:
-                    clean_text = raw_response.strip()
-                    if clean_text.startswith("```json"):
-                        clean_text = clean_text[7:]
-                    if clean_text.endswith("```"):
-                        clean_text = clean_text[:-3]
-
-                    try:
-                        data = json.loads(clean_text)
-                    except json.JSONDecodeError:
-                        self.logger.logger.warning(f"Failed to parse JSON for batch")
-                        for page in batch_pages:
-                            self._record_domain_stat(page.get('url', ''), False)
-                        self.logger.log_step_end(log_id, "FAILED", error_message="json_parse_error", error_category="skippable")
-                        return {"status": "failed", "reason": "json_parse_error", "confidence": 0.0}
-
-                # Successfully parsed - store result for each page in batch
-                address = data.get("address")
-                phone = data.get("phone")
-                email = data.get("email")
-                website = data.get("website")
-                fax = data.get("fax")
-                representative = data.get("representative")
-                try:
-                    confidence = float(data.get("confidence", 0.0))
-                except (ValueError, TypeError):
-                    confidence = 0.0
-
-                first_page = batch_pages[0]
-                # Check low confidence threshold
-                if confidence < self.config.MIN_CONFIDENCE_THRESHOLD:
-                    self.logger.logger.warning(f"Low confidence extraction for batch: confidence={confidence} < threshold={self.config.MIN_CONFIDENCE_THRESHOLD}")
-                    low_conf_data = {
-                        "page_ids": [p['id'] for p in batch_pages],
-                        "source_type": first_page.get('source_type', 'batch'),
-                        "confidence": confidence,
-                        "threshold": self.config.MIN_CONFIDENCE_THRESHOLD
-                    }
-                    self.logger.log_event("low_confidence_extraction", company_id, low_conf_data)
-
-                # Normalize null strings
-                for var, val in [("address", address), ("phone", phone), ("email", email),
-                                 ("website", website), ("fax", fax), ("representative", representative)]:
-                    if str(val).lower() == "null" or str(val).lower() == "none" or val == "":
-                        if var == "address": address = None
-                        elif var == "phone": phone = None
-                        elif var == "email": email = None
-                        elif var == "website": website = None
-                        elif var == "fax": fax = None
-                        elif var == "representative": representative = None
-
-                # Store result for EACH page in batch to mark them as processed
-                company_record = self.db.get_company(company_id)
-                for page in batch_pages:
-                    source_type = page.get('source_type', 'batch')
-                    source_url = page.get('url', 'batch')
-                    page_phone = phone
-                    phone_allowed, mismatch_reason = self._masothue_phone_allowed(
-                        company_record, source_type, source_url, page.get('markdown_content', '') or ''
-                    )
-                    if page_phone and not phone_allowed:
-                        self.logger.logger.warning(f"Suppressing masothue phone for page {page['id']}: {mismatch_reason}")
-                        self.logger.log_event("masothue_phone_suppressed", company_id, {"reason": mismatch_reason, "source_url": source_url})
-                        page_phone = None
-
-                    self.db.insert_extracted_contact(
-                        company_id=company_id,
-                        scraped_page_id=page['id'],
-                        source_type=source_type,
-                        source_url=source_url,
-                        address=address,
-                        phone=page_phone,
-                        email=email,
-                        website=website,
-                        fax=fax,
-                        representative=representative,
-                        raw_ai_response=raw_response,
-                        confidence_score=confidence
-                    )
-
-                extracted_fields_list = []
-                if address: extracted_fields_list.append("address")
-                if phone: extracted_fields_list.append("phone")
-                if email: extracted_fields_list.append("email")
-                if website: extracted_fields_list.append("website")
-                if representative: extracted_fields_list.append("rep")
-
-                has_contacts = len(extracted_fields_list) > 0
-                for page in batch_pages:
-                    self._record_domain_stat(page.get('url', ''), has_contacts)
-
-                metadata = {
-                    "extracted_fields": ",".join(extracted_fields_list) if extracted_fields_list else "none",
-                    "batch_size": len(batch_pages)
-                }
-                self.logger.log_step_end(log_id, "SUCCESS", data_saved=True, metadata=metadata)
-
-                return {
-                    "status": "success",
-                    "extracted_fields": data,
-                    "confidence": confidence,
-                    "batch_size": len(batch_pages)
-                }
-
-            except Exception as e:
-                error_msg = str(e)
-                # 1. Critical cases: 429 / Quota exceeded
-                if "429" in error_msg or "quota exceeded" in error_msg.lower():
-                    self.logger.logger.error("Gemini API Rate Limit/Quota Exceeded (429/Quota)! Stop processing.")
-                    self.logger.log_step_end(log_id, "FAILED", error_message="Rate Limit/Quota Exceeded", error_category="critical")
-                    raise CriticalError("Gemini API quota exceeded or rate limit hit. Stop pipeline.")
-
-                # 2. Transient/Retryable cases: 503 / Unavailable / experiencing high demand
-                if "503" in error_msg or "unavailable" in error_msg.lower() or "experiencing high demand" in error_msg.lower():
-                    attempt += 1
-                    if attempt < max_retries:
-                        self.logger.logger.warning(f"Gemini API experiencing high demand (503/Unavailable). Retrying in 60s... (Attempt {attempt}/{max_retries})")
-                        time.sleep(60)
-                        continue
-                    elif not fallback_used:
-                        self.logger.logger.warning("Gemini API 503 retries exhausted. Attempting fallback to models/gemini-3.5-flash...")
-                        fallback_used = True
-                        current_model = "models/gemini-3.5-flash"
-                        attempt = 0
-                        continue
-                    else:
-                        self.logger.log_step_end(log_id, "FAILED", error_message="Gemini API 503 fallback failed", error_category="retryable")
-                        raise RetryableError(f"Gemini API 503 unavailable after {max_retries} retries and fallback")
-
-                # 3. Other unknown errors: skip this company
-                self.logger.logger.error(f"Gemini API error: {error_msg}")
-                category = e.category if isinstance(e, PipelineError) else "unknown"
-                self.logger.log_step_end(log_id, "FAILED", error_message=error_msg[:100], error_category=category)
-                raise SkippableError(f"AI extraction error: {error_msg[:100]}")
-
-        self.logger.log_step_end(log_id, "FAILED", error_message="max_retries reached")
-        return {"status": "failed", "reason": "max_retries"}
-
     def extract_for_company(self, company_id: int, delay_seconds: float = 4.0) -> list[dict]:
         """Extracts data for all valid scraped pages of a single company."""
         # Note: We fetch 'success' scraped pages for this company
@@ -682,27 +573,12 @@ class AIExtractor:
 
         scraped_pages.sort(key=lambda x: get_priority(x['source_type']))
 
-        # Apply Batching optimization
-        batches = self._batch_short_pages(scraped_pages)
-        
         results = []
-        processed_count = 0
-        for batch in batches:
-            if len(batch) == 1:
-                page = batch[0]
-                res = self.extract_from_page(page['id'])
-                results.append(res)
-                processed_count += 1
-                i = processed_count - 1
-            else:
-                res = self._extract_batch(batch, company_id, company_name)
-                results.append(res)
-                processed_count += len(batch)
-                i = processed_count - 1
+        for i, page in enumerate(scraped_pages):
+            res = self.extract_from_page(page['id'])
+            results.append(res)
 
-
-
-            # Since Gemini free tier is 15 RPM, we need to respect the delay between calls
+            # Each AI call now processes exactly one URL so saved fields stay URL-attributed.
             if i < len(scraped_pages) - 1 and res.get('status') == 'success':
                 time.sleep(delay_seconds)
 

@@ -1,8 +1,9 @@
 import logging
 from typing import List, Dict, Optional
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+from src.time_utils import vn_date_str
 
 class ResultAggregator:
     """Aggregates extracted contact data for reporting."""
@@ -63,7 +64,7 @@ class ResultAggregator:
             "sources": sources,
             "has_data": len(sources) > 0,
             "total_sources": len(sources),
-            "collection_date": datetime.now().strftime("%Y-%m-%d"),
+            "collection_date": vn_date_str(),
             "pipeline_status_db": company.get("status"),
             "pipeline_status_summary": pipeline_status_summary,
             "step_details": step_details

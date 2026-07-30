@@ -23,10 +23,15 @@ def _latest_activity(db, company_id: int) -> dict[str, Any]:
 
 
 def _top_scrape_candidate_rows(db, company_id: int) -> list[dict[str, Any]]:
+    # Candidates and scrape results are keyed by URL (not filtered_link_id):
+    # filtered_links are re-inserted on every pipeline run, so the same URL can
+    # have many rows, while scraped_pages / the scrape cache only record one row
+    # per URL. Matching by filtered_link_id would mark every duplicate row as
+    # "missing" and make strict completion unreachable. See time-utils/dedup fix.
     return db.fetch_all(
         """
         SELECT
-            fl.id AS filtered_link_id,
+            fl.filtered_link_id,
             fl.url,
             fl.source_type,
             fl.relevance_score,
@@ -35,24 +40,37 @@ def _top_scrape_candidate_rows(db, company_id: int) -> list[dict[str, Any]]:
             latest.credits_used AS latest_credits_used,
             latest.created_at AS latest_created_at
         FROM (
-            SELECT *
+            SELECT
+                url,
+                MIN(id) AS filtered_link_id,
+                MAX(source_type) AS source_type,
+                MAX(relevance_score) AS relevance_score
             FROM filtered_links
             WHERE company_id = ?
               AND should_scrape = 1
-            ORDER BY relevance_score DESC, id
+            GROUP BY url
+            ORDER BY relevance_score DESC, filtered_link_id
             LIMIT ?
         ) fl
         LEFT JOIN (
-            SELECT sp.filtered_link_id, sp.scrape_status, sp.error_message, sp.credits_used, sp.created_at
+            SELECT sp.url, sp.scrape_status, sp.error_message, sp.credits_used, sp.created_at
             FROM scraped_pages sp
             INNER JOIN (
-                SELECT filtered_link_id, MAX(id) AS max_id
+                -- Prefer a successful scrape for the URL; only fall back to the
+                -- latest attempt when the URL never succeeded. This keeps a URL
+                -- classified "terminal" even if a later run re-attempts it and
+                -- hits a transient failure.
+                SELECT url,
+                       COALESCE(
+                           MAX(CASE WHEN scrape_status = 'success' THEN id END),
+                           MAX(id)
+                       ) AS pick_id
                 FROM scraped_pages
                 WHERE company_id = ?
-                GROUP BY filtered_link_id
-            ) last_sp ON last_sp.max_id = sp.id
-        ) latest ON latest.filtered_link_id = fl.id
-        ORDER BY fl.relevance_score DESC, fl.id
+                GROUP BY url
+            ) last_sp ON last_sp.pick_id = sp.id
+        ) latest ON latest.url = fl.url
+        ORDER BY fl.relevance_score DESC, fl.filtered_link_id
         """,
         (company_id, _TOP_N, company_id),
     )

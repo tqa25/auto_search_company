@@ -9,7 +9,7 @@ import json
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def _parse_bool(value: str, default: bool) -> bool:
@@ -227,10 +227,6 @@ class Config:
             os.getenv("SERPER_NUM_RESULTS"), default=10
         )
 
-        # --- Google Maps (Optional — default OFF) ---
-        self.GOOGLE_MAPS_ENABLED: bool = _parse_bool(
-            os.getenv("GOOGLE_MAPS_ENABLED"), default=False
-        )
 
         # --- AI Extractor ---
         self.AI_EXTRACTOR_MODEL: str = os.getenv(
@@ -244,6 +240,7 @@ class Config:
         self.BUSINESS_STATUS_GATE_ENABLED: bool = _parse_bool(
             os.getenv("BUSINESS_STATUS_GATE_ENABLED"), default=True
         )
+        self.REPORT_CUTOFF_TIME: str = os.getenv("REPORT_CUTOFF_TIME", "17:00")
         
         # --- Dynamic Overrides from pipeline_config.json ---
         self._load_pipeline_config()
@@ -264,8 +261,8 @@ class Config:
                     "FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS", "FIRECRAWL_BATCH_TIMEOUT_SECONDS",
                     "ENABLE_QUERY_DEDUP", "ENABLE_URL_DEDUP", "ENABLE_GLOBAL_CACHE", "CACHE_TTL_DAYS",
                     "DELAY_SECONDS", "MAX_RETRIES", "BATCH_SIZE", "MIN_CONFIDENCE_THRESHOLD",
-                    "GEMINI_QUICK_ENABLED", "SERPER_ENABLED", "GOOGLE_MAPS_ENABLED", "SCRAPE_LINKEDIN_ENABLED",
-                    "BUSINESS_STATUS_GATE_ENABLED",
+                    "GEMINI_QUICK_ENABLED", "SERPER_ENABLED", "SCRAPE_LINKEDIN_ENABLED",
+                    "BUSINESS_STATUS_GATE_ENABLED", "REPORT_CUTOFF_TIME",
                     "MIN_SCRAPE_SCORE", "KNOWN_DOMAINS"
                 ]
                 
@@ -307,7 +304,6 @@ class Config:
             f"MIN_CONFIDENCE_THRESHOLD={self.MIN_CONFIDENCE_THRESHOLD!r}, "
             f"INFER_MAX_SCRAPE={self.INFER_MAX_SCRAPE!r}, "
             f"VN_LEGAL_DOMAINS={self.VN_LEGAL_DOMAINS!r}, "
-            f"GOOGLE_MAPS_ENABLED={self.GOOGLE_MAPS_ENABLED!r}, "
             f"BUSINESS_STATUS_GATE_ENABLED={self.BUSINESS_STATUS_GATE_ENABLED!r}, "
             f"AI_EXTRACTOR_MODEL={self.AI_EXTRACTOR_MODEL!r}"
             f")"

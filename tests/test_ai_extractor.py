@@ -124,6 +124,38 @@ class TestAIExtractor(unittest.TestCase):
         kwargs = self.mock_db.insert_extracted_contact.call_args.kwargs
         self.assertEqual(kwargs["phone"], "0901234567")
 
+    def test_extract_from_page_suppresses_fields_not_present_in_markdown(self):
+        mock_response = MagicMock()
+        mock_response.text = json.dumps({
+            "address": "Lo G11, Khu cong nghiep Que Vo, Bac Ninh",
+            "phone": "0901234567",
+            "email": "contact@example.vn",
+            "website": None,
+            "fax": None,
+            "representative": None,
+            "confidence": 0.9,
+        })
+        self.extractor.client.models.generate_content.return_value = mock_response
+
+        self.mock_db.fetch_one.side_effect = [
+            {
+                "id": 1,
+                "company_id": 100,
+                "source_type": "official_website",
+                "url": "https://banmaischool.edu.vn/lien-he",
+                "markdown_content": "Lien he: 0901 234 567, email contact@example.vn, dia chi Ha Dong",
+            },
+            None,
+        ]
+
+        result = self.extractor.extract_from_page(1)
+
+        self.assertEqual(result["status"], "success")
+        kwargs = self.mock_db.insert_extracted_contact.call_args.kwargs
+        self.assertIsNone(kwargs["address"])
+        self.assertEqual(kwargs["phone"], "0901234567")
+        self.assertEqual(kwargs["email"], "contact@example.vn")
+
     def test_already_extracted(self):
         self.mock_db.fetch_one.side_effect = [
             {"id": 1, "company_id": 100, "source_type": "masothue", "url": "http://123", "markdown_content": "text"}, # scraped

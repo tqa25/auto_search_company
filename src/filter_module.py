@@ -78,6 +78,14 @@ class LinkFilter:
         (["tuyen-dung", "tuyendung", "career", "careers", "recruitment", "jobs"],   "recruitment"),
     ]
 
+    FOREIGN_CCTLD_SUFFIXES = (
+        ".jp", ".kr", ".cn", ".sg", ".de", ".uk", ".co.uk", ".fr", ".it",
+        ".es", ".nl", ".au", ".ca", ".us", ".tw", ".hk", ".my", ".th",
+        ".id", ".in", ".br", ".mx", ".ru", ".pl", ".se", ".ch",
+    )
+
+    VN_IDENTITY_MARKERS = ("viet nam", "vietnam", "vietnamese", "ha noi", "ho chi minh", "hcm", "binh duong", "dong nai")
+
     def __init__(self, db: DatabaseManager = None, logger: PipelineLogger = None, config=None):
         from src.config import default_config
 
@@ -240,6 +248,32 @@ class LinkFilter:
         except Exception:
             return ""
 
+    def _has_foreign_cctld(self, domain: str) -> bool:
+        return any(domain == suffix.lstrip(".") or domain.endswith(suffix) for suffix in self.FOREIGN_CCTLD_SUFFIXES)
+
+    def _has_vietnam_identity_signal(self, domain: str, url: str, title: str, tax_code: str) -> bool:
+        text = self._remove_accents(f"{domain} {url} {title}".lower())
+        target_tax_code = _normalize_tax_code(tax_code)
+        if target_tax_code and target_tax_code in text:
+            return True
+        if domain.endswith(".vn") or domain.endswith(".com.vn") or domain.endswith(".org.vn"):
+            return True
+        return any(marker in text for marker in self.VN_IDENTITY_MARKERS)
+
+    def _is_name_overmatch(self, domain: str, company_name: str, vn_name: str) -> bool:
+        domain_core = self._normalize_domain(domain).replace("-", "").replace(".", "")
+        if not domain_core:
+            return False
+        for name in [company_name, vn_name]:
+            normalized, abbreviation = self._normalize_company_name(name)
+            candidates = [normalized.replace(" ", ""), abbreviation]
+            for candidate in candidates:
+                if len(candidate) < 3:
+                    continue
+                if candidate in domain_core and domain_core != candidate and len(domain_core) >= len(candidate) + 2:
+                    return True
+        return False
+
     def _match_domain_list(self, domain: str, domain_list: list) -> str | None:
         """Return the first entry in domain_list that the domain equals or is a subdomain of."""
         for entry in domain_list:
@@ -324,6 +358,25 @@ class LinkFilter:
                     matched_known = (known_domain, src_type, score_category)
                     break
 
+            has_vn_identity = self._has_vietnam_identity_signal(domain, url, title, tax_code)
+            if not matched_known and self._has_foreign_cctld(domain) and not has_vn_identity:
+                return {
+                    "source_type": "foreign_website",
+                    "should_scrape": False,
+                    "reason": f"foreign_tld_skip: {domain}",
+                    "relevance_score": 0.0,
+                    "score_breakdown": breakdown,
+                }
+
+            if not matched_known and self._is_name_overmatch(domain, company_name, vn_name) and not has_vn_identity:
+                return {
+                    "source_type": "name_overmatch",
+                    "should_scrape": False,
+                    "reason": f"name_overmatch_skip: target name is only a substring of {domain}",
+                    "relevance_score": 0.0,
+                    "score_breakdown": breakdown,
+                }
+
             # Scoring variables
             domain_score = 0.0
             keyword_bonus_total = 0.0
@@ -396,7 +449,7 @@ class LinkFilter:
             # Enforce MIN_SCRAPE_SCORE for unknown_web
             if src_type == "unknown_web" and total < self._min_scrape_score:
                 should_scrape = False
-                reason += f" [Skipped: score {total} < {self._min_scrape_score}]"
+                reason += f" [weak_vietnam_identity: score {total} < {self._min_scrape_score}]"
 
             return {
                 "source_type": src_type,

@@ -12,7 +12,6 @@ Usage:
 import os
 import sys
 import argparse
-from datetime import datetime
 from dotenv import load_dotenv
 
 # Ensure we can import from src
@@ -21,6 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.pipeline import Pipeline
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
+from src.time_utils import vn_filename_timestamp
 from src.errors import CriticalError
 
 
@@ -75,7 +75,7 @@ Examples:
 
 def main():
     # 1. Load .env
-    load_dotenv()
+    load_dotenv(override=True)
     firecrawl_key = os.getenv("FIRECRAWL_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY")
 
@@ -201,7 +201,7 @@ def _print_final_summary(pipeline, args):
     print(f"  Avg time per company: {summary.get('avg_time_per_company', 0.0):.1f}s")
 
     # Generate reports
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = vn_filename_timestamp()
     report_path = os.path.join("output", f"batch_report_{timestamp}.xlsx")
     log_path = os.path.join("output", f"batch_log_{timestamp}.csv")
     final_excel_path = os.path.join("output", f"final_results_{timestamp}.xlsx")

@@ -1,12 +1,12 @@
 import os
 import sys
-from datetime import datetime
 
 # Thêm đường dẫn root vào sys.path để import src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.database import DatabaseManager
 from src.excel_handler import ExcelWriter
+from src.time_utils import vn_filename_timestamp
 
 def main():
     db_path = "data/company_data.db"
@@ -16,7 +16,7 @@ def main():
         
     db = DatabaseManager(db_path)
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = vn_filename_timestamp()
     output_path = f"output/final_results_{timestamp}.xlsx"
     
     print(f"Bắt đầu xuất dữ liệu tổng hợp ra file Excel...")

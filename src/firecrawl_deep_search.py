@@ -3,12 +3,11 @@ import time
 import requests
 import logging
 from typing import List, Dict, Set
+
+from src.time_utils import vn_now
 from urllib.parse import urlparse
-from datetime import datetime
-import pytz
 
 logger = logging.getLogger(__name__)
-VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
 class FirecrawlDeepSearch:
     """Firecrawl Search engine for deep search step in pipeline."""
@@ -43,7 +42,7 @@ class FirecrawlDeepSearch:
             raw_request={"query": query, "limit": limit}
         )
 
-        started_at = datetime.now(VN_TZ)
+        started_at = vn_now()
         start_time = time.time()
         
         credits_used = 2 # Firecrawl search always uses 2 credits
@@ -64,7 +63,7 @@ class FirecrawlDeepSearch:
                 timeout=30
             )
             duration = time.time() - start_time
-            finished_at = datetime.now(VN_TZ)
+            finished_at = vn_now()
 
             if resp.status_code == 429:
                 logger.warning(f"[{company_id}] Firecrawl Search rate limited (429).")

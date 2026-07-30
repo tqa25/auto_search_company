@@ -1,6 +1,5 @@
 import time
 import os
-import json
 import signal
 import sys
 from src.database import DatabaseManager
@@ -17,6 +16,7 @@ from src.business_status import INACTIVE_STOP, extract_business_status
 from src.time_utils import vn_date_str, vn_filename_timestamp, vn_now, vn_timestamp
 from src.errors import PipelineError, RetryableError, SkippableError, CriticalError
 from src.completion_audit import audit_company_completion
+from src.company_run import CompanyRun
 
 
 class Pipeline:
@@ -88,6 +88,7 @@ class Pipeline:
         self._shutdown_requested = False
         self._original_sigint_handler = None
         self._original_sigterm_handler = None
+        self.company_run = CompanyRun(self)
 
     # ------------------------------------------------------------------
     # Signal handling for graceful shutdown
@@ -253,7 +254,6 @@ class Pipeline:
         if replay_mode:
             print("[REPLAY MODE] Re-processing from cached DB data. No API calls.")
         if force_refresh:
-            self.cfg.FORCE_REFRESH = True
             print("[FORCE REFRESH] Cache bypass enabled.")
 
         # Install signal handlers for graceful shutdown
@@ -263,295 +263,34 @@ class Pipeline:
         fail_count = 0
         skip_count = 0
 
-        def _worker_update(company_id: int, status: str, current_step: str = None,
-                           checkpoint: str = None, progress: int = None):
-            if job_controller is not None:
-                job_controller.update(
-                    company_id,
-                    status=status,
-                    current_step=current_step,
-                    checkpoint=checkpoint,
-                    progress=progress,
-                )
-
-        def _set_status(company_id: int, status: str, current_step: str = None,
-                        checkpoint: str = None, progress: int = None):
-            self.db.update_company(company_id, status=status)
-            _worker_update(company_id, status, current_step, checkpoint, progress)
-
-        def _finalize_strict_done(company_id: int, company_name: str) -> bool:
-            audit = audit_company_completion(self.db, company_id, self.db.get_company(company_id))
-            if audit.get("completion_status") == "strict_done":
-                _set_status(company_id, 'done', 'Done', 'done', 100)
-                return True
-            resume_status = audit.get("resume_status") or 'pending'
-            _set_status(
-                company_id,
-                resume_status,
-                audit.get("current_step") or 'Waiting',
-                audit.get("checkpoint") or 'pipeline_init',
-                0,
-            )
-            self.logger.log_event("strict_completion_blocked", company_id, {
-                "completion_reason": audit.get("completion_reason"),
-                "resume_status": resume_status,
-            })
-            print(f"  -> Incomplete strict completion: {audit.get('completion_reason')} ({company_name})")
-            return False
-
         try:
             for idx, company_id in enumerate(company_ids):
                 if job_controller is not None and job_controller.should_stop(company_id):
                     self._shutdown_requested = True
 
-                # Check for graceful shutdown
                 if self._shutdown_requested:
-                    print(f"\n🛑 Dừng an toàn tại công ty {idx}/{total_to_process}. "
-                          f"Dữ liệu đã được lưu. Dùng --resume để tiếp tục.")
+                    print(f"\n🛑 Dừng an toàn tại công ty {idx}/{total_to_process}. Dữ liệu đã được lưu. Dùng --resume để tiếp tục.")
                     break
 
-                company = self.db.get_company(company_id)
-                if not company:
-                    print(f"[{idx+1}/{total_to_process}] Company ID {company_id} not found in DB.")
+                result = self.company_run.run(
+                    company_id,
+                    replay_mode=replay_mode,
+                    force_refresh=force_refresh,
+                    job_controller=job_controller,
+                )
+                outcome = (result or {}).get("outcome")
+                if outcome == "success":
+                    success_count += 1
+                elif outcome == "failed":
                     fail_count += 1
-                    continue
-
-                status = company['status']
-                company_name = company['original_name']
-
-                print(f"[{idx+1}/{total_to_process}] Processing company ID {company_id} - {company_name} (status: {status})...")
-
-                # Skip already completed companies
-                if status == 'done':
-                    print(f"  -> Skipping (already completed)")
+                elif outcome == "skipped":
                     skip_count += 1
-                    continue
-
-                # Skip permanently failed companies
-                if status == 'permanently_failed':
-                    print(f"  -> Skipping (permanently failed)")
-                    skip_count += 1
-                    continue
-
-                # Determine which step to resume from
-                next_step = self._get_next_step(status)
-                if next_step != 'search':
-                    print(f"  -> Resuming from step: {next_step} (previous status: {status})")
-
-                retry_count = 0
-                max_retries = 2
-
-                while retry_count < max_retries:
-                    try:
-                        # ====== BƯỚC 1: GEMINI QUICK SEARCH (no early-stop) ======
-                        gemini_result = None
-                        quick = None
-                        filter_already_completed = False
-                        if self._should_do_step(next_step, 'gemini_quick') and not replay_mode:
-                            print("  -> Bước 1: Gemini Quick Search...")
-                            _set_status(company_id, 'gemini_quick', 'Gemini Quick', 'gemini_quick', 20)
-                            quick = self.gemini_quick.search(company_id)
-                            gemini_result = quick.get("result", {})
-                            self._batch_stats["gemini_tokens_in"] += quick.get("input_tokens", 0)
-                            self._batch_stats["gemini_tokens_out"] += quick.get("output_tokens", 0)
-
-                            # Record result quality but ALWAYS continue to deep search
-                            if quick.get("is_sufficient"):
-                                self._batch_stats["step1_success"] += 1
-                                print(f"  -> Bước 1 đủ dữ liệu, tiếp tục deep search để bổ sung...")
-                            elif not self._company_has_no_phone(company_id):
-                                self._batch_stats["step1_success"] += 1
-                                print(f"  -> Bước 1 tìm được phone (độ tin cậy thấp), tiếp tục deep search...")
-                            else:
-                                reason = quick.get("fallback_reason", "unknown")
-                                print(f"  -> Bước 1: thiếu dữ liệu ({reason}), tiếp tục...")
-
-                            _set_status(company_id, 'gemini_quick_done', 'Deep Search', 'deep_search', 35)
-
-                        # ====== BƯỚC 2: DEEP SEARCH (Firecrawl + Filter + Extract) ======
-                        if self._should_do_step(next_step, 'deep_search'):
-                            if not replay_mode:
-                                _set_status(company_id, 'searching', 'Deep Search', 'deep_search', 40)
-                                print("  -> Bước 2: Deep Search...")
-                                        # Build smart queries from Gemini result
-                                if gemini_result:
-                                    queries = self.deep_search.build_fallback_queries(gemini_result, company_name)
-                                    gemini_sources = set(quick.get("grounding_sources", []) if quick else [])
-
-                                    seen_domains = set()
-                                    good_pages_total = 0
-                                    all_search_results = []
-                                    for q_idx, q in enumerate(queries):
-                                        print(f"    - Query {q_idx+1}: {q['query']}")
-                                        results = self.deep_search.search(company_id, q["query"], limit=self.cfg.SEARCH_LIMIT)
-                                        
-                                        # Dedup against Gemini sources
-                                        deduped = FirecrawlDeepSearch.dedup_results(results, gemini_sources)
-                                        self._batch_stats["urls_deduped"] += len(results) - len(deduped)
-                                        
-                                        # Save to search_results table and collect IDs
-                                        urls_to_filter = []
-                                        for rank, r in enumerate(deduped):
-                                            sr_id = self.db.insert_search_result(
-                                                company_id, q["query"], q["type"], rank + 1, r["url"], r["title"], r["snippet"]
-                                            )
-                                            urls_to_filter.append({
-                                                "search_result_id": sr_id,
-                                                "url": r["url"],
-                                                "title": r.get("title", ""),
-                                                "snippet": r.get("snippet", "")
-                                            })
-                                        all_search_results.extend(deduped)
-
-                                        # Run incremental filter immediately
-                                        target_tax_code = ""
-                                        if isinstance(gemini_result, dict):
-                                            target_tax_code = gemini_result.get("tax_code", "") or company.get("tax_code", "") or ""
-                                        else:
-                                            target_tax_code = company.get("tax_code", "") or ""
-                                        vn_name = gemini_result.get("vietnamese_name", "") if isinstance(gemini_result, dict) else ""
-                                        batch_filtered, batch_good = self.filter_module.filter_urls_incremental(
-                                            company_id=company_id,
-                                            urls=urls_to_filter,
-                                            seen_domains=seen_domains,
-                                            company_name=company_name,
-                                            vn_name=vn_name,
-                                            tax_code=target_tax_code
-                                        )
-                                        good_pages_total += batch_good
-
-                                        if good_pages_total >= self.cfg.EARLY_STOP_COUNT:
-                                            print(f"    -> Đã tìm đủ {good_pages_total} URLs chất lượng thực tế (score >= {self.cfg.EARLY_STOP_SCORE}). Dừng các query tiếp theo.")
-                                            break
-                                    
-                                    filter_already_completed = True
-                                else:
-                                    # No Gemini result — use legacy search
-                                    print("  -> (Legacy search fallback)")
-                                    self.search_module.search_company(company_id)
-
-                                _set_status(company_id, 'searched', 'Filter', 'filter', 55)
-                                time.sleep(self.delay_seconds)
-                            else:
-                                print(f"  -> [REPLAY] Skipping search for company {company_id}")
-
-                        # FILTER
-                        if self._should_do_step(next_step, 'filter'):
-                            if not filter_already_completed:
-                                print("  -> Filtering...")
-                                self.filter_module.filter_company_links(company_id)
-                            else:
-                                print("  -> Filtering already completed incrementally during search.")
-
-                        # SCRAPE
-                        if self._should_do_step(next_step, 'scrape'):
-                            status_gate_result = self._run_business_status_gate(company_id, replay_mode=replay_mode)
-                            if status_gate_result and status_gate_result.get("business_status_category") == INACTIVE_STOP:
-                                done_ok = _finalize_strict_done(company_id, company_name)
-                                if done_ok:
-                                    self._batch_stats["status_gate_skipped"] += 1
-                                    print(f"  -> Business status gate skipped scrape: {status_gate_result.get('business_status')}")
-                                    success_count += 1
-                                else:
-                                    fail_count += 1
-                                break
-
-                            if not replay_mode:
-                                _set_status(company_id, 'scraping', 'Scrape', 'scrape', 65)
-                                print("  -> Scraping...")
-                                self.scrape_module.scrape_company(company_id, self.delay_seconds)
-                                # ★ CHECKPOINT: all scraping done → mark ai_extract_pending
-                                # On resume, pipeline will skip scrape and go straight to AI extract
-                                _set_status(company_id, 'ai_extract_pending', 'AI Extract', 'ai_extract', 82)
-                                print("  -> ✓ Checkpoint: scraped data saved (ai_extract_pending)")
-                            else:
-                                print(f"  -> [REPLAY] Skipping scrape for company {company_id}")
-
-                        # AI EXTRACT
-                        if self._should_do_step(next_step, 'ai_extract'):
-                            if not replay_mode and self.ai_extractor:
-                                print("  -> AI Extracting...")
-                                _set_status(company_id, 'extracting', 'AI Extract', 'ai_extract', 90)
-                                self.ai_extractor.extract_for_company(company_id, self.delay_seconds)
-                                _set_status(company_id, 'ai_done', 'Finalizing', 'done', 95)
-                            elif not replay_mode:
-                                print("  -> AI Extract SKIP (no API Key)")
-                                _set_status(company_id, 'ai_done', 'Finalizing', 'done', 95)
-                            else:
-                                print(f"  -> [REPLAY] Skipping AI extract for company {company_id}")
-                                _set_status(company_id, 'ai_done', 'Finalizing', 'done', 95)
-
-                            # Early Stop Check after AI Extract
-                            if not self._company_has_no_phone(company_id):
-                                self._batch_stats["step2_success"] += 1
-                                if _finalize_strict_done(company_id, company_name):
-                                    print(f"  -> ✅ Bước 2 tìm được phone sau extract, dừng pipeline! {company_name}")
-                                    success_count += 1
-                                else:
-                                    fail_count += 1
-                                break
-
-                        self._batch_stats["step2_success"] += 1
-
-                        if _finalize_strict_done(company_id, company_name):
-                            if self._company_has_no_phone(company_id):
-                                self._batch_stats["no_phone"] += 1
-                                print(f"  -> ⚠️  Hoàn tất nhưng không tìm được phone: {company_name}")
-                            else:
-                                print(f"  -> ✅ SUCCESS: {company_name}")
-                            success_count += 1
-                        else:
-                            fail_count += 1
-                        break  # Exit retry loop on success
-
-                    except RetryableError as e:
-                        retry_count += 1
-                        error_msg = str(e)
-                        print(f"  -> RETRY #{retry_count}: {error_msg}")
-                        if retry_count < max_retries:
-                            backoff_time = 60 * retry_count
-                            print(f"     Waiting {backoff_time}s before retry...")
-                            time.sleep(backoff_time)
-                        else:
-                            print(f"  -> FAILED: Exceeded max retries ({max_retries})")
-                            _set_status(company_id, 'failed', 'Failed', 'failed', 0)
-                            fail_count += 1
-                            break
-
-                    except SkippableError as e:
-                        error_msg = str(e)
-                        print(f"  -> SKIPPED: {error_msg}")
-                        _set_status(company_id, 'failed', 'Failed', 'failed', 0)
-                        fail_count += 1
-                        break
-
-                    except CriticalError as e:
-                        error_msg = str(e)
-                        print(f"  -> ⛔ CRITICAL: {error_msg}")
-                        # If scraping was already done, preserve that checkpoint
-                        current_status = self.db.get_company(company_id)
-                        if current_status and current_status['status'] in ('ai_extract_pending', 'extracting'):
-                            _set_status(company_id, 'ai_extract_pending', 'AI Extract', 'ai_extract', 82)
-                            print(f"  -> Checkpoint bảo toàn: status='ai_extract_pending' — dữ liệu đã cào được giữ lại.")
-                        print("  -> Stopping entire pipeline.")
-                        self._restore_signal_handlers()
-                        raise
-
-                    except Exception as e:
-                        # Unknown error — treat as skippable
-                        error_msg = str(e)
-                        print(f"  -> FAILED (unknown error): {error_msg}")
-                        _set_status(company_id, 'failed', 'Failed', 'failed', 0)
-                        fail_count += 1
-                        break
+                elif outcome in ("shutdown", "stopped"):
+                    break
 
         finally:
-            # Always restore signal handlers
             self._restore_signal_handlers()
-            if force_refresh:
-                self.cfg.FORCE_REFRESH = False
 
-        # Print detailed batch summary report
         self._batch_stats["total"] = total_to_process
         self._batch_stats["success"] = success_count
         self._batch_stats["failed"] = fail_count
@@ -560,6 +299,14 @@ class Pipeline:
 
         if self._shutdown_requested:
             print("⚠️  Pipeline đã dừng an toàn do nhận tín hiệu. Chạy lại với --resume để tiếp tục.")
+
+    def run_company(self, company_id: int, replay_mode: bool = False, force_refresh: bool = False, job_controller=None):
+        return self.company_run.run(
+            company_id,
+            replay_mode=replay_mode,
+            force_refresh=force_refresh,
+            job_controller=job_controller,
+        )
 
     # ------------------------------------------------------------------
     # Batch stats & summary report
@@ -570,7 +317,6 @@ class Pipeline:
         return {
             "total": 0, "success": 0, "failed": 0, "skipped": 0,
             "step1_success": 0, "step2_success": 0,
-            "optional_maps_success": 0,
             "no_phone": 0,
             "gemini_tokens_in": 0, "gemini_tokens_out": 0,
             "serper_credits": 0, "firecrawl_credits": 0,
@@ -591,14 +337,13 @@ class Pipeline:
         serper_used = quota_row["serper_used"] if quota_row else 0
 
         processed = s["total"] - s["skipped"]
-        maps_line = f"\n  [Optional] Maps thành công:      {s['optional_maps_success']}" if s['optional_maps_success'] > 0 else ""
         print(f"""
 ═══════════════════════════════════════════
   BÁO CÁO PIPELINE - {today}
 ═══════════════════════════════════════════
   Tổng công ty xử lý:            {processed}
   Bước 1 thành công (Gemini):     {s['step1_success']} ({s['step1_success']/max(processed,1)*100:.0f}%)
-  Bước 2 thành công (Deep):       {s['step2_success']}{maps_line}
+  Bước 2 thành công (Deep):       {s['step2_success']}
   Không tìm được phone:           {s['no_phone']}
   Thất bại (lỗi):                 {s['failed']}
   ─────────────────────────────────────────
@@ -609,34 +354,6 @@ class Pipeline:
   URLs trùng lặp đã loại:         {s['urls_deduped']}
   Status gate đã bỏ qua:          {s['status_gate_skipped']}
 ═══════════════════════════════════════════""")
-
-    def _save_maps_contact(self, company_id: int, maps_result: dict, gemini_result: dict = None):
-        """Save Google Maps contact to extracted_contacts and update company."""
-        self.db.insert_extracted_contact(
-            company_id=company_id,
-            scraped_page_id=None,
-            source_type="google_maps",
-            source_url="serper_places_api",
-            address=maps_result.get("address"),
-            phone=maps_result.get("phone"),
-            email=(gemini_result or {}).get("email"),
-            website=maps_result.get("website"),
-            fax=(gemini_result or {}).get("fax"),
-            representative=(gemini_result or {}).get("representative"),
-            raw_ai_response=json.dumps(maps_result, ensure_ascii=False),
-            confidence_score=0.85,
-        )
-        # Update company table with info
-        updates = {}
-        if maps_result.get("address"):
-            updates["address"] = maps_result["address"]
-        if gemini_result:
-            if gemini_result.get("core_name_vi"):
-                updates["vietnamese_name"] = gemini_result["core_name_vi"]
-            if gemini_result.get("tax_code"):
-                updates["tax_code"] = gemini_result["tax_code"]
-        if updates:
-            self.db.update_company(company_id, **updates)
 
     # ------------------------------------------------------------------
     # Manual step execution

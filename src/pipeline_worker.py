@@ -5,6 +5,7 @@ import os
 import signal
 import socket
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
@@ -222,10 +223,26 @@ class PipelineWorker:
 
     def run_loop(self, auto_recover: bool = True):
         if auto_recover:
-            self.recover_stale_jobs()
+            try:
+                self.recover_stale_jobs()
+            except Exception as exc:
+                traceback.print_exc()
+                print(f"[worker] recover_stale_jobs failed at startup, continuing: {exc}")
         self.db.register_pipeline_worker(self.worker_id, status="idle", message="worker started")
         while not self._stop_requested:
-            did_work = self.run_once()
+            try:
+                did_work = self.run_once()
+            except Exception as exc:
+                # A failure while claiming a job or recovering (e.g. a transient
+                # sqlite "database is locked") must not kill the whole worker.
+                # Log it, back off, and keep polling.
+                traceback.print_exc()
+                print(f"[worker] run_once raised, continuing: {exc}")
+                did_work = False
+                try:
+                    self.heartbeat(status="idle", message=f"run_once error: {exc}")
+                except Exception:
+                    pass
             if not did_work:
                 time.sleep(self.poll_seconds)
         self.heartbeat(status="stopped", message="worker stopped")
@@ -235,7 +252,7 @@ class PipelineWorker:
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_dotenv()
+    load_dotenv(override=True)
     parser = argparse.ArgumentParser(description="Run the SQLite-backed pipeline worker.")
     parser.add_argument("--db", default=os.getenv("DB_PATH", "data/company_data.db"))
     parser.add_argument("--worker-id", default=None)

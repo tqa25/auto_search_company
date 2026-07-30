@@ -231,5 +231,69 @@ class TestSearchStats:
         assert stats["total_searched"] == 2
         assert stats["total_results"] >= 2
 
+class TestQueryCacheIsolation:
+    """A global query-cache hit must not return empty results for a company that
+    did not originate the cache entry — the origin company's results are copied."""
+
+    def test_cache_hit_copies_results_to_other_company(self, search_module, db):
+        from src.time_utils import vn_cache_expiry
+
+        search_module.config.ENABLE_QUERY_DEDUP = True
+        search_module.config.FORCE_REFRESH = False
+
+        cid_a = db.insert_company("Origin Corp")
+        cid_b = db.insert_company("Second Corp")
+        query = "shared query text"
+
+        # Simulate company A having already searched this query: persisted results
+        # (as search_company would save) plus the global query-cache entry.
+        db.insert_search_result(cid_a, query, "firecrawl_search", 1, "https://example.com/a", "A", "sa", 0)
+        db.insert_search_result(cid_a, query, "firecrawl_search", 2, "https://example.com/b", "B", "sb", 0)
+        db.insert_query_cache(
+            query_hash=search_module._normalize_and_hash(query),
+            query_text=query,
+            company_id=cid_a,
+            expires_at=vn_cache_expiry(search_module.config.CACHE_TTL_DAYS),
+            result_count=2,
+        )
+
+        # Company B hits the (global) cache; the live API must NOT be called, yet B
+        # must still receive non-empty results (copied from A).
+        with patch.object(search_module, "_firecrawl_search") as mock_live_b:
+            results_b, hit_b = search_module._search_with_dedup(query, cid_b)
+        assert hit_b is True
+        assert mock_live_b.call_count == 0
+        assert len(results_b) == 2
+        # And they are now persisted under company B for the downstream filter step.
+        rows_b = db.fetch_all(
+            "SELECT url FROM search_results WHERE company_id = ? AND search_query = ?",
+            (cid_b, query),
+        )
+        assert {r["url"] for r in rows_b} == {"https://example.com/a", "https://example.com/b"}
+
+    def test_cache_hit_with_no_persisted_results_falls_through_to_live(self, search_module, db):
+        """If the cache flag exists but no results survive anywhere, do a live search
+        instead of returning empty."""
+        from src.time_utils import vn_cache_expiry
+
+        search_module.config.ENABLE_QUERY_DEDUP = True
+        search_module.config.FORCE_REFRESH = False
+        cid = db.insert_company("Lonely Corp")
+        query = "orphaned cache query"
+        db.insert_query_cache(
+            query_hash=search_module._normalize_and_hash(query),
+            query_text=query,
+            company_id=cid,
+            expires_at=vn_cache_expiry(search_module.config.CACHE_TTL_DAYS),
+            result_count=0,
+        )
+        fake = [{"url": "https://example.com/live", "title": "L", "snippet": "s"}]
+        with patch.object(search_module, "_firecrawl_search", return_value=fake) as mock_live:
+            results, hit = search_module._search_with_dedup(query, cid)
+        assert hit is False
+        assert mock_live.call_count == 1
+        assert results == fake
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

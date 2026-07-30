@@ -9,6 +9,17 @@ function isCompanyHeader(value) {
   ].includes(normalized);
 }
 
+function isTaxCodeHeader(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return [
+    "tax code",
+    "tax_code",
+    "mã số thuế",
+    "ma so thue",
+    "mst",
+  ].includes(normalized);
+}
+
 function parseCsvRows(text) {
   const rows = [];
   let row = [];
@@ -67,8 +78,21 @@ export function parseCompanyImportText(text, fileName = "") {
       .filter((line, index) => index !== 0 || !isCompanyHeader(line));
   }
 
-  return parseCsvRows(normalizedText)
-    .map((row) => String(row[0] || "").trim())
-    .filter(Boolean)
-    .filter((name, index) => index !== 0 || !isCompanyHeader(name));
+  const rows = parseCsvRows(normalizedText).filter((row) => row.some((cell) => String(cell || "").trim()));
+  if (!rows.length) return [];
+
+  const header = rows[0];
+  const nameIndex = header.findIndex(isCompanyHeader);
+  const taxCodeIndex = header.findIndex(isTaxCodeHeader);
+  const hasHeader = nameIndex >= 0 || taxCodeIndex >= 0;
+  const resolvedNameIndex = nameIndex >= 0 ? nameIndex : 0;
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+
+  return dataRows
+    .map((row) => {
+      const name = String(row[resolvedNameIndex] || "").trim();
+      const taxCode = taxCodeIndex >= 0 ? String(row[taxCodeIndex] || "").trim() : "";
+      return taxCode ? { name, tax_code: taxCode } : name;
+    })
+    .filter((item) => typeof item === "string" ? item : item.name);
 }

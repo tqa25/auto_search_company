@@ -1,11 +1,12 @@
 import logging
 import csv
 import json
-import datetime
 import os
+from datetime import timedelta
 from colorama import init, Fore, Style
 from openpyxl import Workbook
 from src.database import DatabaseManager
+from src.time_utils import parse_timestamp_as_vn, vn_date_str, vn_iso, vn_now, vn_timestamp
 
 init(autoreset=True)
 
@@ -29,7 +30,7 @@ class PipelineLogger:
 
     def _open_jsonl_file(self):
         """Opens (or reopens on date change) the daily JSONL log file."""
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        today = vn_date_str()
         if self._current_log_date != today:
             if self._jsonl_file:
                 self._jsonl_file.close()
@@ -45,7 +46,7 @@ class PipelineLogger:
 
     def log_step_start(self, company_id: int, step: str, source_url: str = None, source_name: str = None, raw_request: dict = None) -> int:
         """Ghi record mới với status='started', started_at=now(). Trả về log_id."""
-        started_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        started_at = vn_timestamp()
         log_id = self.db.insert_pipeline_log(
             company_id=company_id,
             step=step,
@@ -56,7 +57,7 @@ class PipelineLogger:
         )
 
         # JSONL event
-        now_iso = datetime.datetime.now().isoformat(timespec='milliseconds')
+        now_iso = vn_iso(timespec='milliseconds')
         self._write_jsonl({
             "timestamp": now_iso,
             "event_type": "step_start",
@@ -76,7 +77,7 @@ class PipelineLogger:
                      processing_time_ms: float = None, raw_response_summary: dict = None,
                      error_category: str = None):
         """Update record: finished_at=now(), tính duration_seconds, cập nhật status, in ra console format"""
-        finished_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        finished_at = vn_timestamp()
 
         # Calculate duration
         log_record = self.db.fetch_one("SELECT * FROM pipeline_logs WHERE id = ?", (log_id,))
@@ -91,8 +92,10 @@ class PipelineLogger:
             source_name = log_record['source_name'] or "UNKNOWN"
             if log_record['started_at']:
                 try:
-                    start_time = datetime.datetime.strptime(log_record['started_at'], "%Y-%m-%d %H:%M:%S")
-                    finish_time = datetime.datetime.strptime(finished_at, "%Y-%m-%d %H:%M:%S")
+                    start_time = parse_timestamp_as_vn(log_record['started_at'])
+                    finish_time = parse_timestamp_as_vn(finished_at)
+                    if start_time is None or finish_time is None:
+                        raise ValueError
                     duration = (finish_time - start_time).total_seconds()
                 except ValueError:
                     duration = 0.0
@@ -112,7 +115,7 @@ class PipelineLogger:
 
         # Console output
         # Format: [2026-04-20 09:15:23] [CMP-0001] [SEARCH] [SUCCESS] 2 credits | 3.2s | "ABC Corp" → 10 links found
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = vn_timestamp()
         cmp_str = f"CMP-{company_id:04d}"
 
         color = Fore.WHITE
@@ -153,7 +156,7 @@ class PipelineLogger:
         self.logger.info(log_msg)
 
         # JSONL event
-        now_iso = datetime.datetime.now().isoformat(timespec='milliseconds')
+        now_iso = vn_iso(timespec='milliseconds')
         started_at_iso = log_record['started_at'] if log_record and log_record['started_at'] else None
         self._write_jsonl({
             "timestamp": now_iso,
@@ -182,7 +185,7 @@ class PipelineLogger:
     def log_event(self, event_type: str, company_id: int, data: dict = None):
         """Log a one-off event (cache hit, dedup skip, etc.) to JSONL only (no DB record)."""
         event = {
-            "timestamp": datetime.datetime.now().isoformat(timespec='milliseconds'),
+            "timestamp": vn_iso(timespec='milliseconds'),
             "event_type": event_type,
             "company_id": company_id,
         }
@@ -206,19 +209,31 @@ class PipelineLogger:
 
     def get_daily_summary(self) -> dict:
         """Trả về dict summary"""
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        today = vn_date_str()
+        tomorrow = vn_date_str(vn_now() + timedelta(days=1))
 
         # total_companies
         row = self.db.fetch_one("SELECT COUNT(id) as cnt FROM companies")
         total_companies = row['cnt'] if row else 0
 
-        # total_processed_all
-        row = self.db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM pipeline_logs")
-        total_processed_all = row['cnt'] if row and row['cnt'] else 0
-
-        # total_processed_today
-        row = self.db.fetch_one("SELECT COUNT(DISTINCT company_id) as cnt FROM pipeline_logs WHERE started_at LIKE ?", (f"{today}%",))
-        total_processed_today = row['cnt'] if row and row['cnt'] else 0
+        # All pipeline_logs aggregates in one pass: distinct companies overall,
+        # distinct companies today (half-open date range instead of a fragile LIKE),
+        # total credits, and total duration.
+        agg = self.db.fetch_one(
+            """
+            SELECT
+                COUNT(DISTINCT company_id) AS processed_all,
+                COUNT(DISTINCT CASE WHEN started_at >= ? AND started_at < ? THEN company_id END) AS processed_today,
+                SUM(credits_used) AS total_credits,
+                SUM(duration_seconds) AS total_duration
+            FROM pipeline_logs
+            """,
+            (today, tomorrow),
+        ) or {}
+        total_processed_all = agg.get("processed_all") or 0
+        total_processed_today = agg.get("processed_today") or 0
+        total_credits = agg.get("total_credits") or 0.0
+        total_duration = agg.get("total_duration") or 0.0
 
         # success_rate: % of processed companies that have some extracted contacts (approximation)
         # Using extracted_contacts table to determine if we have info. If the table is empty for that company, then no info.
@@ -226,13 +241,7 @@ class PipelineLogger:
         companies_with_info = row['cnt'] if row and row['cnt'] else 0
         success_rate = (companies_with_info / total_processed_all * 100) if total_processed_all > 0 else 0.0
 
-        # total_credits_used
-        row = self.db.fetch_one("SELECT SUM(credits_used) as total FROM pipeline_logs")
-        total_credits = row['total'] if row and row['total'] else 0.0
-
         # avg_time_per_company
-        row = self.db.fetch_one("SELECT SUM(duration_seconds) as total FROM pipeline_logs")
-        total_duration = row['total'] if row and row['total'] else 0.0
         avg_time = (total_duration / total_processed_all) if total_duration and total_processed_all > 0 else 0.0
 
         # top_5_errors

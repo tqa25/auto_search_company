@@ -12,9 +12,10 @@ Usage:
 """
 
 import logging
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+from src.time_utils import vn_iso
 
 # ──────────────────────────────────────────────────────────────
 # Migration registry — append new migrations at the bottom.
@@ -56,7 +57,7 @@ def run_migrations(db) -> int:
             db.execute_query(sql)
             db.execute_query(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                (version, datetime.now().isoformat()),
+                (version, vn_iso()),
             )
             applied_count += 1
             logger.info(f"Migration {version} applied successfully.")

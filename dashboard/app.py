@@ -14,6 +14,7 @@ import subprocess
 import base64
 import sqlite3
 import time
+import signal
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
@@ -83,6 +84,11 @@ DOTENV_PATH = os.path.join(_PROJECT_ROOT, ".env")
 LOG_DIR = os.path.join(_PROJECT_ROOT, "output", "logs")
 _WORKER_AUTO_START = os.getenv("PIPELINE_WORKER_AUTO_START", "true").strip().lower() not in {"0", "false", "no"}
 _WORKER_HEARTBEAT_SECONDS = 45
+# Completion/checkpoint filters have no SQL-side column, so they audit each row in
+# Python. Bound how many rows we scan per request so the endpoint can't fan out to
+# tens of thousands of audit queries on the full table; the response flags when the
+# scan was truncated. (A persisted completion_status column is the real follow-up.)
+_COMPLETION_FILTER_SCAN_CAP = 3000
 _monitor_removed_ids: set[int] = set()
 _monitor_stopped_ids: set[int] = set()
 monitor_clients: list[WebSocket] = []
@@ -134,40 +140,239 @@ def _recent_worker_cutoff() -> str:
     return vn_timestamp(vn_now() - timedelta(seconds=_WORKER_HEARTBEAT_SECONDS))
 
 
+def _normalize_path(path: str | None) -> str:
+    if not path:
+        return ""
+    return os.path.abspath(os.path.realpath(path))
+
+
+def _mask_key(key: str) -> str:
+    if not key or len(key) < 8:
+        return key
+    return f"{key[:4]}...{key[-4:]}"
+
+
+def _read_proc_environ(pid: int) -> dict[str, str]:
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as handle:
+            chunks = handle.read().split(b"\0")
+    except OSError:
+        return {}
+    env: dict[str, str] = {}
+    for item in chunks:
+        if b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        env[key.decode("utf-8", errors="ignore")] = value.decode("utf-8", errors="ignore")
+    return env
+
+
+def _read_proc_cmdline(pid: int) -> list[str]:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            return [part.decode("utf-8", errors="ignore") for part in handle.read().split(b"\0") if part]
+    except OSError:
+        return []
+
+
+def _worker_script_path() -> str:
+    return _normalize_path(os.path.join(_PROJECT_ROOT, "scripts", "pipeline_worker.py"))
+
+
+def _worker_python_executable() -> str:
+    venv_python = os.path.join(_PROJECT_ROOT, "venv", "bin", "python")
+    if os.path.exists(venv_python):
+        return venv_python
+    return sys.executable
+
+
+def _iter_runtime_worker_processes(db_path: str | None = None) -> list[dict]:
+    target_db_path = _normalize_path(db_path or DB_PATH)
+    script_path = _worker_script_path()
+    results: list[dict] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        cmdline = _read_proc_cmdline(pid)
+        if not cmdline:
+            continue
+        normalized_cmd = [_normalize_path(part) if part.endswith(".py") or "/" in part else part for part in cmdline]
+        if script_path not in normalized_cmd:
+            continue
+        worker_db_path = ""
+        if "--db" in cmdline:
+            try:
+                worker_db_path = _normalize_path(cmdline[cmdline.index("--db") + 1])
+            except (IndexError, ValueError):
+                worker_db_path = ""
+        if worker_db_path != target_db_path:
+            continue
+        environ = _read_proc_environ(pid)
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            cwd = ""
+        results.append({
+            "pid": pid,
+            "cmdline": " ".join(cmdline),
+            "cwd": cwd,
+            "db_path": worker_db_path,
+            "firecrawl_key_mask": _mask_key(environ.get("FIRECRAWL_API_KEY", "")),
+        })
+    return sorted(results, key=lambda item: item["pid"])
+
+
+def _current_firecrawl_key_mask() -> str:
+    return _mask_key(os.getenv("FIRECRAWL_API_KEY", ""))
+
+
 def _worker_status(db: DatabaseManager) -> dict:
     workers = db.get_recent_pipeline_workers(_recent_worker_cutoff())
+    runtime_processes = _iter_runtime_worker_processes()
+    current_key_mask = _current_firecrawl_key_mask()
+    runtime_by_pid = {proc["pid"]: proc for proc in runtime_processes}
+    enriched_workers = []
+    for worker in workers:
+        pid = None
+        worker_id = str(worker.get("worker_id") or "")
+        parts = worker_id.split("-")
+        if len(parts) >= 3 and parts[-2].isdigit():
+            pid = int(parts[-2])
+        runtime = runtime_by_pid.get(pid) if pid else None
+        enriched_workers.append({
+            **worker,
+            "pid": pid,
+            "firecrawl_key_mask": runtime.get("firecrawl_key_mask", "") if runtime else "",
+            "env_mismatch": bool(runtime and runtime.get("firecrawl_key_mask") and runtime.get("firecrawl_key_mask") != current_key_mask),
+            "runtime_present": bool(runtime),
+        })
     return {
         "online": bool(workers),
-        "workers": workers,
+        "workers": enriched_workers,
+        "runtime_processes": runtime_processes,
+        "current_firecrawl_key_mask": current_key_mask,
         "message": None if workers else "Worker offline: queued jobs will not run until scripts/pipeline_worker.py is started.",
     }
 
 
+# Serializes worker spawning within this process so two concurrent requests can't
+# both decide to start a worker.
+_WORKER_SPAWN_LOCK = threading.Lock()
+
+
+def _reap_extra_workers(processes: list[dict]) -> list[int]:
+    """Keep the lowest-PID worker for this DB and terminate the rest.
+
+    `processes` is expected to come from _iter_runtime_worker_processes (sorted by
+    pid ascending). Returns the PIDs that were signalled to stop.
+    """
+    if len(processes) <= 1:
+        return []
+    return _terminate_runtime_workers(processes[1:])
+
+
+def _start_worker_process() -> dict:
+    """Ensure exactly one worker runs for DB_PATH; spawn only if none is alive.
+
+    A worker busy on a long scrape can miss its DB heartbeat window and look
+    "offline", but its process is still alive. Spawning again in that situation is
+    what caused worker processes to pile up. So we check /proc first and only spawn
+    when nothing is running, reaping any duplicates we find.
+    """
+    script_path = os.path.join(_PROJECT_ROOT, "scripts", "pipeline_worker.py")
+    os.makedirs(LOG_DIR, exist_ok=True)
+    with _WORKER_SPAWN_LOCK:
+        existing = _iter_runtime_worker_processes(DB_PATH)
+        if existing:
+            reaped = _reap_extra_workers(existing)
+            message = "Worker already running; reused existing process."
+            if reaped:
+                message += f" Reaped {len(reaped)} duplicate worker(s)."
+            return {"pid": existing[0]["pid"], "message": message, "reused": True, "reaped": reaped}
+        log_handle = open(os.path.join(LOG_DIR, "pipeline_worker.log"), "a", encoding="utf-8")
+        try:
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            process = subprocess.Popen(
+                [_worker_python_executable(), "-u", script_path, "--db", DB_PATH, "--poll", "2"],
+                cwd=_PROJECT_ROOT,
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+                env=env,
+            )
+        finally:
+            log_handle.close()
+        return {
+            "pid": process.pid,
+            "message": "Worker was offline; dashboard started scripts/pipeline_worker.py.",
+            "reused": False,
+            "reaped": [],
+        }
+
+
 def _ensure_worker_started(db: DatabaseManager) -> dict:
     status = _worker_status(db)
-    if status["online"] or not _WORKER_AUTO_START:
+    runtime_processes = _iter_runtime_worker_processes(DB_PATH)
+    # Treat a live process as "online" even if the DB heartbeat is stale (long
+    # scrapes lag the 45s window). Only auto-start when nothing is actually running.
+    if status["online"] or runtime_processes or not _WORKER_AUTO_START:
         status["auto_started"] = False
+        reaped = _reap_extra_workers(runtime_processes)
+        if reaped:
+            status["message"] = f"Reaped {len(reaped)} duplicate worker(s)."
         return status
 
-    script_path = os.path.join(_PROJECT_ROOT, "scripts", "pipeline_worker.py")
     try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        log_handle = open(os.path.join(LOG_DIR, "pipeline_worker.log"), "a", encoding="utf-8")
-        process = subprocess.Popen(
-            [sys.executable, script_path, "--db", DB_PATH, "--poll", "2"],
-            cwd=_PROJECT_ROOT,
-            stdout=log_handle,
-            stderr=log_handle,
-            start_new_session=True,
-        )
-        log_handle.close()
-        status["pid"] = process.pid
-        status["auto_started"] = True
-        status["message"] = "Worker was offline; dashboard started scripts/pipeline_worker.py."
+        started = _start_worker_process()
+        status["pid"] = started["pid"]
+        status["auto_started"] = not started.get("reused", False)
+        status["message"] = started["message"]
     except Exception as exc:
         status["auto_started"] = False
         status["message"] = f"Worker offline and auto-start failed: {exc}"
     return status
+
+
+def _runtime_health_payload(db: DatabaseManager) -> dict:
+    worker_status = _worker_status(db)
+    current_key_mask = worker_status.get("current_firecrawl_key_mask", "")
+    runtime_processes = worker_status.get("runtime_processes", [])
+    db_workers = worker_status.get("workers", [])
+    runtime_pids = {proc["pid"] for proc in runtime_processes}
+    db_pids = {worker["pid"] for worker in db_workers if worker.get("pid")}
+    return {
+        "db_path": _normalize_path(DB_PATH),
+        "current_firecrawl_key_mask": current_key_mask,
+        "worker_online": worker_status.get("online", False),
+        "message": worker_status.get("message"),
+        "db_workers": db_workers,
+        "runtime_processes": [
+            {
+                **proc,
+                "env_mismatch": bool(proc.get("firecrawl_key_mask") and proc.get("firecrawl_key_mask") != current_key_mask),
+                "orphaned": proc["pid"] not in db_pids,
+            }
+            for proc in runtime_processes
+        ],
+        "orphaned_db_workers": [worker for worker in db_workers if worker.get("pid") and worker["pid"] not in runtime_pids],
+        "has_env_mismatch": any(worker.get("env_mismatch") for worker in db_workers) or any(proc.get("firecrawl_key_mask") and proc.get("firecrawl_key_mask") != current_key_mask for proc in runtime_processes),
+    }
+
+
+def _terminate_runtime_workers(processes: list[dict], sig: int = signal.SIGTERM) -> list[int]:
+    stopped = []
+    for process in processes:
+        pid = process.get("pid")
+        if not pid:
+            continue
+        try:
+            os.kill(int(pid), sig)
+            stopped.append(int(pid))
+        except ProcessLookupError:
+            continue
+    return stopped
 
 
 def _has_active_pipeline_jobs(db: DatabaseManager, company_ids: list[int] | None = None) -> bool:
@@ -227,6 +432,54 @@ def _date_end(value: str | None) -> str | None:
     except ValueError:
         return value
 
+def _valid_cutoff_time(value: str | None) -> str:
+    value = str(value or "17:00").strip()
+    try:
+        datetime.strptime(value, "%H:%M")
+        return value
+    except ValueError:
+        return "17:00"
+
+
+def _report_window_bounds(report_window: str | None = None) -> tuple[str | None, str | None]:
+    if report_window != "today":
+        return None, None
+    cutoff = _valid_cutoff_time(getattr(_cfg(), "REPORT_CUTOFF_TIME", "17:00"))
+    hour, minute = [int(part) for part in cutoff.split(":")]
+    now = vn_now()
+    end = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    start = end - timedelta(days=1)
+    return vn_timestamp(start), vn_timestamp(end)
+
+
+def _apply_report_filters(
+    filters: list[str],
+    params: list[object],
+    company_id_expr: str,
+    report_state: str = None,
+    reported_from: str = None,
+    reported_to: str = None,
+):
+    reported_clauses = [f"rc.company_id = {company_id_expr}"]
+    reported_params: list[object] = []
+    if reported_from:
+        reported_clauses.append("rc.reported_at >= ?")
+        reported_params.append(reported_from)
+    if reported_to:
+        reported_clauses.append("rc.reported_at < ?")
+        reported_params.append(reported_to)
+    exists_sql = f"EXISTS (SELECT 1 FROM reported_companies rc WHERE {' AND '.join(reported_clauses)})"
+
+    if report_state == "reported":
+        filters.append(exists_sql)
+        params.extend(reported_params)
+    elif report_state == "unreported":
+        filters.append(f"NOT {exists_sql}")
+        params.extend(reported_params)
+    elif reported_from or reported_to:
+        filters.append(exists_sql)
+        params.extend(reported_params)
+
 
 def _company_filter_sql(
     status: str = None,
@@ -236,6 +489,9 @@ def _company_filter_sql(
     created_to: str = None,
     completed_from: str = None,
     completed_to: str = None,
+    report_state: str = None,
+    reported_from: str = None,
+    reported_to: str = None,
 ) -> tuple[str, list[object]]:
     filters = []
     params: list[object] = []
@@ -260,6 +516,7 @@ def _company_filter_sql(
     if completed_to:
         filters.append("completed_at < ?")
         params.append(_date_end(completed_to))
+    _apply_report_filters(filters, params, "companies.id", report_state, reported_from, reported_to)
 
     where = f"WHERE {' AND '.join(filters)}" if filters else ""
     return where, params
@@ -661,6 +918,7 @@ def _counts(db: DatabaseManager) -> dict:
         "failed": by_status.get("failed", 0) + by_status.get("permanently_failed", 0),
         "pending": by_status.get("pending", 0),
         "running": sum(by_status.get(status, 0) for status in _RUNNING_STATUSES),
+        "by_status": by_status,
     }
     _slow_log("company_counts", started_at)
     return _cache_set("company_counts", counts)
@@ -1006,6 +1264,9 @@ def _import_item_filter_sql(
     pipeline_status: str = None,
     created_from: str = None,
     created_to: str = None,
+    report_state: str = None,
+    reported_from: str = None,
+    reported_to: str = None,
 ) -> tuple[str, list[object]]:
     filters = ["i.batch_id = ?"]
     params: list[object] = []
@@ -1025,6 +1286,7 @@ def _import_item_filter_sql(
     if created_to:
         filters.append("i.created_at < ?")
         params.append(_date_end(created_to))
+    _apply_report_filters(filters, params, "c.id", report_state, reported_from, reported_to)
     return f"WHERE {' AND '.join(filters)}", params
 
 
@@ -1040,10 +1302,16 @@ def _import_batch_items_payload(
     created_to: str = None,
     page: int = 1,
     page_size: int = 50,
+    report_state: str = None,
+    reported_from: str = None,
+    reported_to: str = None,
 ) -> dict:
     page_size = max(1, min(page_size, 100))
     page = max(1, page)
-    where, params_without_batch = _import_item_filter_sql(search, import_outcome, pipeline_status, created_from, created_to)
+    where, params_without_batch = _import_item_filter_sql(
+        search, import_outcome, pipeline_status, created_from, created_to,
+        report_state=report_state, reported_from=reported_from, reported_to=reported_to,
+    )
     params = [batch_id] + params_without_batch
     if not completion and not checkpoint:
         total_row = db.fetch_one(
@@ -1104,6 +1372,7 @@ def _import_batch_items_payload(
         rows = rows[offset:offset + page_size]
     company_ids = [r["resolved_company_id"] for r in rows if r.get("resolved_company_id")]
     contacts = _company_contact_flags(db, company_ids)
+    reported_by_id = db.get_reported_status_for_companies(company_ids)
     stale_input = [
         {
             "id": r["resolved_company_id"],
@@ -1129,6 +1398,7 @@ def _import_batch_items_payload(
             "stale_reason": None,
             "can_reset_resume": False,
         })
+        reported = reported_by_id.get(int(company_id), {}) if company_id else {}
         items.append({
             **row,
             "id": company_id,
@@ -1145,6 +1415,9 @@ def _import_batch_items_payload(
             "completion_reason": audit.get("completion_reason"),
             "resume_status": audit.get("resume_status"),
             "can_resume_incomplete": bool(company_id and audit.get("completion_status") == "incomplete"),
+            "is_reported": bool(reported),
+            "reported_at": reported.get("reported_at"),
+            "report_run_id": reported.get("report_run_id"),
             "is_import_item": True,
             **row_stale_fields,
         })
@@ -1230,12 +1503,19 @@ def api_spa_companies(
     created_to: str = None,
     completed_from: str = None,
     completed_to: str = None,
+    report_state: str = None,
+    reported_from: str = None,
+    reported_to: str = None,
+    report_window: str = None,
     page: int = 1,
     page_size: int = 50,
 ):
     db = _db()
     page_size = max(1, min(page_size, 100))
     page = max(1, page)
+    window_start, window_end = _report_window_bounds(report_window)
+    reported_from = reported_from or window_start
+    reported_to = reported_to or window_end
 
     if import_batch_id and db.has_import_items(import_batch_id):
         payload = _import_batch_items_payload(
@@ -1250,6 +1530,9 @@ def api_spa_companies(
             created_to=created_to,
             page=page,
             page_size=page_size,
+            report_state=report_state,
+            reported_from=reported_from,
+            reported_to=reported_to,
         )
         return JSONResponse(payload)
 
@@ -1261,7 +1544,11 @@ def api_spa_companies(
         created_to=created_to,
         completed_from=completed_from,
         completed_to=completed_to,
+        report_state=report_state,
+        reported_from=reported_from,
+        reported_to=reported_to,
     )
+    scan_truncated = False
     if not completion and not checkpoint:
         total_row = db.fetch_one(
             f"SELECT COUNT(*) AS cnt FROM companies {where}",
@@ -1282,8 +1569,11 @@ def api_spa_companies(
             """,
             tuple([*params, page_size, offset]),
         )
+        # Audit only the page we return (not the whole table).
         audit_by_id = _audit_map(db, rows)
     else:
+        # Completion/checkpoint filters must audit rows in Python; bound the scan so
+        # a filter over the full table can't trigger tens of thousands of queries.
         rows = db.fetch_all(
             f"""
             SELECT id, original_name, original_name_key, vietnamese_name, tax_code, status, updated_at, created_at,
@@ -1291,9 +1581,13 @@ def api_spa_companies(
             FROM companies
             {where}
             ORDER BY id
+            LIMIT ?
             """,
-            tuple(params),
+            tuple([*params, _COMPLETION_FILTER_SCAN_CAP + 1]),
         )
+        scan_truncated = len(rows) > _COMPLETION_FILTER_SCAN_CAP
+        if scan_truncated:
+            rows = rows[:_COMPLETION_FILTER_SCAN_CAP]
 
         audit_by_id = _audit_map(db, rows)
         rows = [
@@ -1309,6 +1603,7 @@ def api_spa_companies(
 
     ids = [r["id"] for r in rows]
     contact_by_id = _company_contact_flags(db, ids)
+    reported_by_id = db.get_reported_status_for_companies(ids)
     stale_by_id = _company_stale_fields(db, rows)
 
     companies = []
@@ -1322,6 +1617,7 @@ def api_spa_companies(
             "stale_reason": None,
             "can_reset_resume": False,
         })
+        reported = reported_by_id.get(int(row["id"]), {})
         companies.append({
             **row,
             "name": row["original_name"],
@@ -1337,13 +1633,23 @@ def api_spa_companies(
             "completion_reason": audit.get("completion_reason"),
             "resume_status": audit.get("resume_status"),
             "can_resume_incomplete": audit.get("completion_status") == "incomplete",
+            "is_reported": bool(reported),
+            "reported_at": reported.get("reported_at"),
+            "report_run_id": reported.get("report_run_id"),
             "is_import_item": False,
             **stale_fields,
         })
 
     return JSONResponse({
         "companies": companies,
-        "pagination": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages},
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "truncated": scan_truncated,
+            "scan_cap": _COMPLETION_FILTER_SCAN_CAP if scan_truncated else None,
+        },
         "counts": _counts(db),
     })
 
@@ -1360,10 +1666,26 @@ def api_spa_company_ids(
     created_to: str = None,
     completed_from: str = None,
     completed_to: str = None,
+    report_state: str = None,
+    reported_from: str = None,
+    reported_to: str = None,
+    report_window: str = None,
+    complement: bool = False,
 ):
     db = _db()
+    window_start, window_end = _report_window_bounds(report_window)
+    reported_from = reported_from or window_start
+    reported_to = reported_to or window_end
+    def complement_ids(rows: list[dict]) -> list[int]:
+        excluded = {int(r["id"]) for r in rows if r.get("id")}
+        all_rows = db.fetch_all("SELECT id FROM companies ORDER BY id")
+        return [int(r["id"]) for r in all_rows if int(r["id"]) not in excluded]
+
     if import_batch_id and db.has_import_items(import_batch_id):
-        where, params_without_batch = _import_item_filter_sql(search, import_outcome, status, created_from, created_to)
+        where, params_without_batch = _import_item_filter_sql(
+            search, import_outcome, status, created_from, created_to,
+            report_state=report_state, reported_from=reported_from, reported_to=reported_to,
+        )
         params = [import_batch_id] + params_without_batch
         rows = db.fetch_all(
             f"""
@@ -1385,7 +1707,8 @@ def api_spa_company_ids(
                 if _completion_matches(audit, completion) and _checkpoint_matches(checkpoint_row, audit, checkpoint):
                     filtered_rows.append(row)
             rows = filtered_rows
-        return JSONResponse({"company_ids": [r["id"] for r in rows], "count": len(rows)})
+        company_ids = complement_ids(rows) if complement else [r["id"] for r in rows]
+        return JSONResponse({"company_ids": company_ids, "count": len(company_ids)})
 
     where, params = _company_filter_sql(
         status=status,
@@ -1395,6 +1718,9 @@ def api_spa_company_ids(
         created_to=created_to,
         completed_from=completed_from,
         completed_to=completed_to,
+        report_state=report_state,
+        reported_from=reported_from,
+        reported_to=reported_to,
     )
     rows = db.fetch_all(f"SELECT id FROM companies {where} ORDER BY id", tuple(params))
     if completion or checkpoint:
@@ -1406,7 +1732,8 @@ def api_spa_company_ids(
             if _completion_matches(audit, completion) and _checkpoint_matches(checkpoint_row, audit, checkpoint):
                 filtered_rows.append(row)
         rows = filtered_rows
-    return JSONResponse({"company_ids": [r["id"] for r in rows], "count": len(rows)})
+    company_ids = complement_ids(rows) if complement else [r["id"] for r in rows]
+    return JSONResponse({"company_ids": company_ids, "count": len(company_ids)})
 
 
 @app.get("/api/spa/import-batches")
@@ -1432,10 +1759,17 @@ def api_spa_import_batch_items(
     checkpoint: str = None,
     created_from: str = None,
     created_to: str = None,
+    report_state: str = None,
+    reported_from: str = None,
+    reported_to: str = None,
+    report_window: str = None,
     page: int = 1,
     page_size: int = 50,
 ):
     db = _db()
+    window_start, window_end = _report_window_bounds(report_window)
+    reported_from = reported_from or window_start
+    reported_to = reported_to or window_end
     return JSONResponse(_import_batch_items_payload(
         db,
         batch_id,
@@ -1447,6 +1781,9 @@ def api_spa_import_batch_items(
         created_to=created_to,
         page=page,
         page_size=page_size,
+        report_state=report_state,
+        reported_from=reported_from,
+        reported_to=reported_to,
     ))
 
 
@@ -1647,6 +1984,77 @@ def api_spa_runner_stop_all():
     })
 
 
+@app.get("/api/spa/runtime-health")
+def api_spa_runtime_health():
+    return JSONResponse(_runtime_health_payload(_db()))
+
+
+@app.post("/api/spa/runtime-health/firecrawl-test")
+def api_spa_runtime_health_firecrawl_test():
+    key = os.getenv("FIRECRAWL_API_KEY", "")
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    body = {"query": "test", "limit": 1, "lang": "vi", "country": "vn"}
+    try:
+        response = requests.post("https://api.firecrawl.dev/v2/search", headers=headers, json=body, timeout=30)
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        return JSONResponse({
+            "ok": response.status_code == 200,
+            "status_code": response.status_code,
+            "credits_used": payload.get("creditsUsed"),
+            "key_mask": _current_firecrawl_key_mask(),
+            "message": payload.get("error") or payload.get("message") or response.text[:200],
+        })
+    except Exception as exc:
+        return JSONResponse({
+            "ok": False,
+            "status_code": None,
+            "credits_used": None,
+            "key_mask": _current_firecrawl_key_mask(),
+            "message": str(exc),
+        }, status_code=502)
+
+
+def _request_graceful_worker_restart(db: DatabaseManager) -> dict:
+    stop_result = db.request_stop_pipeline_jobs(stop_queued=False)
+    before = _runtime_health_payload(db)
+    runtime_processes = before.get("runtime_processes", [])
+    signaled_pids = _terminate_runtime_workers(runtime_processes)
+    time.sleep(1.0)
+    remaining = _iter_runtime_worker_processes()
+    started_pid = None
+    started_message = None
+    start_error = None
+    if not remaining:
+        try:
+            started = _start_worker_process()
+            started_pid = started["pid"]
+            started_message = started["message"]
+        except Exception as exc:
+            start_error = str(exc)
+    after = _runtime_health_payload(db)
+    if start_error:
+        status_label = "start_failed"
+    elif started_pid:
+        status_label = "restarted"
+    else:
+        status_label = "stop_pending"
+    return {
+        "status": status_label,
+        "stop_requested": stop_result,
+        "signaled_pids": signaled_pids,
+        "remaining_pids": [proc["pid"] for proc in remaining],
+        "started_pid": started_pid,
+        "message": started_message or start_error,
+        "runtime_health": after,
+    }
+
+
+@app.post("/api/spa/runner/restart-worker")
+def api_spa_runner_restart_worker():
+    payload = _request_graceful_worker_restart(_db())
+    return JSONResponse(payload, status_code=500 if payload["status"] == "start_failed" else 200)
+
+
 @app.post("/api/spa/monitor/remove")
 async def api_spa_monitor_remove(request: Request):
     data = await request.json()
@@ -1710,10 +2118,6 @@ def api_spa_settings():
         "AI_GROUNDING_MODEL": os.getenv("AI_GROUNDING_MODEL", "models/gemini-2.5-flash-lite"),
         "AI_EXTRACTOR_MODEL": os.getenv("AI_EXTRACTOR_MODEL", "models/gemini-2.5-flash-lite")
     })
-
-def _mask_key(key: str) -> str:
-    if not key or len(key) < 8: return key
-    return f"{key[:4]}...{key[-4:]}"
 
 @app.post("/api/spa/settings")
 async def api_spa_settings_update(req: Request):
@@ -1794,6 +2198,42 @@ def api_spa_gemini_models():
         return JSONResponse({"models": models})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+# ---------------------------------------------------------------------------
+# API: Reported checkpoint
+# ---------------------------------------------------------------------------
+@app.post("/api/spa/companies/report-status")
+async def api_spa_companies_report_status(req: Request):
+    data = await req.json()
+    company_ids = data.get("company_ids") or []
+    action = str(data.get("action") or "").strip().lower()
+    note = data.get("note")
+    db = _db()
+
+    if not company_ids:
+        return JSONResponse({"error": "No company IDs provided"}, status_code=400)
+    if action not in {"mark", "unmark"}:
+        return JSONResponse({"error": "Invalid action"}, status_code=400)
+
+    if action == "unmark":
+        result = db.unmark_companies_reported(company_ids)
+        _invalidate_dashboard_cache()
+        return JSONResponse({"status": "ok", **result})
+
+    window_start = data.get("window_start")
+    window_end = data.get("window_end")
+    if not window_start and not window_end:
+        window_start, window_end = _report_window_bounds(data.get("report_window") or "today")
+    result = db.mark_companies_reported(
+        company_ids,
+        window_start=window_start,
+        window_end=window_end,
+        note=note,
+        reported_by=os.getenv("DASHBOARD_USER", "dashboard"),
+    )
+    _invalidate_dashboard_cache()
+    return JSONResponse({"status": "ok", **result, "window_start": window_start, "window_end": window_end})
+
 
 # ---------------------------------------------------------------------------
 # API: Delete Companies
@@ -2009,7 +2449,7 @@ async def run_step_api(request: Request):
     company_id = data.get("company_id")
     step = data.get("step")
 
-    VALID_STEPS = {"gemini_quick", "google_maps", "serper_search", "filter", "scrape", "ai_extract", "facebook", "full"}
+    VALID_STEPS = {"gemini_quick", "serper_search", "filter", "scrape", "ai_extract", "facebook", "full"}
     
     if not isinstance(company_id, int) or company_id <= 0:
         return JSONResponse({"error": "Invalid company_id"}, status_code=400)
@@ -2043,30 +2483,6 @@ async def run_step_api(request: Request):
                 },
                 "grounding_sources": result.get("grounding_sources", []),
                 "result": result.get("result"),
-            })
-
-        elif step == "google_maps":
-            from src.serper_search import SerperSearch
-            serper = SerperSearch(db, logger, config=cfg)
-            # Try to get query from gemini result
-            gr = db.fetch_one("SELECT result_json FROM gemini_quick_results WHERE company_id = ? ORDER BY id DESC LIMIT 1", (company_id,))
-            query = company["original_name"]
-            if gr and gr.get("result_json"):
-                try:
-                    parsed = json.loads(gr["result_json"])
-                    query = parsed.get("core_name_vi") or parsed.get("core_name") or query
-                except json.JSONDecodeError:
-                    pass
-
-            result = serper.search_places(company_id, query)
-            return JSONResponse({
-                "status": "success",
-                "step": step,
-                "phone": result.get("phone"),
-                "address": result.get("address"),
-                "website": result.get("website"),
-                "title": result.get("title"),
-                "credits_used": result.get("serper_credits_used", 0),
             })
 
         elif step == "serper_search":
@@ -2255,7 +2671,6 @@ def api_export_logs(format: str = "jsonl", company_id: int = None):
 | Bước | Thành công |
 |------|------------|
 | Gemini Quick (đủ dữ liệu) | {gemini_suff} |
-| Google Maps | — |
 | Deep Search | — |
 
 ## API Usage

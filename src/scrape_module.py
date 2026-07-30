@@ -1,11 +1,11 @@
 import hashlib
-import datetime
 import time
 import requests
 from urllib.parse import urlparse, urlencode, parse_qs
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
 from src.errors import RetryableError, CriticalError, SkippableError, PipelineError
+from src.time_utils import vn_cache_expiry
 
 class ScrapeModule:
     def __init__(self, db: DatabaseManager, logger: PipelineLogger, firecrawl_api_key: str,
@@ -67,13 +67,12 @@ class ScrapeModule:
         }
 
     def _store_url_cache_success(self, url: str, markdown_content: str) -> None:
-        ttl = datetime.datetime.now() + datetime.timedelta(days=self.config.CACHE_TTL_DAYS)
         self.db.insert_url_cache(
             url_hash=self._normalize_url_and_hash(url),
             url=url,
             scrape_status='success',
             content_hash=hashlib.sha256((markdown_content or '').encode('utf-8')).hexdigest(),
-            ttl_expires_at=ttl.strftime("%Y-%m-%d %H:%M:%S")
+            ttl_expires_at=vn_cache_expiry(self.config.CACHE_TTL_DAYS)
         )
 
     def _cached_result_for_link(self, link: dict) -> dict | None:
@@ -503,13 +502,12 @@ class ScrapeModule:
                             self.rate_limiter.report_success()
 
                         # Store in url_cache so future requests for this URL are deduplicated
-                        ttl = datetime.datetime.now() + datetime.timedelta(days=self.config.CACHE_TTL_DAYS)
                         self.db.insert_url_cache(
                             url_hash=url_hash,
                             url=url,
                             scrape_status='success',
                             content_hash=hashlib.sha256((md_content or '').encode('utf-8')).hexdigest(),
-                            ttl_expires_at=ttl.strftime("%Y-%m-%d %H:%M:%S")
+                            ttl_expires_at=vn_cache_expiry(self.config.CACHE_TTL_DAYS)
                         )
 
                         return {"status": "success", "content_length": content_length, "source_type": source_type, "cached": False}
