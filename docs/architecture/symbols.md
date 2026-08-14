@@ -189,6 +189,16 @@ Use this to locate a symbol, then `Read` that file with a narrow
 11     def main
 ```
 
+## `scripts/generate_blacklist_skip_domain_evidence_report.py` (230 lines)
+```
+61     def normalized_host
+68     def host_matches
+73     def load_samples
+139    def evidence_list
+159    def build_report
+219    def main
+```
+
 ## `scripts/pipeline_worker.py` (11 lines)
 ```
 (no top-level symbols)
