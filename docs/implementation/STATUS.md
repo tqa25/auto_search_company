@@ -1,19 +1,24 @@
 # Implementation status
 
 Last updated: 2026-08-14 +07
-Overall state: no feature work in flight; the documentation rebuild just landed and is uncommitted.
+Overall state: no feature work in flight. The documentation rebuild is committed and merged.
 
 Read first: `docs/architecture/MAP.md` (how the system works) and `docs/architecture/INDEX.md` (which contract doc covers what).
 
 ## Current handoff
 
-In flight: the documentation rebuild itself, done 2026-08-14 — `MAP.md`, `INDEX.md`,
-`symbols.md`, `scripts/gen-symbols.sh`, and the `AGENTS.md` rewrite. All present on disk
-but still untracked/modified on `snapshot/ban-lasted-20260730`.
+Landed 2026-08-14 on `snapshot/ban-lasted-20260730` via `chore/rebuild-codebase-docs`:
+`MAP.md`, `INDEX.md`, `symbols.md`, `scripts/gen-symbols.sh`, the `AGENTS.md` rewrite,
+and two new guards in `scripts/check-doc-sync.sh` (blocks code changes on `main`;
+blocks a stale `symbols.md`).
 
-Next action: commit that rebuild (`docs/architecture/`, `docs/implementation/`,
-`scripts/check-doc-sync.sh`, `scripts/gen-symbols.sh`, modified `AGENTS.md`). Nothing
-else is queued. Blocked: nothing.
+Next action: nothing queued. Two known defects are documented in `MAP.md` §9 and are
+worth picking up — the dead `serper_search` path (`dashboard/app.py:2489` imports a
+module that does not exist) and the byte-identical duplication of
+`suggest_resume_status` across `src/pipeline_worker.py:56` and `dashboard/app.py:958`.
+
+Blocked: nothing. Untracked and deliberately not committed:
+`tests/manual/smoke_test_output/` — test output artifacts; consider gitignoring.
 
 Standing facts — do not re-derive, do not redo:
 
