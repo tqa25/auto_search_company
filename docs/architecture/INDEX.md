@@ -72,7 +72,11 @@ All test commands assume `venv/bin/python -m pytest ... --ignore=tests/manual`.
 
 ## Generated reports (one-off deliverables)
 
-| Artifact | Spec |
-|---|---|
-| Executive Blacklist/Skip HTML report (Korean UI) | `docs/architecture/executive-blacklist-skip-report.md` |
-| Blacklist/Skip domain evidence HTML (Korean UI) | `docs/architecture/blacklist-skip-domain-evidence-report.md` |
+| Artifact | Spec | Generator |
+|---|---|---|
+| Executive Blacklist/Skip HTML report (Korean UI) | `docs/architecture/executive-blacklist-skip-report.md` | hand-authored HTML, no generator script |
+| Blacklist/Skip domain evidence HTML (Korean UI) | `docs/architecture/blacklist-skip-domain-evidence-report.md` | `scripts/generate_blacklist_skip_domain_evidence_report.py` — reads the SQLite DB read-only, emits `output/reports/blacklist-skip-domain-evidence-ko.html` |
+
+Before regenerating the domain evidence report, re-read its spec: the explicit
+`dauthau.info` Gemini Grounding provenance rule must be preserved, and those
+URLs must not be presented as no-contact scrape results.
