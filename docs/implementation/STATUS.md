@@ -17,8 +17,11 @@ worth picking up — the dead `serper_search` path (`dashboard/app.py:2489` impo
 module that does not exist) and the byte-identical duplication of
 `suggest_resume_status` across `src/pipeline_worker.py:56` and `dashboard/app.py:958`.
 
-Blocked: nothing. Untracked and deliberately not committed:
-`tests/manual/smoke_test_output/` — test output artifacts; consider gitignoring.
+Blocked: nothing.
+
+Also open: `tests/manual/smoke_test.py` is dead — it reads a `Config.CONTACT_PATHS`
+attribute that does not exist, so it exits before its first check. See `MAP.md` §10.
+Its output directory is now gitignored.
 
 Standing facts — do not re-derive, do not redo:
 
