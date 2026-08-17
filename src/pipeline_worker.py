@@ -14,56 +14,12 @@ from dotenv import load_dotenv
 
 from src.database import DatabaseManager
 from src.pipeline import Pipeline
+from src.resume_policy import company_data_counts as _company_data_counts, suggest_resume_status
 from src.time_utils import parse_timestamp_as_vn, vn_now, vn_timestamp
 
 RUNNING_COMPANY_STATUSES = {"gemini_quick", "searching", "scraping", "extracting"}
 STALE_JOB_STATUSES = {"running", "stopping"}
 
-
-def _company_data_counts(db: DatabaseManager, company_id: int) -> dict:
-    row = db.fetch_one(
-        """
-        SELECT
-            (SELECT COUNT(*) FROM gemini_quick_results WHERE company_id = ?) AS gemini_results,
-            (SELECT COUNT(*) FROM search_results WHERE company_id = ?) AS search_results,
-            (SELECT COUNT(*) FROM filtered_links WHERE company_id = ?) AS filtered_links,
-            (SELECT COUNT(*) FROM filtered_links WHERE company_id = ? AND should_scrape = 1) AS scrape_candidates,
-            (SELECT COUNT(*) FROM scraped_pages WHERE company_id = ?) AS scraped_pages,
-            (SELECT COUNT(*) FROM scraped_pages WHERE company_id = ? AND scrape_status = 'success') AS scraped_success,
-            (SELECT COUNT(*) FROM extracted_contacts WHERE company_id = ?) AS contacts,
-            (SELECT COUNT(*) FROM extracted_contacts WHERE company_id = ? AND address IS NOT NULL AND TRIM(address) != '') AS contact_addresses
-        """,
-        (company_id, company_id, company_id, company_id, company_id, company_id, company_id, company_id),
-    )
-    return row or {
-        "gemini_results": 0,
-        "search_results": 0,
-        "filtered_links": 0,
-        "scrape_candidates": 0,
-        "scraped_pages": 0,
-        "scraped_success": 0,
-        "contacts": 0,
-        "contact_addresses": 0,
-    }
-
-
-def suggest_resume_status(company: dict, counts: dict) -> tuple[str, str]:
-    status = company.get("status")
-    if status == "extracting" or counts.get("contacts", 0) > 0:
-        return "ai_extract_pending", "has_extracted_contacts_or_extracting"
-    if counts.get("scraped_success", 0) > 0:
-        if status == "scraping" and counts.get("filtered_links", 0) > counts.get("scraped_success", 0):
-            return "searched", "partial_scrape_can_resume_without_deep_search"
-        return "ai_extract_pending", "has_successful_scraped_pages"
-    if counts.get("scraped_pages", 0) > 0 and counts.get("filtered_links", 0) > 0:
-        return "searched", "partial_scraped_pages_with_filtered_links"
-    if counts.get("filtered_links", 0) > 0:
-        return "searched", "has_filtered_links"
-    if counts.get("search_results", 0) > 0:
-        return "searched", "has_search_results"
-    if counts.get("gemini_results", 0) > 0:
-        return "gemini_quick_done", "has_gemini_quick_results"
-    return "pending", "no_intermediate_data"
 
 
 @dataclass

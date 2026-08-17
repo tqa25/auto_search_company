@@ -151,9 +151,10 @@ strict completion unreachable. Documented in `completion_audit.py:26-30`.
 `stale_minutes` (default 15), using `suggest_resume_status` to infer where to
 restart from actual row counts rather than trusting `status`.
 
-**Note:** `suggest_resume_status` exists in *two* places with similar logic —
-`src/pipeline_worker.py:56` and `dashboard/app.py:958`. Changing one without the
-other causes divergent recovery behaviour.
+The recovery policy lives in **`src/resume_policy.py`** — `company_data_counts`
+and `suggest_resume_status`. Both the worker and `dashboard/app.py` import it.
+It is deliberately dependency-free so the dashboard does not pull `Pipeline` into
+its import graph. It used to be copy-pasted into both files; do not re-inline it.
 
 ---
 
@@ -240,6 +241,7 @@ carries `(message, company_id, step)` and a `category` property.
 |---|---|
 | `src/config.py` | `Config` class (annotated attrs, not a dataclass) + `default_config`; env vars, then `pipeline_config.json` overrides |
 | `src/database.py` | `DatabaseManager`: schema, queries, job queue ops |
+| `src/resume_policy.py` | Where to restart an interrupted company. Reads row counts instead of trusting `companies.status`. Shared by the worker and the dashboard. |
 | `src/connection_pool.py` | **HTTP** client pooling — `ConnectionManager` wraps `requests.Session` with `HTTPAdapter`/`Retry`, max 5 conns, per-type timeouts (search 15s, scrape 45s). Nothing to do with SQLite. |
 | `src/rate_limiter.py` | `AdaptiveRateLimiter` — **throttling only**. 429 doubles delay, 403/503 → max delay + 5-min cooldown. Daily-quota enforcement is *not* here; it lives in `gemini_quick_search.py:94`. |
 | `src/logger.py` | `PipelineLogger` → `pipeline_logs` + JSONL event stream + daily summaries + CSV/Excel export |
@@ -275,29 +277,26 @@ The first three and the last are overridable from `pipeline_config.json`;
    everything runs. That is intentional ("start from scratch") and
    `company_run.py:39` uses `next_step != "search"` to decide whether to print
    "Resuming". Don't "fix" it by adding `'search'` to `step_order`.
-2. `suggest_resume_status` is duplicated **byte-for-byte** between
-   `src/pipeline_worker.py:56` and `dashboard/app.py:958` (verified identical).
-   Edit both or neither.
-3. `migrations.py` is inert (§5).
-4. Strict completion, not step completion, decides `done` (§3).
-5. `filtered_links` accumulates duplicate URLs across runs — always dedupe by
+2. `migrations.py` is inert (§5).
+3. Strict completion, not step completion, decides `done` (§3).
+4. `filtered_links` accumulates duplicate URLs across runs — always dedupe by
    `url` when joining.
-6. `Pipeline.generate_report` has a legacy fallback branch that triggers only if
+5. `Pipeline.generate_report` has a legacy fallback branch that triggers only if
    `ExcelWriter.write_final_report` is missing. Dead in practice.
-7. **`force_refresh` is a partial bypass.** It flips the global
+6. **`force_refresh` is a partial bypass.** It flips the global
    `cfg.FORCE_REFRESH` (`company_run.py:42`, reset in a `finally`), which only
    skips the `query_cache` / `url_cache` *table* lookups
    (`search_module.py:470`, `scrape_module.py:82,398`). The separate
    "already have a successful `scraped_pages` row" checks
    (`scrape_module.py:107-115,426-434`) are **not** gated by it — a
    force-refresh run still reuses existing scraped content.
-8. **Auto-blacklist is read once at startup.** `LinkFilter.__init__`
+7. **Auto-blacklist is read once at startup.** `LinkFilter.__init__`
    (`filter_module.py:102-106`) loads `get_auto_blacklisted_domains()` into
    memory and uses it at `filter_module.py:321`. A long-running worker never
    sees domains blacklisted after it started — restart it to pick them up.
    The flag is written from `ai_extractor.py:186` (extraction outcome), not from
    the scrape module; `scrape_module.py` never reads it.
-9. Method params are named `delay_seconds`, not `delay`
+8. Method params are named `delay_seconds`, not `delay`
     (`ScrapeModule.scrape_company`, `AIExtractor.extract_for_company`).
 
 ---

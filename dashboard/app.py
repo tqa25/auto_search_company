@@ -27,6 +27,10 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJECT_ROOT)
 
 from src.database import DatabaseManager
+from src.resume_policy import (
+    company_data_counts as _shared_company_data_counts,
+    suggest_resume_status as _shared_suggest_resume_status,
+)
 from src.company_matcher import (
     evidence_json,
     normalize_tax_code,
@@ -926,50 +930,10 @@ def _parse_dt(value: str | None) -> datetime | None:
     return parse_timestamp_as_vn(value)
 
 
-def _company_data_counts(db: DatabaseManager, company_id: int) -> dict:
-    row = db.fetch_one(
-        """
-        SELECT
-            (SELECT COUNT(*) FROM gemini_quick_results WHERE company_id = ?) AS gemini_results,
-            (SELECT COUNT(*) FROM search_results WHERE company_id = ?) AS search_results,
-            (SELECT COUNT(*) FROM filtered_links WHERE company_id = ?) AS filtered_links,
-            (SELECT COUNT(*) FROM filtered_links WHERE company_id = ? AND should_scrape = 1) AS scrape_candidates,
-            (SELECT COUNT(*) FROM scraped_pages WHERE company_id = ?) AS scraped_pages,
-            (SELECT COUNT(*) FROM scraped_pages WHERE company_id = ? AND scrape_status = 'success') AS scraped_success,
-            (SELECT COUNT(*) FROM extracted_contacts WHERE company_id = ?) AS contacts,
-            (SELECT COUNT(*) FROM extracted_contacts WHERE company_id = ? AND address IS NOT NULL AND TRIM(address) != '') AS contact_addresses
-        """,
-        (company_id, company_id, company_id, company_id, company_id, company_id, company_id, company_id),
-    )
-    return row or {
-        "gemini_results": 0,
-        "search_results": 0,
-        "filtered_links": 0,
-        "scrape_candidates": 0,
-        "scraped_pages": 0,
-        "scraped_success": 0,
-        "contacts": 0,
-        "contact_addresses": 0,
-    }
-
-
-def _suggest_resume_status(company: dict, counts: dict) -> tuple[str, str]:
-    status = company.get("status")
-    if status == "extracting" or counts.get("contacts", 0) > 0:
-        return "ai_extract_pending", "has_extracted_contacts_or_extracting"
-    if counts.get("scraped_success", 0) > 0:
-        if status == "scraping" and counts.get("filtered_links", 0) > counts.get("scraped_success", 0):
-            return "searched", "partial_scrape_can_resume_without_deep_search"
-        return "ai_extract_pending", "has_successful_scraped_pages"
-    if counts.get("scraped_pages", 0) > 0 and counts.get("filtered_links", 0) > 0:
-        return "searched", "partial_scraped_pages_with_filtered_links"
-    if counts.get("filtered_links", 0) > 0:
-        return "searched", "has_filtered_links"
-    if counts.get("search_results", 0) > 0:
-        return "searched", "has_search_results"
-    if counts.get("gemini_results", 0) > 0:
-        return "gemini_quick_done", "has_gemini_quick_results"
-    return "pending", "no_intermediate_data"
+# Resume policy is shared with the worker — see src/resume_policy.py.
+# These aliases keep the private names other call sites and tests already use.
+_company_data_counts = _shared_company_data_counts
+_suggest_resume_status = _shared_suggest_resume_status
 
 
 def _is_stale_running_job(company: dict, job: dict | None, threshold_minutes: int = _STALE_THRESHOLD_MINUTES) -> bool:
