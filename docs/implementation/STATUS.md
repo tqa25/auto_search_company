@@ -1,48 +1,57 @@
 # Implementation status
 
 Last updated: 2026-08-17 +07
-Overall state: **Stage 0 baseline complete and accepted.** Ready to begin Stage 1.
+Overall state: Stage 0 complete. Stage 1 work item 3 (retry) handed off for execution; work items 1 and 2 held pending user approval to spend.
 
 Read first: `docs/architecture/MAP.md` (how the system works) and `docs/architecture/INDEX.md` (which contract doc covers what).
 
+## Stage 0 — complete
+
+30-company baseline accepted (commits `2bdbba7`, `8cd7558`). Files:
+`docs/implementation/work-items/stage0-baseline.md`, `stage0-url-checklist.md`,
+`stage0_raw_query_results.json`. Verified against the live DB (8/30 random, 80 field
+checks, zero mismatches); `data/company_data.db` untouched.
+
+Known sample limitation: group A has no genuinely different-province pair — the four
+sampled are same-address re-imports. One real pair exists if the sample ever needs
+strengthening: MINH TRÍ, id=758 (Bắc Ninh) vs id=7290 (Hà Nội).
+
 ## Current handoff
 
-Stage 0 (30-company baseline per V2 plan §3.0 / Stage 1 plan §3.0) is **complete**:
+Not being run in plan order; the first two work items are gated on spending decisions
+only the user can make.
 
-- Database unchanged: `data/company_data.db` (8,701 companies verified).
-- Baseline file: `docs/implementation/work-items/stage0-baseline.md` — 30 companies, sampling method documented, group assignments explained.
-- Data files:
-  - `stage0_raw_query_results.json` — raw query results for all 30 companies (verified against live database, 8/30 random sample, 80 field checks, zero mismatches).
-  - `docs/implementation/work-items/stage0-url-checklist.md` — all scraped URLs for manual inspection.
-- Commits: `2bdbba7` finalized group B with high-confidence footer-misattribution cases (594, 1794, 1935, 2384 replacing 3, 4, 32, 39).
+| Work item | State | Gate |
+|---|---|---|
+| WI1 — remove fixed waits (§4) | **held** | §4.1b A/B measurement spends real Firecrawl credit |
+| WI2 — cache-hit + unique index (§5) | **held** | migration writes to `data/company_data.db` (1.98 GB); needs backup |
+| WI3 — retry correctness (§6) | **handed off** | none — zero paid API, zero schema change |
 
-**Two known limitations (acceptable, not blockers):**
+WI3 handoff: `docs/implementation/work-items/2026-08-17-stage1-wi3-retry-handoff.md`.
+Consolidate six competing retry owners into `src/v2/runtime/retry.py`, resolve the
+three-way 503 conflict, map operation-exhausted → `companies.status`, delete dead
+`_batch_short_pages`. Branch `refactor/stage1-retry-executor`, 4 commits, test-first.
+Every `file:line` in it re-verified against live code 2026-08-17.
 
-1. **Group A (same name, different province):** no genuinely different-province pair found in top results. The 4 sampled are same-address re-imports. One genuine pair exists (MINH TRÍ: id=758 Bắc Ninh, id=7290 Hà Nội) but was not substituted. If the sample needs strengthening later, can be replaced.
-2. **Group B (footer misattribution):** the four companies now sampled have contact extracted from news articles demonstrably unrelated to the company (appointment news, personal-name pages, partial-name matches, tag pages). Contact misattribution is real — these are the intended high-confidence cases.
+Next action: **verify WI3 when the executing agent reports back** — re-run the suite,
+confirm all six retry owners were actually touched, confirm no real API call happened.
+Do not accept the report at face value. Then decide with the user whether to unblock
+WI1 or WI2.
 
-Next action: **Stage 1 work item 1 can start** (`fix/rip-out-serper` branch per `AGENTS.md` §5).
-
-**Important:** Stage 1's first A/B measurement (plan §4.1b / §12.1: measure `waitFor` at 3000ms vs. 0) requires explicit **paid-API approval** before running. Nothing else in Stage 1 spends quota. Do not run that test gate without confirmation.
-
-Blocked: nothing. Waiting on user approval to start Stage 1 work item 1.
+Blocked: WI1 and WI2 need a user decision on spending.
 
 Standing facts — do not re-derive, do not redo:
 
-- The Korean Blacklist/Skip **executive** report and the Korean **domain-evidence**
-  report are both COMPLETE for the verified production window 22/05–14/07/2026.
-  Detail lives in `docs/implementation/work-items/`.
-- Artifact: `output/reports/blacklist-skip-domain-evidence-ko.html` (local only;
-  `output/` is gitignored, so it ships outside Git).
-- If the domain-evidence report is ever regenerated, preserve the explicit
-  `dauthau.info` Gemini Grounding provenance rule **first**.
+- The Korean Blacklist/Skip **executive** and **domain-evidence** reports are both
+  COMPLETE for the verified window 22/05–14/07/2026. Detail in `work-items/`.
+- Artifact `output/reports/blacklist-skip-domain-evidence-ko.html` is local only
+  (`output/` is gitignored).
+- If the domain-evidence report is regenerated, preserve the explicit `dauthau.info`
+  Gemini Grounding provenance rule **first**.
 - The replay estimate is a conservative Top-10 simulation, not an invoice total.
 
 ## Verification
 
-Baseline: `venv/bin/python -m pytest tests/ -q`
-
-Run 2026-08-17: **190 passed, 1 failed** — `test_dashboard_import_filters.py::test_runner_restart_worker_starts_new_process_after_terminating_runtime_workers`
-(`KeyError: 'stopped_pids'`), pre-existing.
-
-Documentation gate: `bash scripts/check-doc-sync.sh` — passed 2026-08-17.
+Baseline: `venv/bin/python -m pytest tests/ -q` → **190 passed, 1 failed**
+(`test_dashboard_import_filters.py::test_runner_restart_worker_starts_new_process_after_terminating_runtime_workers`,
+`KeyError: 'stopped_pids'`, pre-existing). Doc gate: `bash scripts/check-doc-sync.sh` passed.
