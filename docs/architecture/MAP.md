@@ -310,6 +310,14 @@ venv/bin/python -m pytest tests/ -q --ignore=tests/manual
 `--ignore=tests/manual` is **required**: `tests/manual/smoke_test.py` calls
 `sys.exit(1)` at import time and aborts collection for the whole suite.
 
+**`tests/manual/smoke_test.py` is currently dead code.** It reads
+`default_config.CONTACT_PATHS` at four places (lines 71, 88, 378, 571), and that
+attribute exists nowhere in `src/config.py` or `pipeline_config.json`. The script
+fails its first check with `AttributeError` and exits. Its last two recorded runs
+both failed — 2026-07-29 with `No module named 'src'`, 2026-08-14 with the
+`CONTACT_PATHS` error. Either restore the attribute or retire the script; do not
+trust it as a health signal. Its output directory is gitignored.
+
 Baseline as of 2026-08-14: **190 passed, 1 failed**. The known failure is
 `test_dashboard_import_filters.py::test_runner_restart_worker_starts_new_process_after_terminating_runtime_workers`
 (`KeyError: 'stopped_pids'` — the endpoint no longer returns that key). Treat it

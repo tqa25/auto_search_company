@@ -13,3 +13,4 @@ results/report/.~lock.*
 *.db-wal
 *.m4a
 *:Zone.Identifier
+tests/manual/smoke_test_output/
