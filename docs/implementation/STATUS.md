@@ -1,45 +1,31 @@
 # Implementation status
 
 Last updated: 2026-08-17 +07
-Overall state: Stage 0 baseline data verified correct; table had transcription errors, now fixed. Two open items need a user decision before Stage 0 counts as fully done.
+Overall state: **Stage 0 baseline complete and accepted.** Ready to begin Stage 1.
 
 Read first: `docs/architecture/MAP.md` (how the system works) and `docs/architecture/INDEX.md` (which contract doc covers what).
 
 ## Current handoff
 
-Stage 0 executed by another agent (Google Antigravity) per
-`docs/implementation/work-items/2026-08-17-stage0-baseline-handoff.md`. Verified this
-session, independently, against the live database (not just trusted the file):
+Stage 0 (30-company baseline per V2 plan §3.0 / Stage 1 plan §3.0) is **complete**:
 
-- DB untouched: `data/company_data.db` mtime/size unchanged from before execution.
-  30 unique `company_id`, no duplicates.
-- `stage0_raw_query_results.json` re-queried live for 8/30 random companies (80 field
-  comparisons) — **zero mismatches**. This file is trustworthy.
-- `docs/implementation/work-items/stage0-baseline.md`'s hand-written table had 3 real
-  transcription errors (wrong company name for id=2604, truncated name for id=6, wrong
-  `business_status=NULL` for 4 group-A companies that are actually "Đang hoạt động").
-  **Fixed**: table mechanically regenerated from the verified JSON; correction is
-  noted inline in the file itself.
+- Database unchanged: `data/company_data.db` (8,701 companies verified).
+- Baseline file: `docs/implementation/work-items/stage0-baseline.md` — 30 companies, sampling method documented, group assignments explained.
+- Data files:
+  - `stage0_raw_query_results.json` — raw query results for all 30 companies (verified against live database, 8/30 random sample, 80 field checks, zero mismatches).
+  - `docs/implementation/work-items/stage0-url-checklist.md` — all scraped URLs for manual inspection.
+- Commits: `2bdbba7` finalized group B with high-confidence footer-misattribution cases (594, 1794, 1935, 2384 replacing 3, 4, 32, 39).
 
-Two open items the executing agent flagged and could not resolve on its own — need a
-user call before treating Stage 0 as fully accepted:
+**Two known limitations (acceptable, not blockers):**
 
-1. Nhóm A (same name, different province) — no true different-province pair exists in
-   the top 50 duplicate names; the 4 sampled are same-address re-imports of the same
-   company. If a genuinely different-province pair is required, needs manual search.
-2. Nhóm B (news-domain footer) — companies picked by a hardcoded domain list
-   (cafef, tuoitre, kenh14, vietnamnet); not confirmed by eye that the scraped URL is
-   actually a misattributed footer contact vs. a legitimate news mention.
+1. **Group A (same name, different province):** no genuinely different-province pair found in top results. The 4 sampled are same-address re-imports. One genuine pair exists (MINH TRÍ: id=758 Bắc Ninh, id=7290 Hà Nội) but was not substituted. If the sample needs strengthening later, can be replaced.
+2. **Group B (footer misattribution):** the four companies now sampled have contact extracted from news articles demonstrably unrelated to the company (appointment news, personal-name pages, partial-name matches, tag pages). Contact misattribution is real — these are the intended high-confidence cases.
 
-Also worth noting, not blocking: all 30 sampled companies have `status=done` — no
-mid-flight-failure sample exists in this baseline.
+Next action: **Stage 1 work item 1 can start** (`fix/rip-out-serper` branch per `AGENTS.md` §5).
 
-Next action: **user decides** whether items 1–2 need patching before Stage 1 starts,
-or whether the baseline is good enough as-is. Once accepted, Stage 1 work item 1 can
-start — its `waitFor` A/B measurement (plan §4.1b / §12.1) needs separate paid-API
-approval; nothing else in Stage 1 does.
+**Important:** Stage 1's first A/B measurement (plan §4.1b / §12.1: measure `waitFor` at 3000ms vs. 0) requires explicit **paid-API approval** before running. Nothing else in Stage 1 spends quota. Do not run that test gate without confirmation.
 
-Blocked: nothing — waiting on user decision, not stuck.
+Blocked: nothing. Waiting on user approval to start Stage 1 work item 1.
 
 Standing facts — do not re-derive, do not redo:
 
