@@ -319,7 +319,7 @@ class Pipeline:
             "step1_success": 0, "step2_success": 0,
             "no_phone": 0,
             "gemini_tokens_in": 0, "gemini_tokens_out": 0,
-            "serper_credits": 0, "firecrawl_credits": 0,
+            "firecrawl_credits": 0,
             "urls_deduped": 0,
             "status_gate_skipped": 0,
         }
@@ -330,11 +330,10 @@ class Pipeline:
 
         # Get daily quota used
         quota_row = self.db.fetch_one(
-            "SELECT gemini_grounding_used, serper_used FROM daily_quota WHERE date = ?",
+            "SELECT gemini_grounding_used FROM daily_quota WHERE date = ?",
             (today,)
         )
         gemini_used = quota_row["gemini_grounding_used"] if quota_row else 0
-        serper_used = quota_row["serper_used"] if quota_row else 0
 
         processed = s["total"] - s["skipped"]
         print(f"""
@@ -350,7 +349,6 @@ class Pipeline:
   Gemini Grounding requests:      {gemini_used} / {self.cfg.GEMINI_DAILY_LIMIT}
   Gemini tokens (input):          {s['gemini_tokens_in']:,}
   Gemini tokens (output):         {s['gemini_tokens_out']:,}
-  Serper credits (hôm nay):       {serper_used}
   URLs trùng lặp đã loại:         {s['urls_deduped']}
   Status gate đã bỏ qua:          {s['status_gate_skipped']}
 ═══════════════════════════════════════════""")

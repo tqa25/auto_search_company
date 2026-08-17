@@ -82,10 +82,6 @@ class Config:
         self.GEMINI_API_KEY: str | None = _validate_api_key(
             "GEMINI_API_KEY", os.getenv("GEMINI_API_KEY")
         )
-        self.SERPER_API_KEY: str | None = _validate_api_key(
-            "SERPER_API_KEY", os.getenv("SERPER_API_KEY")
-        )
-
         # --- Search group ---
         self.SEARCH_LIMIT: int = _parse_int(
             os.getenv("SEARCH_LIMIT"), default=100
@@ -219,13 +215,6 @@ class Config:
             os.getenv("GEMINI_DAILY_WARN_PERCENT"), default=0.9
         )
 
-        # --- Serper API (Bước 2 Maps + Bước 3 Search) ---
-        self.SERPER_ENABLED: bool = _parse_bool(
-            os.getenv("SERPER_ENABLED"), default=True
-        )
-        self.SERPER_NUM_RESULTS: int = _parse_int(
-            os.getenv("SERPER_NUM_RESULTS"), default=10
-        )
 
 
         # --- AI Extractor ---
@@ -261,7 +250,7 @@ class Config:
                     "FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS", "FIRECRAWL_BATCH_TIMEOUT_SECONDS",
                     "ENABLE_QUERY_DEDUP", "ENABLE_URL_DEDUP", "ENABLE_GLOBAL_CACHE", "CACHE_TTL_DAYS",
                     "DELAY_SECONDS", "MAX_RETRIES", "BATCH_SIZE", "MIN_CONFIDENCE_THRESHOLD",
-                    "GEMINI_QUICK_ENABLED", "SERPER_ENABLED", "SCRAPE_LINKEDIN_ENABLED",
+                    "GEMINI_QUICK_ENABLED", "SCRAPE_LINKEDIN_ENABLED",
                     "BUSINESS_STATUS_GATE_ENABLED", "REPORT_CUTOFF_TIME",
                     "MIN_SCRAPE_SCORE", "KNOWN_DOMAINS"
                 ]

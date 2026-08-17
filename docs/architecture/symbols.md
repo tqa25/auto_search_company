@@ -11,144 +11,142 @@ Use this to locate a symbol, then `Read` that file with a narrow
 (no top-level symbols)
 ```
 
-## `dashboard/app.py` (2782 lines)
+## `dashboard/app.py` (2730 lines)
 ```
-104    def _spa_response
-109    def _db
-113    def _cache_get
-124    def _cache_set
-129    def _invalidate_dashboard_cache
-133    def _slow_log
-139    def _recent_worker_cutoff
-143    def _normalize_path
-149    def _mask_key
-155    def _read_proc_environ
-170    def _read_proc_cmdline
-178    def _worker_script_path
-182    def _worker_python_executable
-189    def _iter_runtime_worker_processes
-226    def _current_firecrawl_key_mask
-230    def _worker_status
-264    def _reap_extra_workers
-275    def _start_worker_process
-315    def _ensure_worker_started
-338    def _runtime_health_payload
-364    def _terminate_runtime_workers
-378    def _has_active_pipeline_jobs
-398    def _cfg
-402    def _pipeline_config
-412    def _today_str
-416    def _now_iso
-420    def _date_start
-426    def _date_end
-435    def _valid_cutoff_time
-444    def _report_window_bounds
-455    def _apply_report_filters
-484    def _company_filter_sql
-525    def _job_from_status
-529    def _upsert_job
-569    def _get_job
-582    def _monitor_counts
-592    def _monitor_status_counts
-612    def _light_job_payload
-635    def _pipeline_job_rows
-656    def _stale_jobs
-691    def _monitor_snapshot
-730    def _emit_monitor
-742    def _emit_job_update
-752    class MonitorDatabase
-791    @app.get
-792    def spa_home
-796    @app.get
-797    def spa_companies
-801    @app.get
-802    def spa_company_detail
-806    @app.get
-807    def spa_runner
-811    @app.get
-812    def spa_settings
-816    @app.get
-817    def spa_logs
-821    @app.post
-822    def company_rerun
-828    @app.post
-845    @app.get
-846    def api_quota
-862    @app.get
-863    def api_status
-907    def _counts
-927    def _parse_dt
-931    def _company_data_counts
-958    def _suggest_resume_status
-977    def _is_stale_running_job
-987    def _stale_job_payload
-1007   def _reset_company_status
-1070   def _latest_logs
-1083   def _safe_json
-1092   def _scraped_url_rows
-1112   def _company_step
-1128   def _import_record
-1151   def _company_contact_flags
-1170   def _latest_steps
-1188   def _completion_matches
-1194   def _effective_checkpoint
-1203   def _effective_current_step
-1212   def _checkpoint_matches
-1218   def _audit_map
-1228   def _company_stale_fields
-1261   def _import_item_filter_sql
-1293   def _import_batch_items_payload
-1444   @app.get
-1445   def api_spa_status
-1494   @app.get
-1495   def api_spa_companies
-1657   @app.get
-1658   def api_spa_company_ids
-1739   @app.get
-1740   def api_spa_import_batches
-1753   @app.get
-1754   def api_spa_import_batch_items
-1790   @app.get
-1791   def api_spa_company_detail
-1813   @app.get
-1814   def api_spa_monitor
-1818   @app.get
-1819   def api_spa_runner_stale_jobs
-1861   @app.post
-1884   @app.post
-1975   @app.post
-1976   def api_spa_runner_stop_all
-1987   @app.get
-1988   def api_spa_runtime_health
-1992   @app.post
-1993   def api_spa_runtime_health_firecrawl_test
-2017   def _request_graceful_worker_restart
-2052   @app.post
-2053   def api_spa_runner_restart_worker
-2058   @app.post
-2075   @app.get
-2076   def api_spa_logs
-2087   @app.websocket
-2112   @app.get
-2113   def api_spa_settings
-2122   @app.post
-2145   @app.get
-2146   def api_spa_pipeline_config_get
-2156   @app.post
-2179   @app.get
-2180   def api_spa_gemini_models
-2205   @app.post
-2241   @app.post
-2257   @app.get
-2258   def api_company_names
-2267   @app.post
-2446   @app.post
-2544   @app.post
-2563   @app.get
-2564   def api_export_logs
-2702   @app.post
-2703   def api_export_excel
-2739   @app.websocket
+108    def _spa_response
+113    def _db
+117    def _cache_get
+128    def _cache_set
+133    def _invalidate_dashboard_cache
+137    def _slow_log
+143    def _recent_worker_cutoff
+147    def _normalize_path
+153    def _mask_key
+159    def _read_proc_environ
+174    def _read_proc_cmdline
+182    def _worker_script_path
+186    def _worker_python_executable
+193    def _iter_runtime_worker_processes
+230    def _current_firecrawl_key_mask
+234    def _worker_status
+268    def _reap_extra_workers
+279    def _start_worker_process
+319    def _ensure_worker_started
+342    def _runtime_health_payload
+368    def _terminate_runtime_workers
+382    def _has_active_pipeline_jobs
+402    def _cfg
+406    def _pipeline_config
+415    def _today_str
+419    def _now_iso
+423    def _date_start
+429    def _date_end
+438    def _valid_cutoff_time
+447    def _report_window_bounds
+458    def _apply_report_filters
+487    def _company_filter_sql
+528    def _job_from_status
+532    def _upsert_job
+572    def _get_job
+585    def _monitor_counts
+595    def _monitor_status_counts
+615    def _light_job_payload
+638    def _pipeline_job_rows
+659    def _stale_jobs
+694    def _monitor_snapshot
+733    def _emit_monitor
+745    def _emit_job_update
+755    class MonitorDatabase
+794    @app.get
+795    def spa_home
+799    @app.get
+800    def spa_companies
+804    @app.get
+805    def spa_company_detail
+809    @app.get
+810    def spa_runner
+814    @app.get
+815    def spa_settings
+819    @app.get
+820    def spa_logs
+824    @app.post
+825    def company_rerun
+831    @app.post
+848    @app.get
+849    def api_quota
+864    @app.get
+865    def api_status
+909    def _counts
+929    def _parse_dt
+939    def _is_stale_running_job
+949    def _stale_job_payload
+969    def _reset_company_status
+1032   def _latest_logs
+1045   def _safe_json
+1054   def _scraped_url_rows
+1074   def _company_step
+1090   def _import_record
+1113   def _company_contact_flags
+1132   def _latest_steps
+1150   def _completion_matches
+1156   def _effective_checkpoint
+1165   def _effective_current_step
+1174   def _checkpoint_matches
+1180   def _audit_map
+1190   def _company_stale_fields
+1223   def _import_item_filter_sql
+1255   def _import_batch_items_payload
+1406   @app.get
+1407   def api_spa_status
+1456   @app.get
+1457   def api_spa_companies
+1619   @app.get
+1620   def api_spa_company_ids
+1701   @app.get
+1702   def api_spa_import_batches
+1715   @app.get
+1716   def api_spa_import_batch_items
+1752   @app.get
+1753   def api_spa_company_detail
+1775   @app.get
+1776   def api_spa_monitor
+1780   @app.get
+1781   def api_spa_runner_stale_jobs
+1823   @app.post
+1846   @app.post
+1937   @app.post
+1938   def api_spa_runner_stop_all
+1949   @app.get
+1950   def api_spa_runtime_health
+1954   @app.post
+1955   def api_spa_runtime_health_firecrawl_test
+1979   def _request_graceful_worker_restart
+2014   @app.post
+2015   def api_spa_runner_restart_worker
+2020   @app.post
+2037   @app.get
+2038   def api_spa_logs
+2049   @app.websocket
+2074   @app.get
+2075   def api_spa_settings
+2083   @app.post
+2106   @app.get
+2107   def api_spa_pipeline_config_get
+2117   @app.post
+2140   @app.get
+2141   def api_spa_gemini_models
+2166   @app.post
+2202   @app.post
+2218   @app.get
+2219   def api_company_names
+2228   @app.post
+2407   @app.post
+2494   @app.post
+2513   @app.get
+2514   def api_export_logs
+2650   @app.post
+2651   def api_export_excel
+2687   @app.websocket
 ```
 
 ## `dashboard/reparse_api.py` (100 lines)
@@ -264,7 +262,7 @@ Use this to locate a symbol, then `Read` that file with a narrow
 104    def audit_company_completion
 ```
 
-## `src/config.py` (314 lines)
+## `src/config.py` (303 lines)
 ```
 15     def _parse_bool
 22     def _parse_int
@@ -280,7 +278,7 @@ Use this to locate a symbol, then `Read` that file with a narrow
 25     class ConnectionManager
 ```
 
-## `src/database.py` (1418 lines)
+## `src/database.py` (1421 lines)
 ```
 10     class DatabaseManager
 ```
@@ -327,18 +325,16 @@ Use this to locate a symbol, then `Read` that file with a narrow
 30     def run_migrations
 ```
 
-## `src/pipeline.py` (582 lines)
+## `src/pipeline.py` (580 lines)
 ```
 22     class Pipeline
 ```
 
-## `src/pipeline_worker.py` (277 lines)
+## `src/pipeline_worker.py` (232 lines)
 ```
-23     def _company_data_counts
-50     def suggest_resume_status
-70     class WorkerJobController
-93     class PipelineWorker
-254    def main
+26     class WorkerJobController
+49     class PipelineWorker
+209    def main
 ```
 
 ## `src/rate_limiter.py` (211 lines)
@@ -354,6 +350,12 @@ Use this to locate a symbol, then `Read` that file with a narrow
 ## `src/result_aggregator.py` (151 lines)
 ```
 8      class ResultAggregator
+```
+
+## `src/resume_policy.py` (74 lines)
+```
+35     def company_data_counts
+54     def suggest_resume_status
 ```
 
 ## `src/schemas.py` (128 lines)

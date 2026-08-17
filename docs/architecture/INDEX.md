@@ -29,7 +29,7 @@ All test commands assume `venv/bin/python -m pytest ... --ignore=tests/manual`.
 | Want to change | Read first | Verify with |
 |---|---|---|
 | Job claiming, heartbeat, stale recovery | `src/pipeline_worker.py` | `tests/test_worker_lifecycle.py` |
-| Resume-status inference from row counts | `src/pipeline_worker.py:56` **and** `dashboard/app.py:958` (identical duplicates — edit both) | `tests/test_worker_lifecycle.py` |
+| Resume-status inference from row counts | `src/resume_policy.py` — single shared implementation; the worker and the dashboard both import it | `tests/test_worker_lifecycle.py`, `tests/test_dashboard_import_filters.py` |
 | Worker process spawn/reap from the dashboard | `dashboard/app.py` (`_start_worker_process`, `_reap_extra_workers`) | `tests/test_dashboard_import_filters.py` |
 
 ## Data & storage

@@ -1405,7 +1405,6 @@ async function renderSettings() {
           <form id="settings-form">
             ${formField("gemini_key", "Gemini API Key", settings.GEMINI_API_KEY, { placeholder: "Leave unchanged to keep current key" })}
             ${formField("firecrawl_key", "Firecrawl API Key", settings.FIRECRAWL_API_KEY, { placeholder: "Leave unchanged to keep current key" })}
-            ${formField("serper_key", "Serper API Key", settings.SERPER_API_KEY, { placeholder: "Leave unchanged to keep current key" })}
             ${buildSelect("grounding_model", "AI Grounding Model", settings.AI_GROUNDING_MODEL)}
             ${buildSelect("extractor_model", "AI Extractor Model", settings.AI_EXTRACTOR_MODEL)}
             <button type="submit" class="btn primary">Save API Keys</button>
@@ -1424,8 +1423,7 @@ async function renderSettings() {
                 <section>
                   <h3>Scrape & Search</h3>
                   ${formField("TOP_N", "Top N Pages to Scrape", pipelineConfig.TOP_N, { type: "number" })}
-                  ${formField("SEARCH_LIMIT", "Serper Search Limit", pipelineConfig.SEARCH_LIMIT, { type: "number" })}
-                  ${formField("SERPER_NUM_RESULTS", "Results per Serper request", pipelineConfig.SERPER_NUM_RESULTS, { type: "number" })}
+                  ${formField("SEARCH_LIMIT", "Deep Search result limit", pipelineConfig.SEARCH_LIMIT, { type: "number" })}
                   ${formField("INFER_MAX_SCRAPE", "Max Scrapes for Inference", pipelineConfig.INFER_MAX_SCRAPE, { type: "number" })}
                 </section>
                 <section>
@@ -1449,7 +1447,6 @@ async function renderSettings() {
                 <section>
                   <h3>Feature Toggles</h3>
                   ${checkboxField("GEMINI_QUICK_ENABLED", "Enable Gemini Quick Search", pipelineConfig.GEMINI_QUICK_ENABLED)}
-                  ${checkboxField("SERPER_ENABLED", "Enable Serper Search", pipelineConfig.SERPER_ENABLED)}
                   ${checkboxField("SCRAPE_LINKEDIN_ENABLED", "Enable LinkedIn Scrape", pipelineConfig.SCRAPE_LINKEDIN_ENABLED)}
                   ${checkboxField("BUSINESS_STATUS_GATE_ENABLED", "Enable Business Status Gate", pipelineConfig.BUSINESS_STATUS_GATE_ENABLED ?? PIPELINE_CONFIG_DEFAULTS.BUSINESS_STATUS_GATE_ENABLED)}
                   ${checkboxField("ENABLE_QUERY_DEDUP", "Enable Query Dedup", pipelineConfig.ENABLE_QUERY_DEDUP)}
@@ -1564,7 +1561,6 @@ async function saveSettings(e) {
     const data = {
         GEMINI_API_KEY: document.getElementById("gemini_key").value,
         FIRECRAWL_API_KEY: document.getElementById("firecrawl_key").value,
-        SERPER_API_KEY: document.getElementById("serper_key").value,
         AI_GROUNDING_MODEL: document.getElementById("grounding_model").value,
         AI_EXTRACTOR_MODEL: document.getElementById("extractor_model").value,
     };
@@ -1604,8 +1600,7 @@ async function savePipelineConfig(e) {
     try {
         const numFields = [
             ["TOP_N", "Top N Pages to Scrape"],
-            ["SEARCH_LIMIT", "Serper Search Limit"],
-            ["SERPER_NUM_RESULTS", "Results per Serper request"],
+            ["SEARCH_LIMIT", "Deep Search result limit"],
             ["INFER_MAX_SCRAPE", "Max Scrapes for Inference"],
             ["EARLY_STOP_COUNT", "Early Stop Count"],
             ["EARLY_STOP_SCORE", "Early Stop Score"],
@@ -1626,7 +1621,6 @@ async function savePipelineConfig(e) {
 
         const boolFields = [
             "GEMINI_QUICK_ENABLED",
-            "SERPER_ENABLED",
             "SCRAPE_LINKEDIN_ENABLED",
             "BUSINESS_STATUS_GATE_ENABLED",
             "ENABLE_QUERY_DEDUP",
