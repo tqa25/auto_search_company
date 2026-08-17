@@ -2,19 +2,20 @@
 
 > **Audience: AI coding agents.** For the human/management narrative see `docs/v2-modular-refactor-plan.md` (Vietnamese).
 > **Section numbers match the Vietnamese document exactly.** Section 3.7 here == Section 3.7 there.
-> **Precedence:** the approved Vietnamese plan governs intended business behaviour; executable code, migrations, and tests describe current behaviour. A disagreement is an incomplete defect—flag it and resolve it under §21.4 instead of silently treating either side as correct.
-> Last updated: 2026-07-29. Sync rules: §21.5. Changelog: §24.
+> **Precedence, business behaviour:** the approved Vietnamese plan governs intended business behaviour; executable code, migrations, and tests describe current behaviour. A disagreement is an incomplete defect—flag it and resolve it under §21.4 instead of silently treating either side as correct.
+> **Precedence, process:** repo-root `AGENTS.md` governs *how* work is done — branching, tests, documentation duty, definition of done. Where this plan and `AGENTS.md` disagree on process, **`AGENTS.md` wins** and this plan is the stale side (§0.2).
+> Last updated: 2026-08-17. Sync rules: §21.5. Changelog: §24.
 
 ## 0. Agent operating rules
 
 Read this section before any task.
 
-1. **Do not rewrite V1.** V2 is an incremental modification of the V1 codebase copied to a `version2` working directory. New code goes in `src/v2/`. Old V1 code is deleted only after the replacement has tests and has run against real data.
+1. **Do not rewrite V1.** V2 is an incremental modification of the existing codebase **in this repository, on a working branch** (`AGENTS.md` §5) — *not* a copy into a separate `version2` directory. New code goes in `src/v2/`. Old code is deleted only after the replacement has tests and has run against real data. See §0.2.
 2. **After every stage the app must run a full company end to end.** No stage may leave the system non-functional.
 3. **Never call a paid API in a unit test.** Use fixtures, or V1 `replay mode` (re-runs the pipeline over stored evidence with no paid calls).
 4. **One file, one job.** Target ≤200 lines. A file may call a paid API **or** write to the database, never both.
 5. **A module that makes business decisions must not call an API.** A module that calls an API must not make business decisions.
-6. **Read `docs/architecture/INDEX.md` first** and open only the files it names. Do not scan directories. See §21.
+6. **Read `docs/architecture/MAP.md` and `docs/implementation/STATUS.md` at session start** (`AGENTS.md` §1), then use `docs/architecture/INDEX.md` to find the file you need and open only that. Do not scan directories. See §21.
 7. **Every rejecting decision must record a machine-readable `reason`.** Applies to `rejected`, `skipped`, `deferred`, `cancelled_by_policy`. See §20.
 8. **Preserve URL traceability.** Every stored contact must be attributable to exactly one URL that produced it.
 9. Schema changes require a forward migration plus a test against both a fresh database and the existing schema shape.
@@ -34,10 +35,34 @@ Never hardcode these. Read from policy. Values below are defaults.
 | `RETRY_BASE_DELAY_S` | 2 | §11 |
 | `RETRY_MAX_DELAY_S` | 60 | §11 |
 | `FIRECRAWL_WAIT_FOR_MS` | 0 | §12.1 |
+| `DELAY_SECONDS` | 0 | §12.1 |
 | `STALE_WORKER_HEARTBEAT_MIN` | 15 | §14 |
 | `LOG_RETENTION_DAYS` | 30 | §20.4 |
 | `ALLOW_NAME_ONLY_QUERY` | false | §3.8 |
 | `NAME_ONLY_SCORE_THRESHOLD` | 60 | §3.8 |
+
+Every section referenced in this table exists in this document. If you add a
+constant, add its section too — a pointer to a section that only exists in the
+Vietnamese file is a defect (§21.5).
+
+### 0.2 Repository reality — read before following any process instruction here
+
+This plan was written on 2026-07-29 against a "copy V1 into a `version2`
+directory" model. **That model is obsolete.** Reality as of 2026-08-17:
+
+| The plan assumed | What is actually true |
+|---|---|
+| Copy the code to `<V2_ROOT>`, keep V1 read-only, build a second venv | One repository, one venv. V2 work happens on a working branch cut from the current branch (`AGENTS.md` §5) and merges back only on explicit user confirmation |
+| The agent creates `AGENTS.md`, `INDEX.md`, `STATUS.md`, `check-doc-sync.sh` (§21.6 self-bootstrap) | All of them already exist, plus `docs/architecture/MAP.md`, `docs/architecture/symbols.md`, `scripts/gen-symbols.sh`, and a `PreToolUse` hook that blocks `git commit` when the gate fails. Do not recreate them; §21.6 is now repair-only |
+| `STATUS.md` is a cumulative 8-section session journal | `AGENTS.md` §9: STATUS.md is a handoff note — **replaced, not appended**, kept under ~40 lines. Finished work goes to git history and `docs/implementation/work-items/` |
+| "Never copy docs from V1" | V1 *is* this repository. The rule survives only as: never import docs or code from backup checkouts or other repos |
+| A separate V2 architecture doc set under `docs/architecture/<module>.md` | `MAP.md` + `INDEX.md` are the authoritative pair. New per-module contracts are added *alongside* them and indexed in `INDEX.md`, they do not replace them |
+
+Consequence for anyone executing this plan: **process comes from `AGENTS.md`;
+business intent comes from this document and the Vietnamese plan.** Sections 21.1,
+21.5 and 21.6 below have been rewritten to match. If you find another process
+instruction here that contradicts `AGENTS.md`, `AGENTS.md` wins and the
+contradiction is a defect to fix in this file.
 
 ## 1. What V2 is
 
@@ -61,12 +86,29 @@ V2 splits company-level processing into small independently retryable units, cut
 
 ## 2. Confirmed V1 defects to fix
 
-| # | Defect | Evidence | Fix |
+Line numbers re-verified against the working tree on **2026-08-17**. All four
+defects are still present; no Stage 1 work has landed and `src/v2/` does not exist.
+
+| # | Defect | Evidence (verified 2026-08-17) | Fix |
 |---|---|---|---|
-| 2.1 | Wrong-company and publisher-footer contacts | 315 scrapes into news domains; 57 contact rows with phone | Province-bound queries (§5.4) + context slicing (§7.6) + tax-code veto (§3.7) |
+| 2.1 | Wrong-company and publisher-footer contacts | 315 scrapes into news domains; 57 contact rows with phone (measured 2026-07-29, not re-measured) | Province-bound queries (§5.4) + context slicing (§7.6) + tax-code veto (§3.7) |
 | 2.2 | Retry stops at 2 attempts | `src/company_run.py:59` `max_retries = 2`; repro `attempts=2 result=failed: max_retries` | Central retry policy (§11) |
-| 2.3 | Cache hit inserts duplicate rows | 85,336 duplicate groups / 89,070 excess rows / max 5 copies, verified by query | Remove post-cache-hit save + UNIQUE index (§10) |
-| 2.4 | Fixed 3s wait on every page | `src/scrape_module.py:230,452` `waitFor: 3000`; `DELAY_SECONDS=3.0` in `src/config.py:182` and `pipeline_config.json:97` | `wait_for_ms: 0`, per-domain selector only (§12.1) |
+| 2.3 | Cache hit inserts duplicate rows | `src/search_module.py:214-216` — `_save_results()` runs unconditionally after `_search_with_dedup()`, whatever `cache_hit` says. `search_results` has only `idx_search_results_company_id`; no uniqueness anywhere | Remove post-cache-hit save + UNIQUE index (§10) |
+| 2.4 | Fixed 3s wait on every page | `src/scrape_module.py:230,452` `waitFor: 3000`; `DELAY_SECONDS` default `3.0` at `src/config.py:178` and `pipeline_config.json:96` | `wait_for_ms: 0` **after the measurement gate**, per-domain selector only (§12.1) |
+| 2.5 | Dead multi-page AI helper still in the tree | `src/ai_extractor.py:285` `_batch_short_pages`, called from nowhere | Delete it (§17.4b) |
+
+**Duplicate-row counts are historical and must be re-measured, not quoted.**
+The 85,336 groups / 89,070 excess rows figure was measured on 2026-07-29 against
+an unnamed database file. Two databases exist today, and they disagree:
+
+| Database | Rows in `search_results` | Duplicate groups | Excess rows |
+|---|---:|---:|---:|
+| `data/company_data_1013_companies.db` (measured 2026-08-17) | 193,588 | 19,069 | 19,946 (10.3%) |
+| `data/company_data.db` (1.98 GB, mtime 2026-07-17) | not measured | not measured | not measured |
+
+Any migration must name its target database file explicitly and re-run the audit
+against that file. Never hardcode a historical count into a script or an
+acceptance criterion.
 
 ## 3. Operating rules
 
@@ -86,6 +128,16 @@ Evaluate in this order. Stop at the first gate that rejects.
 ```
 
 Gates 1 and 3 are the largest cost savers. Both exist in V1. Do not drop them.
+
+### 3.2 Every significant decision lives in Source Policy
+
+`Source Policy` is the rule file that says which domains are preferred, how many
+points they add, when to scrape and when to stop (§6).
+
+Each run stores a versioned **snapshot** of the policy plus the input as they were
+at run start, so any stored result can be explained by the exact rules that
+produced it. Changing the policy never deletes older results — they are marked
+`stale`, meaning "produced under previous rules, may need recomputation".
 
 ### 3.3 Query-derived fields score less and cannot self-confirm
 
@@ -108,6 +160,25 @@ rejected   when:     total_score < threshold, or a CONFIRMED conflict exists
 ```
 
 Score-threshold-passing URLs with only query-derived evidence go to `deferred`, never `rejected`.
+
+### 3.4 V1 rules stay until something explicitly replaces them
+
+The default stop rule is unchanged from V1:
+
+```
+keep issuing queries until EARLY_STOP_TARGET_URLS (10) quality URLs exist
+a quality URL scores at least EARLY_STOP_SCORE (35)
+once the target is met, stop planning queries and begin the scrape phase
+```
+
+Both numbers live in policy and change without touching code
+(V1 today: `EARLY_STOP_COUNT=10`, `EARLY_STOP_SCORE=35` in `src/config.py`,
+overridable from `pipeline_config.json`).
+
+Also unchanged unless a new business requirement *and* a replacement test exist:
+the business status gate, `replay_mode`, and `force_refresh`. Export keeps the
+ability to trace every contact back to its Search Result URL, and URL-level
+findings stay distinguishable from company-level aggregates.
 
 ### 3.5 Identity enrichment is step 1 and is mandatory
 
@@ -503,14 +574,56 @@ WHERE id = :id AND status = 'pending'
 
 ## 10. Duplicate prevention
 
-All 89,070 excess rows are duplicates **within a single company**, not across companies.
+Excess rows are duplicates **within a single company**, not across companies.
+Counts must be re-measured per database at migration time (§2).
 
-Two changes:
+Three changes:
 
 1. On cache hit: return the cached result, emit a `cache_reused` event with cost 0, and **do not call the save function**.
-2. Add `UNIQUE (company_id, search_query, url)` on `search_results`.
+2. Normalize the URL at **one** boundary before it reaches the database, on every insert path.
+3. Add a UNIQUE constraint over `(company_id, search_query, <normalized url>)` on `search_results`.
 
-A cleanup script must remove the 89,070 existing duplicates before the index can be added.
+A cleanup script must remove existing duplicates before the constraint can be added (Stage 1 §5.5).
+
+### 10.1 The constraint must be over the normalized URL, not the raw one
+
+An index on the raw `url` column does **not** enforce the identity this plan
+defines. Two rows whose normalized forms are equal but whose stored strings
+differ (`http://X.vn/a/` vs `https://x.vn/a?utm_source=…`) both survive it, and
+the duplicate bug returns through the back door for every row written before
+normalization existed.
+
+Pick one and state it in the migration:
+
+- **Preferred** — add a `normalized_url` column, populate it for the whole table
+  using the same production function (`src/utils.py::normalize_url`), and build
+  the UNIQUE index on `(company_id, search_query, normalized_url)`. A generated
+  column is acceptable only if the normalization is expressible in SQL, which
+  `normalize_url` currently is not — so populate it in Python.
+- **Acceptable** — rewrite `url` in place to its normalized form for **every**
+  row, not only the rows in duplicate groups, then index `(company_id,
+  search_query, url)`. Loses the original string; only choose this if nothing
+  needs the raw URL.
+
+Whichever is chosen, the post-migration audit must prove that re-normalizing the
+whole table produces zero new duplicate groups. Normalizing only the rows being
+deduplicated is the failure mode this section exists to prevent.
+
+### 10.2 Downstream effects that must be checked in the same change
+
+Collapsing duplicate `search_results` rows changes ids that other tables point at.
+
+- `filtered_links.search_result_id` is repointed to the canonical row. But
+  `filtered_links` **itself** accumulates duplicate URLs on every run
+  (`MAP.md` §9, trap 4) — this plan does not deduplicate it, and must not be read
+  as having done so.
+- `src/completion_audit.py` deliberately joins scrape candidates to results **by
+  `url`, not by `filtered_link_id`**, precisely because of that accumulation.
+  Verify after migration that strict completion still reaches `done` for a sample
+  of already-`done` companies. A regression here does not lose data — it re-queues
+  companies forever, which is worse because it silently spends money.
+- Export and the dashboard must still resolve every contact back to one search
+  result (§0 rule 8).
 
 **Rejected design — one shared search artifact referenced by many companies.** Measured: only 164 of 21,041 distinct queries (0.8%) are used by more than one company; 2.1% of rows. It targets 2.1% while the real bug is 8.5%, and it adds two risks: per-company per-URL decisions have nowhere to live (requiring a third table identical in shape to today's), and SQLite foreign-key enforcement is not enabled per connection, so deleting an artifact orphans many companies' evidence.
 
@@ -544,6 +657,44 @@ All three V1 root causes must be fixed together: the outer loop cap, unclassifie
 
 Every attempt is logged. Retry re-runs only the failed API operation, never the whole company. A shutdown signal must interrupt backoff sleep.
 
+### 11.1 Complete inventory of today's retry and throttle owners
+
+Six places currently decide what happens after a failed or throttled call. The
+retry executor replaces the first five; the sixth stays but must be kept out of
+the retry path. **Missing one of these produces nested retries — three "attempts"
+becoming nine HTTP requests.** Verified 2026-08-17:
+
+| Owner | What it does today | After Stage 1 |
+|---|---|---|
+| `src/connection_pool.py:75-78` | `urllib3` `Retry(total=max_retries, status_forcelist=[500, 502, 504])` — **503 is not in the list** | Status-based retry disabled; keeps pooling and timeouts only |
+| `src/search_module.py:606-679` | Own loop, `max_retries=3`, fixed 60s wait on 429 | Delegates to the executor |
+| `src/scrape_module.py:235,462` | Two own loops, `max_retries = 3` | Delegates to the executor |
+| `src/ai_extractor.py:371-545` | Own loop, `max_retries = 3`, special 60s path for Gemini 503, then returns `{"status": "failed", "reason": "max_retries"}` | Delegates to the executor; must stop converting failure into a success-shaped dict |
+| `src/company_run.py:59` | Whole-company retry, `max_retries = 2` | Removed as a retry layer (§11.2) |
+| `src/rate_limiter.py` (`AdaptiveRateLimiter`) | **Throttling, not retry**: 429 doubles the delay, 403/503 jump to max delay plus a 5-minute cooldown | Kept. It shapes the delay *before* a call; it must never also decide whether to repeat one |
+
+Note the disagreement this table exposes: a 503 is retried by `ai_extractor`
+after 60s, ignored by `connection_pool`'s forcelist, and treated as a 5-minute
+cooldown by `rate_limiter`. Unifying these three is the actual work of §11.
+
+### 11.2 When an operation exhausts its attempts, the company status must be defined
+
+Removing the whole-company retry leaves a question this plan previously did not
+answer: what status does the company get? Leaving it implicit is dangerous
+because `src/completion_audit.py` rewinds companies that are not strictly
+complete, so a wrong choice re-queues a company forever.
+
+Required mapping, expressed against V1's `Pipeline.STATUS_FLOW` (`MAP.md` §3):
+
+| Operation that exhausted | Company outcome |
+|---|---|
+| Search or scrape operation | `failed` — resumes from the start of that step. Scraped rows already persisted are kept and reused |
+| AI extraction | **Preserve `ai_extract_pending`.** Scraping is paid for and saved; never rewind past this checkpoint |
+| `CriticalError` (401, 402, DB invariant) | Preserve the current checkpoint, abort the batch — V1 behaviour, unchanged |
+
+Every one of these transitions needs a test asserting the resulting
+`companies.status`, not merely the raised exception type.
+
 ## 12. Scrape throughput controls
 
 ```yaml
@@ -554,7 +705,30 @@ firecrawl:
   max_concurrency: policy_controlled
 ```
 
-**12.1 `wait_for_ms`** — extra wait *added after* Firecrawl's own readiness wait. V1's 3,000 ms cost ~60s per 20-URL company (~16h per 1,000 companies) for no benefit. Default 0; per-domain selector waits only for genuinely JS-dependent sites.
+**12.1 `wait_for_ms`** — extra wait *added after* Firecrawl's own readiness wait. V1's 3,000 ms costs ~60s per 20-URL company (~16h per 1,000 companies). Target default 0; per-domain selector waits only for genuinely JS-dependent sites. Same for `DELAY_SECONDS`, the sleep between sequential URLs.
+
+**"For no benefit" is a hypothesis, not a measurement.** This is the one change
+in Stage 1 that can silently *reduce* data quality: a JS-heavy page that used the
+3 seconds to finish rendering will now return a shorter body, and the loss shows
+up as a missing phone number three steps later, not as an error. Checking "no
+`sleep` was called" does not detect it.
+
+**Measurement gate — required before the default changes:**
+
+1. Pick ≥50 URLs already in `scraped_pages`, spread across the domain families
+   actually seen in production (registry, tax directory, business directory, job
+   portal, Facebook), deliberately including the JS-heaviest ones.
+2. Scrape each twice into a scratch database: once at `wait_for_ms: 3000`, once at `0`.
+3. Compare per URL: HTTP outcome, markdown length, and the count of fields
+   `src/ai_extractor.py` can extract from it.
+4. Ship default 0 only if no domain family loses content. Any family that does
+   gets a per-domain wait or selector policy entry — and that entry, not the
+   global default, is the fix.
+5. Record the comparison table as the acceptance evidence for this work item.
+
+This gate spends Firecrawl credits and therefore needs explicit user approval
+before it runs (§0 rule 3 forbids paid calls in tests; this is a measured
+experiment, not a test).
 
 **12.2 `only_main_content`** — drops header/menu/footer. Typical 25,000 → 8,000 chars. Fewer AI tokens and less publisher-footer contamination. First defence layer; slicing (§7.6) is the second.
 
@@ -622,8 +796,36 @@ Each stage must end with the app running a full company. Verify with V1 replay m
 | 9 | Move domains, tiers, scores, query templates into versioned policy | New domain needs no code change |
 | 10 | Deferred review API + screen | Review blocks no other company |
 | 11 | CLI, API, dashboard all call `service/application.py` | Three interfaces, identical results and controls |
-| 12 | V1/V2 parallel run, separate databases | Cost, accuracy, duration report |
+| 12 | V1/V2 parallel run, separate databases. **Doubles paid API spend for the sample** — get an explicit budget and user approval first; it is not covered by any earlier estimate | Cost, accuracy, duration report |
 | 13 | Cut over; V1 read-only | Documented rollback and resume-from-checkpoint |
+
+Stage 0 is a prerequisite for Stage 1, not an optional warm-up: Stage 1's replay
+gate compares against the Stage 0 baseline, and without it "no regression" cannot
+be asserted. As of 2026-08-17 no Stage 0 baseline exists in
+`docs/implementation/work-items/`.
+
+### 16.1 Safe stopping points
+
+This plan is 13 stages long and the operator's verification time is the binding
+constraint (§22). The realistic risk is not failure — it is stopping halfway and
+leaving `src/` and `src/v2/` each holding half of one decision.
+
+A stage boundary is a **safe stop** only if the system at that point has no
+duplicated business logic. Stopping anywhere else means finishing the current
+stage or reverting it.
+
+| After stage | Safe stop? | State if you stop here |
+|---|---|---|
+| 1 | **Yes — the recommended stop** | Pure V1 with four defects fixed. No `src/v2/` business logic to keep in sync |
+| 2–3 | Yes | New modules exist but the old path still owns the decision; delete `src/v2/` to revert |
+| 4 | **No** | Scoring exists in two places. Either the old scorer is gone or the new one is unused — never both live |
+| 5 | Yes | Slicing/verification are additive in front of extraction |
+| 6 | **No** | Retry ownership must be single. Half-migrated retry is worse than V1's |
+| 7 | **No** | Work units and company jobs cannot both own status |
+| 9, 11 | Yes | Policy/interface consolidation is complete or not started |
+
+Before starting a stage marked **No**, decide whether there is capacity to finish
+it. Recording that decision in `STATUS.md` is part of starting the stage.
 
 Stage 1 stands alone: if the project stops there, the system is already better than V1.
 
@@ -695,16 +897,24 @@ No test may call a paid API.
 6. `429` → waits exactly `Retry-After`, no guessing.
 7. Shutdown interrupts backoff sleep; no waiting the full 60s to exit.
 8. Retry creates no duplicate rows.
+9. Exhausting a **search or scrape** operation leaves `companies.status = 'failed'` (§11.2).
+10. Exhausting **AI extraction** leaves `companies.status = 'ai_extract_pending'` — the paid scrape checkpoint survives (§11.2).
+11. No operation produces more HTTP requests than `max_attempts`, with `connection_pool`'s own status retry disabled (§11.1).
+12. A Gemini 503 is handled by exactly one owner; `AdaptiveRateLimiter` shapes the delay but never repeats the call.
 
-Tests 1 and 2 target the current V1 defect directly.
+Tests 1 and 2 target the current V1 defect directly. Tests 9–12 exist because
+removing the whole-company retry is only safe if the resulting status is defined.
 
 ### 17.4 Cache and workers
 
 1. 100 cache hits on one query add zero rows to `search_results`.
-2. Re-inserting the same `(company_id, search_query, url)` is refused by the database.
-3. Two workers saving one result → exactly one accepted.
-4. A worker dying mid-unit returns the unit to `pending` after lease expiry.
-5. Resume does not re-run completed units.
+2. Re-inserting the same `(company_id, search_query, normalized url)` is refused by the database.
+3. Two URLs that differ only in scheme, `www.`, trailing slash or `utm_*` are one row, not two (§10.1).
+4. Re-normalizing every row after migration produces zero new duplicate groups (§10.1).
+5. No `filtered_links` row points at a deleted search result, and strict completion still returns `done` for a company that was `done` before migration (§10.2).
+6. Two workers saving one result → exactly one accepted, both receive the canonical id.
+7. A worker dying mid-unit returns the unit to `pending` after lease expiry.
+8. Resume does not re-run completed units.
 
 ### 17.4b One AI call == one URL
 
@@ -788,24 +998,45 @@ V1's `pipeline_logs` records what ran but not *why* a decision was made. When a 
 
 ## 21. Architecture record for agents
 
-### 21.1 Required files
+### 21.1 The document set — already built, do not rebuild
 
-| File | Purpose |
-|---|---|
-| `AGENTS.md` (repo root) | Hard rules + routing table. Read automatically by Codex and similar tools |
-| `docs/architecture/INDEX.md` | "To change X, read file Y" |
-| `docs/architecture/<module>.md` | One module contract, max one page |
-| `docs/implementation/STATUS.md` | Current implementation state, verification evidence, and the next executable action |
+Every file this section once asked an agent to create now exists. Their current
+roles are fixed by `AGENTS.md`, not by this plan:
 
-Keep stable instructions in `AGENTS.md`. Never use it as a per-session progress log: mutable progress belongs in `STATUS.md`, so a temporary note cannot be mistaken for a permanent instruction.
+| File | Purpose | Owner of its rules |
+|---|---|---|
+| `AGENTS.md` (repo root) | Hard process rules: session bootstrap, branch per code change, docs in the same commit, definition of done | `AGENTS.md` itself |
+| `docs/architecture/MAP.md` | How the system works now. Read first, every session | `AGENTS.md` §1, §7, §10 |
+| `docs/architecture/INDEX.md` | "To change X, read file Y, verify with test Z" | `AGENTS.md` §2, §7 |
+| `docs/architecture/symbols.md` | Generated symbol → `file:line` table (`scripts/gen-symbols.sh`) | `AGENTS.md` §7 |
+| `docs/architecture/<module>.md` | One module contract, max one page — added per module as V2 modules appear, and indexed in `INDEX.md` | this plan, §21.3 |
+| `docs/implementation/STATUS.md` | Handoff note: what is in flight, what was decided, the single next action, what is blocked | **`AGENTS.md` §9** |
+| `docs/implementation/work-items/` | One file per work item: owner, file scope, acceptance criteria, evidence | this plan, §21.6 |
+| `scripts/check-doc-sync.sh` + `.claude/hooks/precommit-doc-sync.sh` | Enforced gate; blocks `git commit` when documentation did not move with code | `AGENTS.md` §8 |
 
-`AGENTS.md` must permanently instruct agents to **read and verify `docs/implementation/STATUS.md` before starting, and update it before ending or handing off an implementation session.**
+Two rules from the original plan survive and still matter:
 
-If the bootstrap set is absent or incomplete, `AGENTS.md` must require an agent performing an authorized code change to create the missing parts under §21.6 **before its first code edit**. Read-only/review tasks report the missing bootstrap but do not mutate the repository.
+- `AGENTS.md` holds stable instructions only. Mutable progress goes to
+  `STATUS.md`, so a temporary note can never be mistaken for a permanent rule.
+- `MAP.md` and `INDEX.md` are authoritative. When any other document — including
+  this plan — contradicts them, the code decides and the loser gets fixed.
+
+**`STATUS.md` format is governed by `AGENTS.md` §9, not by this plan:** replace its
+contents rather than appending, keep it under ~40 lines, and let git history and
+`work-items/` hold everything finished. The 8-heading session-journal template
+that earlier versions of §21.6 prescribed is withdrawn — it produced exactly the
+scrollback that `AGENTS.md` §9 exists to prevent.
 
 ### 21.2 Routing table
 
 The main token saver. Do not scan `src/`.
+
+The live routing table is **`docs/architecture/INDEX.md`** — it covers today's V1
+modules and is kept current by `AGENTS.md` §7. Do not maintain a competing copy
+here.
+
+New V2 modules get a row in `INDEX.md` as they are created, in the same commit
+that creates them. Planned rows, for reference only:
 
 ```
 | To change                          | Read                            | Test                    |
@@ -853,18 +1084,27 @@ Example: if the plan forbids an `unconfirmed` veto but code allows one, code acc
 
 The change is incomplete until every applicable row is updated in the same change:
 
+This table extends `AGENTS.md` §7; it does not replace it. Where both apply, do both.
+
 | Changed | Required companion |
 |---|---|
 | `src/v2/<area>/<module>.py` | Corresponding `docs/architecture/` contract and related test |
 | New file under `src/v2/` | New row in `docs/architecture/INDEX.md` |
+| A pipeline step, a `companies.status` value, a table, an entry point | `docs/architecture/MAP.md`, affected section only (`AGENTS.md` §7) |
+| A public class or function added, moved, or renamed | re-run `./scripts/gen-symbols.sh` |
 | Policy key | `docs/architecture/policy.md` and policy test |
-| Table, column, or index | `docs/architecture/schema.md`, migration, and test |
+| Table, column, or index | `docs/architecture/schema.md`, migration, and test. Note: schema changes go in `src/database.py::init_db`, **not** `src/migrations.py`, whose registry is empty (`MAP.md` §5) |
 | Business rule or numeric threshold | Both plans, §24 changelogs, and regression test |
-| End or hand off an implementation session | `docs/implementation/STATUS.md` with verification evidence and next action |
+| End or hand off an implementation session | `docs/implementation/STATUS.md`, rewritten per `AGENTS.md` §9 |
 
-Keep a versioned checker such as `scripts/check-doc-sync.sh`; run the same script from pre-commit and CI. At minimum it blocks V2 code changes with no related architecture-doc change. The hook prevents omission; tests and review still verify meaning.
+`scripts/check-doc-sync.sh` exists and is wired to `.claude/hooks/precommit-doc-sync.sh`,
+which blocks `git commit` when the gate fails. It fails open, so a block always
+means the gate genuinely failed. Do not disable it; fix the documentation
+(`AGENTS.md` §8).
 
-Do not keep the only checker in `.git/hooks/pre-commit`: `.git/hooks` is not committed and other checkouts do not receive it.
+Passing the gate is necessary, not sufficient — it cannot tell whether what you
+wrote is true. Do not keep the only checker in `.git/hooks/pre-commit`:
+`.git/hooks` is not committed and other checkouts do not receive it.
 
 #### Graphify usage
 
@@ -874,111 +1114,89 @@ Every graph build/read must include only project paths such as `src/`, `dashboar
 
 ### 21.5 Two-document sync rules
 
-| Version | File | Audience |
-|---|---|---|
-| Vietnamese | `docs/v2-modular-refactor-plan.md` | Humans, management |
-| English | `docs/v2-modular-refactor-plan.en.md` | AI agents |
+| Version | File | Audience | Status |
+|---|---|---|---|
+| Vietnamese | `docs/v2-modular-refactor-plan.md` | Humans, management | Authoritative for business intent |
+| English | `docs/v2-modular-refactor-plan.en.md` | AI agents | Condensed normative spec |
+| Korean | `docs/v2-modular-refactor-plan.ko.md` | Reference translation | **Not synchronized. Do not treat as current** |
 
 The English version is a condensed normative spec, not a sentence-by-sentence translation.
 
-1. Identical section numbering. §3.7 here == §3.7 there.
-2. A business-decision change edits **both files in the same change**.
+1. Identical section numbering. §3.7 here == §3.7 there. A cross-reference in one file must resolve in that same file (§0.1).
+2. A business-decision change edits **both** the Vietnamese and English files in the same change.
 3. Every numeric constant is defined once (§0.1) and repeated verbatim in the other document.
 4. **On conflict, the Vietnamese version wins** — it is the one the user approves.
 5. Both documents end with a changelog table listing date and sections touched.
+6. The Korean file is a point-in-time translation. Either re-derive it from the Vietnamese file when the business decisions settle, or delete it — a third copy that silently drifts is worse than no copy.
+
+**Open sync debt (2026-08-17):** the corrections in this revision — §0.2, §2, §3.2,
+§3.4, §10.1, §10.2, §11.1, §11.2, §12.1, §16.1, §21 — were applied to this file
+and to `docs/v2-stage1-critical-fixes-implementation-plan.md` only. The
+Vietnamese and Korean plans still carry the superseded text. Reconcile the
+Vietnamese file before the next business-decision change to it.
 
 ### 21.6 Cross-agent and cross-session implementation handoff
 
 Goal: a new agent or chat session can continue immediately without guessing what was done, while still verifying actual repository state before trusting the handoff.
 
-#### Self-bootstrap when the handoff set is missing
+#### Bootstrap is repair-only
 
-Before the first code edit in any task authorized to add/edit/delete code, check:
+The bootstrap set is complete (§21.1). An agent's job is no longer to create it —
+only to notice if something has gone missing and restore it. `scripts/check-doc-sync.sh`
+already fails when a required path is absent, so this check is automatic.
 
-```text
-AGENTS.md
-docs/architecture/INDEX.md
-docs/implementation/STATUS.md
-docs/implementation/work-items/
-scripts/check-doc-sync.sh
-```
+If a required file *is* missing:
 
-Create or repair missing parts automatically inside this repository. Do not stop merely because bootstrap is absent.
-
-1. Never overwrite an existing file. Preserve its content and add only missing required sections.
-2. Use exact repository paths; never copy docs from V1, backups, Graphify, or another repository.
+1. Never overwrite an existing file. Preserve its content and add only the missing sections.
+2. Use exact repository paths; never copy docs from backup checkouts, Graphify output, or another repository (`AGENTS.md` §3).
 3. The Vietnamese V2 plan governs business intent. Do not invent modules, states, or decisions without evidence.
-4. Seed `INDEX.md` only with code/test mappings verified from the repository. Mark uncertain entries `unverified`.
-5. Create the module contract for each module touched by the current task before editing that module. Do not mass-create empty contracts.
-6. Build initial `STATUS.md` from `git status`, existing code/migrations, and tests actually run. Never infer `completed` from the plan.
-7. Create a current work-item file with owner, file scope, acceptance criteria, status, and evidence.
-8. Initial `scripts/check-doc-sync.sh` is read-only, makes no API calls or file edits, and blocks V2 code changes lacking related contracts/STATUS.
-9. Record `bootstrap_created` or `bootstrap_repaired` in `STATUS.md`, including timestamp, files changed, and verification command.
-10. Before code editing, verify all required paths exist, STATUS contains Current handoff and Verification, the work item has owner/acceptance criteria, and the checker executes.
+4. Restore `INDEX.md` rows only from mappings verified against the repository. Mark uncertain entries `unverified`.
+5. Rebuild `STATUS.md` from `git status`, the code as it actually is, and tests actually run. Never infer `completed` from a plan.
+6. Note the repair in `STATUS.md` with the verification command used.
 
-For read-only explanation, review, or diagnosis, report missing bootstrap without creating it. If bootstrap cannot be created because of permissions or conflicting state, do not edit code; record a blocker when possible and request user action.
+For read-only explanation, review, or diagnosis: report the gap, change nothing.
 
 #### Implementation status file
 
-`docs/implementation/STATUS.md` is the concise aggregate. Required structure:
+Format and length are governed by **`AGENTS.md` §9**: a handoff note, contents
+replaced rather than appended, under ~40 lines, answering only what is in flight,
+what was just decided, the single next executable action, and what is blocked.
+`scripts/check-doc-sync.sh` enforces the `## Current handoff` and `## Verification`
+headings.
 
-```markdown
-# V2 Implementation Status
+`Next action` must be executable — "write failing test 7 in `tests/test_taxcode.py`",
+never "continue stage 2".
 
-Last updated: 2026-07-29 16:30 +07
-Updated by: <agent or human>
-Current milestone: <§16 stage>
-Overall state: pending | in_progress | blocked | completed
-
-## Current handoff
-Next action: <one immediately executable action>
-Read first: <plan sections, contracts, code, tests>
-Do not redo: <verified completed work>
-
-## Stage progress
-| Stage/work item | Status | Evidence |
-
-## Work completed this session
-<behaviour changed and files changed>
-
-## Verification
-<commands, exact results, remaining failures or not run>
-
-## Decisions made
-<decision and plan/ADR/issue link>
-
-## Blockers and open questions
-<blocker, owner, unblock condition>
-
-## Working-tree warning
-<unrelated changes that must not be modified or reverted>
-```
-
-`Next action` must be executable, for example “write failing test 7 in `tests/test_taxcode.py`”, never “continue stage 2”.
+Anything finished belongs in git history and in
+`docs/implementation/work-items/<work-item-id>.md`, which is where per-item
+owner, file scope, acceptance criteria, and evidence live. That is the file to
+grow; `STATUS.md` stays short.
 
 #### Session-start protocol
 
-1. Read `AGENTS.md`.
-2. For a code-changing task, run the self-bootstrap check and create/repair missing parts under the preceding section.
-3. Read `docs/implementation/STATUS.md`.
-4. Verify reality with `git status`, relevant files/migrations, and appropriate tests.
-5. If status disagrees with reality, record the discrepancy and repair `STATUS.md` before relying on it.
-6. Start from `Next action`; do not repeat `Do not redo` without contrary evidence.
+Follows `AGENTS.md` §1: read `docs/architecture/MAP.md`, then
+`docs/implementation/STATUS.md`. Then, for a code-changing task:
+
+1. Run `git status`. Uncommitted changes that are not yours mean stop and ask (`AGENTS.md` §5).
+2. Verify STATUS against reality — the code, git, and the tests it claims were run.
+3. If STATUS disagrees with reality, repair STATUS before relying on it.
+4. Start from `Next action`; do not redo work recorded as verified without contrary evidence.
+5. Cut the working branch before the first edit.
 
 #### During work and before ending
 
-Do not edit status after every code line. Update at meaningful checkpoints: work-item/stage transition; test group changes state; a decision is made; a blocker appears; work is handed off; or the session ends.
+Do not edit status after every code line. Update at meaningful checkpoints: a
+work item changes state, a test group changes state, a decision is made, a
+blocker appears, or the session ends.
 
-Before ending or handoff, record:
+Before ending or handoff, `STATUS.md` must show the behaviour that changed, the
+commands run with their exact results (`not run` when verification was skipped,
+and why), remaining failures and blockers, and one concrete next action. The
+detail behind each of those goes in the work-item file.
 
-1. Completed behaviour and changed files.
-2. Commands run and exact results; use `not run` when verification was not run.
-3. Remaining failures, blockers, and open questions.
-4. One concrete `Next action`.
-5. Files/sections the next agent must read.
-6. User-owned or unrelated working-tree changes that must be preserved.
-
-Never mark `completed` merely because code was edited. Acceptance criteria must pass and evidence must exist. An interrupted session remains `in_progress`; never guess the outcome.
+Never mark work complete merely because code was edited (`AGENTS.md` §8).
+Acceptance criteria must pass and evidence must exist. An interrupted session
+stays in progress; never guess the outcome.
 
 #### Parallel agents
 
@@ -1045,13 +1263,20 @@ Calendar exceeds the sum of the two columns because of rework, waiting on real b
 ### 22.4 Order under deadline pressure
 
 ```
-Day 1      AGENTS.md + INDEX.md + module contracts + STATUS.md
-Day 2      Live log with reason column               (makes every later check faster)
-Day 3–5    Three cheap fixes                         (best result per hour spent)
-Day 6–10   Four V1 behaviours: enrichment, status gate, domain dedup, tax code
+Day 0      Stage 0 baseline: 30-company sample + recorded V1 results
+           (Stage 1's replay gate has nothing to compare against without it)
+Day 1      Live log with reason column               (makes every later check faster)
+Day 2–4    Three cheap fixes                         (best result per hour spent)
+Day 5–9    Four V1 behaviours: enrichment, status gate, domain dedup, tax code
 ```
 
-The first two produce nothing visible but shorten everything after them.
+The bootstrap day from the original ordering is gone — `AGENTS.md`, `INDEX.md`,
+`MAP.md` and `STATUS.md` already exist (§0.2). Day 0 and Day 1 produce nothing
+visible but shorten everything after them.
+
+The `AGENTS.md` + `INDEX.md` + `STATUS.md` row in the table above is likewise
+already delivered; what remains of it is one module contract per new V2 module,
+written in the same commit as the module.
 
 ## 23. API references
 
@@ -1069,3 +1294,4 @@ Edit together with §24 of the Vietnamese document. Rules: §21.5.
 | 2026-07-29 | 3.7, 3.8, 6, 17.1b, 21, 24 | Tightened promotion against query self-confirmation, same-family/copied sources, weak name-only matches, rival fields, and missing provenance. Added `tax_code_veto_rejects_all`, authoritative-registry versus tax-directory classes, regression tests, Definition of Done, versioned doc-sync gate, authority rules, and scoped Graphify usage. Added `docs/implementation/STATUS.md`, session start/end protocols, evidence-based handoff, stale-status protection, and per-owner work items for parallel agents. |
 | 2026-07-29 | 16, 24 | Added `docs/v2-stage1-critical-fixes-implementation-plan.md`: detailed fixed-wait, cache/dedup migration, and retry execution plan with baseline, red tests, commit order, backup/rollback, gates, and Definition of Done. Clarified that Stage 1 creates the minimal retry executor and Stage 6 extends resource control. |
 | 2026-07-29 | 21, 24 | Added self-bootstrap protocol: before code editing, agents create/repair missing bootstrap parts without overwriting or inventing progress, verify through Git/tests, and create the current work item. Read-only tasks report absence without mutating. Added minimal root `AGENTS.md` for automatic discovery. |
+| 2026-08-17 | 0, 0.1, 0.2, 2, 3.2, 3.4, 10, 11, 12.1, 16, 17.3, 17.4, 21, 22.4, 24 | Reconciled the plan with the repository as it actually is. Replaced the "copy V1 into a `version2` directory" model with branch-based work in this repo (§0.2); `AGENTS.md` now governs process and wins any process conflict. §21.1/21.2/21.6 rewritten: the bootstrap document set already exists, so bootstrap is repair-only, the routing table is `INDEX.md` itself, and the 8-heading `STATUS.md` template is withdrawn in favour of `AGENTS.md` §9. Re-verified all defect evidence against the working tree and added defect 2.5 (dead `_batch_short_pages`); duplicate-row counts marked historical with a fresh measurement and a requirement to name the target database. Added §10.1 (the UNIQUE constraint must cover the normalized URL, and the whole table must be normalized, not only duplicate groups) and §10.2 (`filtered_links` and strict-completion fallout). Added §11.1 (complete inventory of six retry/throttle owners, including the previously unmentioned `src/rate_limiter.py` and the 503 gap in `connection_pool`) and §11.2 (company status when an operation exhausts its attempts). §12.1 now requires a measured A/B gate before `wait_for_ms` defaults to 0. Added §16.1 safe stopping points, Stage 0 as a Stage 1 prerequisite, and a budget warning on Stage 12's double API spend. Added tests 17.3.9–12 and 17.4.2–5. Added §3.2 and §3.4 so §0.1's constant pointers resolve; added `DELAY_SECONDS` to §0.1. Recorded open sync debt against the Vietnamese and Korean plans (§21.5). |
