@@ -108,11 +108,8 @@ do not quietly fix around it.
 ## 6. Verifying
 
 ```
-venv/bin/python -m pytest tests/ -q --ignore=tests/manual
+venv/bin/python -m pytest tests/ -q
 ```
-
-`--ignore=tests/manual` is mandatory — `tests/manual/smoke_test.py` calls
-`sys.exit(1)` at import and aborts collection otherwise.
 
 Known-failing baseline (2026-08-14): **190 passed, 1 failed** —
 `test_dashboard_import_filters.py::test_runner_restart_worker_starts_new_process_after_terminating_runtime_workers`.
