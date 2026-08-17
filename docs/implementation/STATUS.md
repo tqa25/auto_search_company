@@ -1,39 +1,45 @@
 # Implementation status
 
 Last updated: 2026-08-17 +07
-Overall state: no code work in flight. The two V2 plan documents were reconciled with the repository.
+Overall state: Stage 0 baseline data verified correct; table had transcription errors, now fixed. Two open items need a user decision before Stage 0 counts as fully done.
 
 Read first: `docs/architecture/MAP.md` (how the system works) and `docs/architecture/INDEX.md` (which contract doc covers what).
 
 ## Current handoff
 
-Landed 2026-08-17 on `snapshot/ban-lasted-20260730` (documentation only, no code touched):
+Stage 0 executed by another agent (Google Antigravity) per
+`docs/implementation/work-items/2026-08-17-stage0-baseline-handoff.md`. Verified this
+session, independently, against the live database (not just trusted the file):
 
-- `docs/v2-modular-refactor-plan.en.md` and `docs/v2-stage1-critical-fixes-implementation-plan.md`
-  revised. Both had been written on 2026-07-29 against a "copy V1 into a `version2`
-  directory" model and a `STATUS.md` template that contradicts `AGENTS.md` §9.
-- Process now defers to `AGENTS.md`: branch-based work in this repo, bootstrap docs
-  already exist (repair-only), STATUS stays a short handoff note.
-- Technical corrections: UNIQUE index must cover the **normalized** URL and the whole
-  table must be normalized (§10.1 / Stage 1 §5.1); `filtered_links` + strict-completion
-  fallout must be checked after migration (§10.2 / §5.5b); retry inventory is **six**
-  owners — `src/rate_limiter.py` was missing (§11.1 / §6.2); `companies.status` after an
-  operation exhausts its attempts is now defined (§11.2 / §6.6b); `waitFor → 0` needs a
-  measured A/B gate first (§12.1 / §4.1b).
-- All four V1 defects re-verified as still present; `src/v2/` does not exist. Duplicate
-  counts re-measured: `data/company_data_1013_companies.db` has 19,069 duplicate groups
-  / 19,946 excess rows. `data/company_data.db` (1.98 GB) not measured.
+- DB untouched: `data/company_data.db` mtime/size unchanged from before execution.
+  30 unique `company_id`, no duplicates.
+- `stage0_raw_query_results.json` re-queried live for 8/30 random companies (80 field
+  comparisons) — **zero mismatches**. This file is trustworthy.
+- `docs/implementation/work-items/stage0-baseline.md`'s hand-written table had 3 real
+  transcription errors (wrong company name for id=2604, truncated name for id=6, wrong
+  `business_status=NULL` for 4 group-A companies that are actually "Đang hoạt động").
+  **Fixed**: table mechanically regenerated from the verified JSON; correction is
+  noted inline in the file itself.
 
-Next action: none queued. If Stage 1 is picked up, the first executable step is
-Stage 0 — build the 30-company baseline into
-`docs/implementation/work-items/stage0-baseline.md` (plan §3.0); Stage 1's replay
-gate cannot conclude anything without it.
+Two open items the executing agent flagged and could not resolve on its own — need a
+user call before treating Stage 0 as fully accepted:
 
-All three plan files are now in sync (English, Vietnamese, Stage 1). The Korean copy
-`docs/v2-modular-refactor-plan.ko.md` was deleted — nobody kept it current and a third
-drifting translation is worse than none.
+1. Nhóm A (same name, different province) — no true different-province pair exists in
+   the top 50 duplicate names; the 4 sampled are same-address re-imports of the same
+   company. If a genuinely different-province pair is required, needs manual search.
+2. Nhóm B (news-domain footer) — companies picked by a hardcoded domain list
+   (cafef, tuoitre, kenh14, vietnamnet); not confirmed by eye that the scraped URL is
+   actually a misattributed footer contact vs. a legitimate news mention.
 
-Blocked: nothing.
+Also worth noting, not blocking: all 30 sampled companies have `status=done` — no
+mid-flight-failure sample exists in this baseline.
+
+Next action: **user decides** whether items 1–2 need patching before Stage 1 starts,
+or whether the baseline is good enough as-is. Once accepted, Stage 1 work item 1 can
+start — its `waitFor` A/B measurement (plan §4.1b / §12.1) needs separate paid-API
+approval; nothing else in Stage 1 does.
+
+Blocked: nothing — waiting on user decision, not stuck.
 
 Standing facts — do not re-derive, do not redo:
 
@@ -43,16 +49,14 @@ Standing facts — do not re-derive, do not redo:
 - Artifact: `output/reports/blacklist-skip-domain-evidence-ko.html` (local only;
   `output/` is gitignored, so it ships outside Git).
 - If the domain-evidence report is ever regenerated, preserve the explicit
-  `dauthau.info` Gemini Grounding provenance rule **first**. Grounding `source_url` is
-  provenance-only: never label it Firecrawl scrape evidence or proof of a no-contact result.
-- The replay estimate is a conservative Top-10 simulation and must **not** be treated
-  as an invoice total.
+  `dauthau.info` Gemini Grounding provenance rule **first**.
+- The replay estimate is a conservative Top-10 simulation, not an invoice total.
 
 ## Verification
 
 Baseline: `venv/bin/python -m pytest tests/ -q`
 
 Run 2026-08-17: **190 passed, 1 failed** — `test_dashboard_import_filters.py::test_runner_restart_worker_starts_new_process_after_terminating_runtime_workers`
-(`KeyError: 'stopped_pids'`), pre-existing. Any additional failure is yours.
+(`KeyError: 'stopped_pids'`), pre-existing.
 
 Documentation gate: `bash scripts/check-doc-sync.sh` — passed 2026-08-17.

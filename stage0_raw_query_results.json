@@ -1,0 +1,582 @@
+[
+  {
+    "company_id": 6641,
+    "groups": [
+      "A"
+    ],
+    "name": "CÔNG TY TRÁCH NHIỆM HỮU HẠN AKEBONO KASEI VIỆT NAM",
+    "status": "done",
+    "business_status": "Đang hoạt động",
+    "address": "Khu Công nghiệp Hà Nội - Đài Tư, 386 Nguyễn Văn Linh, Phường Phúc Lợi, Quận Long Biên, Thành phố Hà Nội, Việt Nam",
+    "tax_code": "0102196873",
+    "search_results": 81,
+    "filtered_should_scrape": 15,
+    "scraped_pages_by_status": {
+      "success": 11
+    },
+    "extracted_contacts": 13,
+    "credits_used_total": 16.0,
+    "duration_seconds_total": 88.0
+  },
+  {
+    "company_id": 6650,
+    "groups": [
+      "A"
+    ],
+    "name": "CÔNG TY TRÁCH NHIỆM HỮU HẠN AKEBONO KASEI VIỆT NAM",
+    "status": "done",
+    "business_status": "Đang hoạt động",
+    "address": "Khu công nghiệp Hà Nội - Đài Tư, 386 Nguyễn Văn Linh, Phường Phúc Lợi, Quận Long Biên, Thành phố Hà Nội, Việt Nam",
+    "tax_code": "0102196873",
+    "search_results": 181,
+    "filtered_should_scrape": 7,
+    "scraped_pages_by_status": {
+      "success": 8
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 11.0,
+    "duration_seconds_total": 44.0
+  },
+  {
+    "company_id": 7548,
+    "groups": [
+      "A"
+    ],
+    "name": "CÔNG TY TNHH ZHONG XIN YA TAI VIỆT NAM",
+    "status": "done",
+    "business_status": "Đang hoạt động",
+    "address": "Lô L1.9A & L1.9B, Khu công nghiệp Đồ Sơn, Phường Ngọc Xuyên, Quận Đồ Sơn, Hải Phòng, Việt Nam",
+    "tax_code": "0201290482",
+    "search_results": 34,
+    "filtered_should_scrape": 10,
+    "scraped_pages_by_status": {
+      "success": 11
+    },
+    "extracted_contacts": 12,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 76.0
+  },
+  {
+    "company_id": 7549,
+    "groups": [
+      "A"
+    ],
+    "name": "CÔNG TY TNHH ZHONG XIN YA TAI VIỆT NAM",
+    "status": "done",
+    "business_status": "Đang hoạt động",
+    "address": "Lô L1.9A, Khu công nghiệp Đồ Sơn, Phường Ngọc Xuyên, Quận Đồ Sơn, Thành phố Hải Phòng, Việt Nam",
+    "tax_code": "0201290482",
+    "search_results": 100,
+    "filtered_should_scrape": 19,
+    "scraped_pages_by_status": {
+      "success": 11
+    },
+    "extracted_contacts": 13,
+    "credits_used_total": 6.0,
+    "duration_seconds_total": 51.0
+  },
+  {
+    "company_id": 3,
+    "groups": [
+      "B"
+    ],
+    "name": "CÔNG TY CỔ PHẦN BIA SÀI GÒN - BẠC LIÊU",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô B5, Khu công nghiệp Trà Kha, Phường 8, Thành phố Bạc Liêu, Tỉnh Bạc Liêu, Việt Nam",
+    "tax_code": "1900333973",
+    "search_results": 100,
+    "filtered_should_scrape": 11,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 12,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 118.0
+  },
+  {
+    "company_id": 4,
+    "groups": [
+      "B"
+    ],
+    "name": "CÔNG TY CỔ PHẦN BIA SÀI GÒN-BẠC LIÊU",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô B5, Khu công nghiệp Trà Kha, Phường 8, Thành phố Bạc Liêu, Tỉnh Bạc Liêu, Việt Nam",
+    "tax_code": "1900333973",
+    "search_results": 200,
+    "filtered_should_scrape": 11,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 11,
+    "credits_used_total": 11.0,
+    "duration_seconds_total": 80.0
+  },
+  {
+    "company_id": 32,
+    "groups": [
+      "B"
+    ],
+    "name": "CÔNG TY TNHH LỤC GIAO",
+    "status": "done",
+    "business_status": null,
+    "address": "Số 632 Phố Mới, Phường Đồng Nguyên, Thành phố Từ Sơn, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "2300234482",
+    "search_results": 100,
+    "filtered_should_scrape": 19,
+    "scraped_pages_by_status": {
+      "success": 9,
+      "timeout": 1
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 11.0,
+    "duration_seconds_total": 154.0
+  },
+  {
+    "company_id": 39,
+    "groups": [
+      "B"
+    ],
+    "name": "CÔNG TY CỔ PHẦN DUY ANH",
+    "status": "done",
+    "business_status": null,
+    "address": "Cụm công nghiệp Phong Khê, Phường Phong Khê, Thành phố Bắc Ninh, Tỉnh Bắc Ninh",
+    "tax_code": "2300310905",
+    "search_results": 100,
+    "filtered_should_scrape": 73,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 12,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 126.0
+  },
+  {
+    "company_id": 12,
+    "groups": [
+      "C"
+    ],
+    "name": "CÔNG TY TRÁCH NHIỆM HỮU HẠN PHƯƠNG HẬU BẠC LIÊU",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô A5-2, Khu công nghiệp Trà Kha, Phường 8, Thành phố Bạc Liêu, Tỉnh Bạc Liêu",
+    "tax_code": "1900629427",
+    "search_results": 71,
+    "filtered_should_scrape": 5,
+    "scraped_pages_by_status": {
+      "success": 4,
+      "timeout": 1
+    },
+    "extracted_contacts": 4,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 86.0
+  },
+  {
+    "company_id": 24,
+    "groups": [
+      "C",
+      "D"
+    ],
+    "name": "CÔNG TY ĐẠI AN (TNHH)",
+    "status": "done",
+    "business_status": null,
+    "address": "Cụm công nghiệp dốc sặt, Phường Đông Ngàn, Thành phố Từ Sơn, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "2300200758",
+    "search_results": 306,
+    "filtered_should_scrape": 22,
+    "scraped_pages_by_status": {
+      "success": 9,
+      "timeout": 1
+    },
+    "extracted_contacts": 11,
+    "credits_used_total": 17.0,
+    "duration_seconds_total": 140.0
+  },
+  {
+    "company_id": 28,
+    "groups": [
+      "C"
+    ],
+    "name": "CÔNG TY SƠN TĨNH ĐIỆN VIỆT THÁI - (TRÁCH NHIỆM HỮU HẠN)",
+    "status": "done",
+    "business_status": null,
+    "address": "Cụm công nghiệp Dốc Sặt, Phường Đông Ngàn, Thành phố Từ Sơn, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "2300105060",
+    "search_results": 241,
+    "filtered_should_scrape": 6,
+    "scraped_pages_by_status": {
+      "success": 5,
+      "timeout": 1
+    },
+    "extracted_contacts": 7,
+    "credits_used_total": 13.0,
+    "duration_seconds_total": 102.0
+  },
+  {
+    "company_id": 31,
+    "groups": [
+      "C"
+    ],
+    "name": "CÔNG TY TNHH ĐỒ GỖ MỸ NGHỆ PHÚ HẢI",
+    "status": "done",
+    "business_status": null,
+    "address": "Cụm công nghiệp Dốc Sặt, Phường Trang Hạ, Thành phố Từ Sơn, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "2300236867",
+    "search_results": 211,
+    "filtered_should_scrape": 14,
+    "scraped_pages_by_status": {
+      "failed": 1,
+      "success": 8,
+      "timeout": 1
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 14.0,
+    "duration_seconds_total": 105.0
+  },
+  {
+    "company_id": 71,
+    "groups": [
+      "D"
+    ],
+    "name": "XÍ NGHIỆP TẬP THỂ CỔ PHẦN TIẾN VINH",
+    "status": "done",
+    "business_status": null,
+    "address": "KCN Võ Cường, Phường Võ Cường, Thành phố Bắc Ninh, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "2300322139",
+    "search_results": 304,
+    "filtered_should_scrape": 11,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 12,
+    "credits_used_total": 18.0,
+    "duration_seconds_total": 126.0
+  },
+  {
+    "company_id": 268,
+    "groups": [
+      "D"
+    ],
+    "name": "CÔNG TY TNHH ONE TECH VN",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô A3 khu liền kề KCN Quế Võ, Phường Phương Liễu, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "2301158241",
+    "search_results": 309,
+    "filtered_should_scrape": 8,
+    "scraped_pages_by_status": {
+      "success": 7,
+      "timeout": 1
+    },
+    "extracted_contacts": 8,
+    "credits_used_total": 15.0,
+    "duration_seconds_total": 121.0
+  },
+  {
+    "company_id": 359,
+    "groups": [
+      "D"
+    ],
+    "name": "TỔNG CÔNG TY PHÁT TRIỂN ĐÔ THỊ KINH BẮC-CTCP",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô B7 Khu công nghiệp Quế Võ, Phường Phương Liễu, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "2300233993",
+    "search_results": 396,
+    "filtered_should_scrape": 8,
+    "scraped_pages_by_status": {
+      "success": 8
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 16.0,
+    "duration_seconds_total": 138.0
+  },
+  {
+    "company_id": 385,
+    "groups": [
+      "D"
+    ],
+    "name": "CÔNG TY CỔ PHẦN NGÂN SƠN",
+    "status": "done",
+    "business_status": null,
+    "address": "Số 01, Đường TS1, Khu công nghiệp Tiên Sơn, Xã Đại Đồng, Huyện Tiên Du, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "0100100199",
+    "search_results": 100,
+    "filtered_should_scrape": 64,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 12,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 106.0
+  },
+  {
+    "company_id": 1,
+    "groups": [
+      "E"
+    ],
+    "name": "CÔNG TY CỔ PHẦN CHẾ BIẾN THỦY SẢN XNK ÂU VỮNG II",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô A1, Đường số 3, Khu Công nghiệp Láng Trâm, Ấp Xóm Mới, Xã Tân Thạnh, Thị xã Giá Rai, Tỉnh Bạc Liêu, Việt Nam",
+    "tax_code": "1900358431",
+    "search_results": 120,
+    "filtered_should_scrape": 5,
+    "scraped_pages_by_status": {
+      "success": 5
+    },
+    "extracted_contacts": 7,
+    "credits_used_total": 13.0,
+    "duration_seconds_total": 84.0
+  },
+  {
+    "company_id": 2,
+    "groups": [
+      "E"
+    ],
+    "name": "CÔNG TY CỔ PHẦN BAO BÌ DẦU KHÍ VIỆT NAM",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô A1-3, Khu Công nghiệp Trà Kha, Phường 8, Thành phố Bạc Liêu, Tỉnh Bạc Liêu, Việt Nam",
+    "tax_code": "1900437757",
+    "search_results": 100,
+    "filtered_should_scrape": 37,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 12,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 135.0
+  },
+  {
+    "company_id": 5,
+    "groups": [
+      "E"
+    ],
+    "name": "CÔNG TY CỔ PHẦN CÔNG NGHIỆP MÊ KÔNG BẠC LIÊU",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô B5, KCN Trà Kha, Phường 8, Thành phố Bạc Liêu, Tỉnh Bạc Liêu, Việt Nam",
+    "tax_code": "1900532263",
+    "search_results": 45,
+    "filtered_should_scrape": 3,
+    "scraped_pages_by_status": {
+      "success": 3
+    },
+    "extracted_contacts": 5,
+    "credits_used_total": 11.0,
+    "duration_seconds_total": 49.0
+  },
+  {
+    "company_id": 6,
+    "groups": [
+      "E"
+    ],
+    "name": "CÔNG TY CỔ PHẦN ĐẦU TƯ PHÁT TRIỂN NÔNG NGHIỆP - THỦY SẢN BẠC LIÊU",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô G, Đường N2 và Đường Gom, Khu công nghiệp Trà Kha, Phường 8, Thành phố Bạc Liêu, Tỉnh Bạc Liêu, Việt Nam",
+    "tax_code": "1900611934",
+    "search_results": 146,
+    "filtered_should_scrape": 11,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 12,
+    "credits_used_total": 16.0,
+    "duration_seconds_total": 134.0
+  },
+  {
+    "company_id": 2593,
+    "groups": [
+      "F"
+    ],
+    "name": "CÔNG TY TNHH SẢN XUẤT THƯƠNG MẠI THIÊN HƯNG THỊNH",
+    "status": "done",
+    "business_status": "Ngừng hoạt động và đã hoàn thành thủ tục chấm dứt hiệu lực MST",
+    "address": "Lô F2-2 Đường NK, KCN Lê Minh Xuân 3, Xã Lê Minh Xuân, Huyện Bình Chánh, Thành phố Hồ Chí Minh, Việt Nam",
+    "tax_code": "0314022861",
+    "search_results": 46,
+    "filtered_should_scrape": 5,
+    "scraped_pages_by_status": {
+      "success": 1
+    },
+    "extracted_contacts": 1,
+    "credits_used_total": 9.0,
+    "duration_seconds_total": 21.0
+  },
+  {
+    "company_id": 2604,
+    "groups": [
+      "F"
+    ],
+    "name": "DOANH NGHIỆP TƯ NHÂN KINH DOANH VÀNG BẠC THANH VÂN",
+    "status": "done",
+    "business_status": "Tạm ngừng KD có thời hạn",
+    "address": "E7/33C, Ấp 19, chợ Khu Công Nghiệp Lê Minh Xuân, Xã Bình Lợi, Huyện Bình Chánh, TP Hồ Chí Minh, Việt Nam",
+    "tax_code": "0315000740",
+    "search_results": 33,
+    "filtered_should_scrape": 3,
+    "scraped_pages_by_status": {
+      "success": 1
+    },
+    "extracted_contacts": 0,
+    "credits_used_total": 9.0,
+    "duration_seconds_total": 18.0
+  },
+  {
+    "company_id": 2620,
+    "groups": [
+      "F"
+    ],
+    "name": "CÔNG TY CỔ PHẦN VÂN NGA",
+    "status": "done",
+    "business_status": "NNT ngừng hoạt động và đã hoàn thành thủ tục chấm dứt hiệu lực MST _(Ngày đóng MST: 02/07/2021)_",
+    "address": "Lô H31, Đường số 1, Khu công nghiệp Lê Minh Xuân, Xã Lê Minh Xuân, Huyện Bình Chánh, Thành phố Hồ Chí Minh, Việt Nam",
+    "tax_code": "0303972075",
+    "search_results": 100,
+    "filtered_should_scrape": 52,
+    "scraped_pages_by_status": {
+      "success": 1,
+      "timeout": 1
+    },
+    "extracted_contacts": 2,
+    "credits_used_total": 3.0,
+    "duration_seconds_total": 53.0
+  },
+  {
+    "company_id": 2633,
+    "groups": [
+      "F"
+    ],
+    "name": "CÔNG TY TNHH GREEN WASH VIỆT NAM",
+    "status": "done",
+    "business_status": "Ngừng HĐ nhưng chưa hoàn thành thủ tục chấm dứt hiệu lực MST",
+    "address": "Lô H38, Đường số 1, Khu Công Nghiệp Lê Minh Xuân, Xã Tân Nhựt, Huyện Bình Chánh, Thành phố Hồ Chí Minh, Việt Nam",
+    "tax_code": "0302831723",
+    "search_results": 43,
+    "filtered_should_scrape": 6,
+    "scraped_pages_by_status": {
+      "success": 1
+    },
+    "extracted_contacts": 2,
+    "credits_used_total": 9.0,
+    "duration_seconds_total": 18.0
+  },
+  {
+    "company_id": 2646,
+    "groups": [
+      "F"
+    ],
+    "name": "CÔNG TY TNHH NGUYÊN LIỆU CHANG YUAN",
+    "status": "done",
+    "business_status": "Ngừng HĐ nhưng chưa hoàn thành thủ tục chấm dứt hiệu lực MST",
+    "address": "Block A-1, A-2, A-3, Lô A, đường N5B, Khu công nghiệp Lê Minh Xuân 3, Xã Lê Minh Xuân, Huyện Bình Chánh, Thành phố Hồ Chí Minh, Việt Nam",
+    "tax_code": "0315737580",
+    "search_results": 56,
+    "filtered_should_scrape": 6,
+    "scraped_pages_by_status": {
+      "success": 1
+    },
+    "extracted_contacts": 0,
+    "credits_used_total": 9.0,
+    "duration_seconds_total": 18.0
+  },
+  {
+    "company_id": 2873,
+    "groups": [
+      "F"
+    ],
+    "name": "CÔNG TY TNHH COMFORT BEDDING",
+    "status": "done",
+    "business_status": "Ngừng HĐ nhưng chưa hoàn thành thủ tục chấm dứt hiệu lực MST",
+    "address": "Lô A-4-1-CN, khu công nghiệp Bàu Bàng, Thị trấn Lai Uyên, Huyện Bàu Bàng, Tỉnh Bình Dương, Việt Nam",
+    "tax_code": "3702678031",
+    "search_results": 100,
+    "filtered_should_scrape": 259,
+    "scraped_pages_by_status": {
+      "success": 1
+    },
+    "extracted_contacts": 2,
+    "credits_used_total": 3.0,
+    "duration_seconds_total": 11.0
+  },
+  {
+    "company_id": 77,
+    "groups": [
+      "G"
+    ],
+    "name": "(null)",
+    "status": "done",
+    "business_status": null,
+    "address": null,
+    "tax_code": null,
+    "search_results": 17,
+    "filtered_should_scrape": 3,
+    "scraped_pages_by_status": {
+      "success": 3
+    },
+    "extracted_contacts": 3,
+    "credits_used_total": 9.0,
+    "duration_seconds_total": 46.0
+  },
+  {
+    "company_id": 173,
+    "groups": [
+      "G"
+    ],
+    "name": "(null)",
+    "status": "done",
+    "business_status": null,
+    "address": null,
+    "tax_code": null,
+    "search_results": 66,
+    "filtered_should_scrape": 10,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 109.0
+  },
+  {
+    "company_id": 175,
+    "groups": [
+      "G"
+    ],
+    "name": "(null)",
+    "status": "done",
+    "business_status": null,
+    "address": null,
+    "tax_code": null,
+    "search_results": 100,
+    "filtered_should_scrape": 15,
+    "scraped_pages_by_status": {
+      "success": 9,
+      "timeout": 1
+    },
+    "extracted_contacts": 9,
+    "credits_used_total": 11.0,
+    "duration_seconds_total": 162.0
+  },
+  {
+    "company_id": 182,
+    "groups": [
+      "G"
+    ],
+    "name": "(null)",
+    "status": "done",
+    "business_status": null,
+    "address": null,
+    "tax_code": null,
+    "search_results": 100,
+    "filtered_should_scrape": 21,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 133.0
+  }
+]
