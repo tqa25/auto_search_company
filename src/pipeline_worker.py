@@ -168,7 +168,6 @@ class PipelineWorker:
             pipeline = Pipeline({
                 "firecrawl_api_key": os.getenv("FIRECRAWL_API_KEY"),
                 "gemini_api_key": os.getenv("GEMINI_API_KEY"),
-                "serper_api_key": os.getenv("SERPER_API_KEY"),
                 "input_excel_path": None,
                 "output_dir": "output",
             })

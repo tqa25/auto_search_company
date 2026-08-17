@@ -33,7 +33,7 @@ class ResultAggregator:
                 "confidence": contact.get("confidence_score")
             })
             
-        steps = ['gemini_quick', 'serper_search', 'firecrawl_search', 'filter', 'scrape', 'AI_EXT']
+        steps = ['gemini_quick', 'firecrawl_search', 'filter', 'scrape', 'AI_EXT']
         status_parts = []
         step_details = []
         

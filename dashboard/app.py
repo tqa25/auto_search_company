@@ -403,7 +403,6 @@ def _pipeline_config() -> dict:
     return {
         "firecrawl_api_key": os.getenv("FIRECRAWL_API_KEY"),
         "gemini_api_key": os.getenv("GEMINI_API_KEY"),
-        "serper_api_key": os.getenv("SERPER_API_KEY"),
         "input_excel_path": None,
         "output_dir": "output"
     }
@@ -847,10 +846,9 @@ def api_quota():
     db = _db()
     cfg = _cfg()
     today = _today_str()
-    row = db.fetch_one("SELECT gemini_grounding_used, serper_used FROM daily_quota WHERE date = ?", (today,))
+    row = db.fetch_one("SELECT gemini_grounding_used FROM daily_quota WHERE date = ?", (today,))
     return JSONResponse({
         "gemini_grounding_used": row["gemini_grounding_used"] if row else 0,
-        "serper_used": row["serper_used"] if row else 0,
         "gemini_limit": cfg.GEMINI_DAILY_LIMIT,
         "date": today,
     })
@@ -2114,7 +2112,6 @@ def api_spa_settings():
     return JSONResponse({
         "GEMINI_API_KEY": _mask_key(os.getenv("GEMINI_API_KEY", "")),
         "FIRECRAWL_API_KEY": _mask_key(os.getenv("FIRECRAWL_API_KEY", "")),
-        "SERPER_API_KEY": _mask_key(os.getenv("SERPER_API_KEY", "")),
         "AI_GROUNDING_MODEL": os.getenv("AI_GROUNDING_MODEL", "models/gemini-2.5-flash-lite"),
         "AI_EXTRACTOR_MODEL": os.getenv("AI_EXTRACTOR_MODEL", "models/gemini-2.5-flash-lite")
     })
@@ -2125,7 +2122,7 @@ async def api_spa_settings_update(req: Request):
     
     # Update only if a new value is provided and it doesn't contain the mask '...'
     updated = False
-    for k in ["GEMINI_API_KEY", "FIRECRAWL_API_KEY", "SERPER_API_KEY"]:
+    for k in ["GEMINI_API_KEY", "FIRECRAWL_API_KEY"]:
         if k in data and data[k] and "..." not in data[k]:
             set_key(DOTENV_PATH, k, data[k])
             os.environ[k] = data[k]
@@ -2449,7 +2446,7 @@ async def run_step_api(request: Request):
     company_id = data.get("company_id")
     step = data.get("step")
 
-    VALID_STEPS = {"gemini_quick", "serper_search", "filter", "scrape", "ai_extract", "facebook", "full"}
+    VALID_STEPS = {"gemini_quick", "filter", "scrape", "ai_extract", "facebook", "full"}
     
     if not isinstance(company_id, int) or company_id <= 0:
         return JSONResponse({"error": "Invalid company_id"}, status_code=400)
@@ -2483,17 +2480,6 @@ async def run_step_api(request: Request):
                 },
                 "grounding_sources": result.get("grounding_sources", []),
                 "result": result.get("result"),
-            })
-
-        elif step == "serper_search":
-            from src.serper_search import SerperSearch
-            serper = SerperSearch(db, logger, config=cfg)
-            results = serper.search(company_id, company["original_name"])
-            return JSONResponse({
-                "status": "success",
-                "step": step,
-                "urls_found": len(results),
-                "results": results[:10],
             })
 
         elif step in ("scrape", "filter", "ai_extract"):
@@ -2643,9 +2629,8 @@ def api_export_logs(format: str = "jsonl", company_id: int = None):
         gemini_suff = db.fetch_one("SELECT COUNT(*) as cnt FROM gemini_quick_results WHERE is_sufficient=1")["cnt"]
 
         # Quota
-        quota = db.fetch_one("SELECT gemini_grounding_used, serper_used FROM daily_quota WHERE date = ?", (today,))
+        quota = db.fetch_one("SELECT gemini_grounding_used FROM daily_quota WHERE date = ?", (today,))
         gemini_calls = quota["gemini_grounding_used"] if quota else 0
-        serper_calls = quota["serper_used"] if quota else 0
 
         # Tokens
         tokens = db.fetch_one("SELECT SUM(input_tokens) as tin, SUM(output_tokens) as tout FROM gemini_quick_results")
@@ -2677,7 +2662,6 @@ def api_export_logs(format: str = "jsonl", company_id: int = None):
 | Resource | Used |
 |----------|------|
 | Gemini Grounding calls | {gemini_calls} |
-| Serper credits | {serper_calls} |
 | Gemini tokens (input) | {tin:,} |
 | Gemini tokens (output) | {tout:,} |
 | Gemini tokens (total) | {tin+tout:,} |

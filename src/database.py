@@ -344,6 +344,9 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS daily_quota (
                 date TEXT PRIMARY KEY,
                 gemini_grounding_used INTEGER DEFAULT 0,
+                -- serper_used is retained for existing databases only. The Serper
+                -- integration was removed; nothing reads or increments this column.
+                -- Do not use it. Dropping it would rewrite the table for no gain.
                 serper_used INTEGER DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT (datetime('now', '+7 hours'))
             )

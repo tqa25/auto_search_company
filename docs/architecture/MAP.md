@@ -22,12 +22,14 @@ External services actually called:
 - **Gemini** — `gemini_quick_search.py`, `ai_extractor.py`
 - **Firecrawl** — `firecrawl_deep_search.py`, `scrape_module.py`, `search_module.py`
 
-**Serper is not wired up.** Config and env plumbing exist (`config.py:85-86`),
-but no module calls it: `src/serper_search.py` does not exist, and
-`dashboard/app.py:2489` imports it inside the `serper_search` step — invoking
-that step raises `ModuleNotFoundError`. Correspondingly `daily_quota.serper_used`
-is never incremented and is permanently 0, even though `pipeline.py:353` prints
-it in the batch summary as if it were real.
+**Serper was removed** (2026-08-14). It had never been wired up: no module
+called it, `src/serper_search.py` never existed, and the dashboard's
+`serper_search` step raised `ModuleNotFoundError` on invocation. The config
+keys, the settings-page fields, the `serper_api_key` plumbing and the always-zero
+"Serper credits" line in the batch summary are all gone.
+
+One artifact remains on purpose: the `daily_quota.serper_used` column, kept so
+existing databases are not rewritten. Nothing reads or increments it.
 
 ---
 
@@ -295,8 +297,7 @@ The first three and the last are overridable from `pipeline_config.json`;
    sees domains blacklisted after it started — restart it to pick them up.
    The flag is written from `ai_extractor.py:186` (extraction outcome), not from
    the scrape module; `scrape_module.py` never reads it.
-9. Serper is a dead code path that raises on invocation (§1).
-10. Method params are named `delay_seconds`, not `delay`
+9. Method params are named `delay_seconds`, not `delay`
     (`ScrapeModule.scrape_company`, `AIExtractor.extract_for_company`).
 
 ---
