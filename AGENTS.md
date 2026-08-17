@@ -2,6 +2,10 @@
 
 Applies to every AI tool used on this repo (Claude Code, Codex, Cursor, …).
 
+This file is the single source of the rules. Claude Code does not read
+`AGENTS.md`, so the repo-root `CLAUDE.md` imports it with `@AGENTS.md`. Keep the
+rules here; never copy them into `CLAUDE.md`, or the two will drift.
+
 ## 1. Session start — read exactly two files
 
 1. `docs/architecture/MAP.md` — how the system works. Structural, stable.
