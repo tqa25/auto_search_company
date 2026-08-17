@@ -48,10 +48,10 @@ Cột `scrape (s/f/t/sk)` = success / failed / timeout / skipped.
 | 2 | 6650 | CÔNG TY TRÁCH NHIỆM HỮU HẠN AKEBONO KASEI VIỆT NAM | A | done | Đang hoạt động | 181 | 7 | 8/0/0/0 | 10 | 11 | 44 |
 | 3 | 7548 | CÔNG TY TNHH ZHONG XIN YA TAI VIỆT NAM | A | done | Đang hoạt động | 34 | 10 | 11/0/0/0 | 12 | 12 | 76 |
 | 4 | 7549 | CÔNG TY TNHH ZHONG XIN YA TAI VIỆT NAM | A | done | Đang hoạt động | 100 | 19 | 11/0/0/0 | 13 | 6 | 51 |
-| 5 | 3 | CÔNG TY CỔ PHẦN BIA SÀI GÒN - BẠC LIÊU | B | done | NULL | 100 | 11 | 10/0/0/0 | 12 | 12 | 118 |
-| 6 | 4 | CÔNG TY CỔ PHẦN BIA SÀI GÒN-BẠC LIÊU | B | done | NULL | 200 | 11 | 10/0/0/0 | 11 | 11 | 80 |
-| 7 | 32 | CÔNG TY TNHH LỤC GIAO | B | done | NULL | 100 | 19 | 9/0/1/0 | 10 | 11 | 154 |
-| 8 | 39 | CÔNG TY CỔ PHẦN DUY ANH | B | done | NULL | 100 | 73 | 10/0/0/0 | 12 | 12 | 126 |
+| 5 | 594 | CÔNG TY TNHH SƠN SAMHWA VINA | B | done | NULL | 89 | 11 | 10/0/0/0 | 10 | 12 | 120 |
+| 6 | 1794 | CÔNG TY TNHH HƯNG TÒNG | B | done | NULL | 311 | 12 | 8/0/2/0 | 10 | 16 | 170 |
+| 7 | 1935 | CÔNG TY TNHH GIA MINH | B | done | NULL | 100 | 58 | 10/0/0/0 | 10 | 12 | 138 |
+| 8 | 2384 | CÔNG TY TNHH THẾ GIỚI GEN | B | done | NULL | 100 | 18 | 10/0/0/0 | 12 | 12 | 118 |
 | 9 | 12 | CÔNG TY TRÁCH NHIỆM HỮU HẠN PHƯƠNG HẬU BẠC LIÊU | C | done | NULL | 71 | 5 | 4/0/1/0 | 4 | 12 | 86 |
 | 10 | 24 | CÔNG TY ĐẠI AN (TNHH) | C,D | done | NULL | 306 | 22 | 9/0/1/0 | 11 | 17 | 140 |
 | 11 | 28 | CÔNG TY SƠN TĨNH ĐIỆN VIỆT THÁI - (TRÁCH NHIỆM HỮU HẠN) | C | done | NULL | 241 | 6 | 5/0/1/0 | 7 | 13 | 102 |

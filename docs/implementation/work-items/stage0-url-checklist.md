@@ -3,6 +3,9 @@
 Mỗi công ty một mục. Mỗi dòng URL kèm trạng thái scrape và contact trích được (nếu có).
 Mở link bằng trình duyệt để tự kiểm.
 
+*Nhóm B được cập nhật 2026-08-17: thay 4 công ty từ [3,4,32,39] sang [594,1794,1935,2384]
+những công ty có khả năng lấy nhầm contact từ bài báo không liên quan thật.*
+
 ## company_id=6641 | nhóm A | CÔNG TY TRÁCH NHIỆM HỮU HẠN AKEBONO KASEI VIỆT NAM
 
 - [success] https://masothue.com/0102196873-cong-ty-trach-nhiem-huu-han-akebono-kasei-viet-nam
@@ -94,78 +97,90 @@ Mở link bằng trình duyệt để tự kiểm.
 - [success] https://nako.vn/thi-cong-he-thong-thong-gio-lam-mat-nha-xuong-cho-cong-ty-zhong-xin-ya-tai-viet-nam-tai-hai-phong/
   - trích được: phone=None | address=Lô L1.9A, KCN Đồ Sơn Hải Phòng, Phường Ngọc Xuyên, Quận Đồ Sơn, TP. Hải Phòng | email=None
 
-## company_id=3 | nhóm B | CÔNG TY CỔ PHẦN BIA SÀI GÒN - BẠC LIÊU
+## company_id=594 | nhóm B | CÔNG TY TNHH SƠN SAMHWA VINA
 
-- [success] https://www.vietnamworks.com/nha-tuyen-dung/cong-ty-cp-bia-sai-gon-bac-lieu-c150495
-  - trích được: phone=None | address=Lô B5, KCN Trà Kha, P.8, TP. Bạc Liêu, Tỉnh Bạc Liêu | email=None
-- [success] https://masothue.com/1900630711-cong-ty-co-phan-bia-sai-gon-bac-lieu
-  - trích được: phone=02913 780 781 | address=Lô B5, Khu công nghiệp Trà Kha, Phường Bạc Liêu, Tỉnh Cà Mau, Việt Nam | email=None
-- [success] https://thuvienphapluat.vn/ma-so-thue/cong-ty-co-phan-bia-sai-gon-bac-lieu-mst-1900629593.html
-  - trích được: phone=07813780781 | address=Lô B5, Khu công nghiệp Trà Kha, Phường Bạc Liêu, Tỉnh Cà Mau, Việt Nam | email=None
-- [success] https://www.topcv.vn/cong-ty/cong-ty-co-phan-bia-sai-gon-bac-lieu/20876.html
-- [success] https://vieclamnhamay.vn/gian-tuyen-dung/cong-ty-cp-bia-sai-gon-bac-lieu
-  - trích được: phone=0291.3780.781, 0939405479 | address=Lô B5, KCN Trà Kha, P.8, TP. Bạc Liêu, Tỉnh Bạc Liêu | email=None
-- [success] https://finance.vietstock.vn/SBL-ctcp-bia-sai-gon-bac-lieu.htm
-- [success] https://data.kreston.vn/vn-report/20220331-470/
-  - trích được: phone=None | address=Lô B5, Khu công nghiệp Trà Kha, Phường 8, Thành Phố Bạc Liêu, Tỉnh Bạc Liêu | email=None
-- [success] https://bmsc.com.vn/tin-tuc/cong-ty/SBL/
-  - trích được: phone=None | address=Lô B5, Khu công nghiệp Trà Kha, Phường 8, Thành Phố Bạc Liêu, Tỉnh Bạc Liêu | email=None
-- [success] https://cafef.vn/du-lieu/sbl/thong-tin-chung.chn
-- [success] https://idpvn.com/cong-ty/cong-ty-co-phan-bia-sai-gon-bac-lieu/
-  - trích được: phone=None | address=Lô B5, Khu công nghiệp Trà Kha, Phường 8, Thành Phố Bạc Liêu, Tỉnh Bạc Liêu | email=None
+- [success] https://www.topcv.vn/cong-ty/cong-ty-tnhh-son-samhwa-vina-cid174122/tuyen-dung.html
+- [success] https://thuvienphapluat.vn/ma-so-thue/cong-ty-tnhh-son-samhwa-vina-mst-2300575073.html?hl=en
+  - trích được: phone=02223764590 | address=Lô 080A, Số 11, đường 11, KCN, đô thị và DV VSIP Bắc Ninh, Phường Từ Sơn, Tỉnh Bắc Ninh, Việt Nam | email=None
+- [success] https://masothue.com/2300575073-cong-ty-tnhh-son-samhwa-vina
+  - trích được: phone=02223764590 | address=Lô 080A, Số 11, đường 11, KCN, đô thị và DV VSIP Bắc Ninh, Phường Từ Sơn, Tỉnh Bắc Ninh, Việt Nam | email=None
+- [success] http://izabacninh.gov.vn/en/xem-tin-tuc/job-3/cong-ty-tnhh-son-samhwa-vina-tuyen-nhan-vien-hanh-chinh-tong-hop-1006.html
+  - trích được: phone=0241 3.764.590, 0972.230.670 | address=Lô 6, Cụm CN Tân Hồng – Hoàn Sơn, Tân Hồng, Từ Sơn, Bắc Ninh | email=None
+- [success] https://www.vietnamworks.com/nha-tuyen-dung/cong-ty-tnhh-son-samhwa-hai-phong-c385538
+- [success] https://sieuthison.com/cong-ty-tnhh-son-samhwa-vina.html
+- [success] https://www.careerlink.vn/viec-lam-cua/cong-ty-tnhh-son-samhwa-vina/47382
+- [success] https://vieclamnhamay.vn/viec-lam/109852-nhan-vien-kinh-doanh
+  - trích được: phone=0251.368.1472, 0388.716.332 | address=Lô B-13, Đường D2, KCN Long Đức, Xã An Phước, Huyện Long Thành, Đồng Nai, Viet Nam | email=None
+- [success] https://amp.laodong.vn/thoi-su-xa-hoi/vu-bo-nhiem-than-toc-con-ruot-o-dong-thap-dua-con-dau-vao-chan-ke-toan-679110.ldo
+  - trích được: phone=0241.3764.590, 0977681868 | address=Lô 6, Cụm CN Tân Hồng - Hoàn Sơn, P. Tân Hồng, TX. Từ Sơn, Bắc Ninh, Việt Nam | email=nhiem@spi.co.kr
+- [success] https://phuckhangtrang.com.vn/le-khanh-thanh-nha-may-son-samhwa-vina-tai-bac-ninh/
+  - trích được: phone=None | address=Bắc Ninh, Việt Nam | email=None
 
-## company_id=4 | nhóm B | CÔNG TY CỔ PHẦN BIA SÀI GÒN-BẠC LIÊU
+## company_id=1794 | nhóm B | CÔNG TY TNHH HƯNG TÒNG
 
-- [success] https://masothue.com/1900333973-cong-ty-co-phan-bia-sai-gon-bac-lieu
-  - trích được: phone=02913 780 781 | address=Lô B5, Khu công nghiệp Trà Kha, Phường Bạc Liêu, Tỉnh Cà Mau, Việt Nam | email=None
-- [success] https://thuvienphapluat.vn/ma-so-thue/cong-ty-co-phan-bia-sai-gonbac-lieu-mst-1900333973.html
-  - trích được: phone=02913780781 | address=Lô B5, Khu công nghiệp Trà Kha, Phường Bạc Liêu, Tỉnh Cà Mau, Việt Nam | email=None
-- [success] https://www.vietnamworks.com/nha-tuyen-dung/cong-ty-cp-bia-sai-gon-bac-lieu-c150495
-  - trích được: phone=02913.780781 | address=Lô B5, KCN Trà Kha, Phường 8, TP. Bạc Liêu, tỉnh Bạc Liêu | email=biasgbl.qlns@gmail.com
-- [success] https://www.topcv.vn/cong-ty/cong-ty-co-phan-bia-sai-gon-bac-lieu/20876.html
-- [success] https://vieclamnhamay.vn/gian-tuyen-dung/cong-ty-cp-bia-sai-gon-bac-lieu
-  - trích được: phone=0291.3780.781, 0939405479 | address=Lô B5, KCN Trà Kha, P.8, TP. Bạc Liêu, Tỉnh Bạc Liêu | email=None
-- [success] https://feee.tdtu.edu.vn/tin-tuc/viec-lam-hoc-bong/ctcp-bia-sai-gon-bac-lieu-tuyen-dung-chuyen-vien-tu-dong-hoa
-  - trích được: phone=02913.780781 | address=Lô B5, KCN Trà Kha, Phường 8, TP. Bạc Liêu, tỉnh Bạc Liêu | email=biasgbl.qlns@gmail.com
-- [success] https://vieclam.tuoitre.vn/vi/nha-tuyen-dung/cong-ty-cp-bia-sai-gon-bac-lieu.35A6CD3E.html
-- [success] https://vieclamcantho.com.vn/cong-ty-cp-bia-sai-gon-bac-lieu-thong-tin-tuyen-dung-3609.html
-  - trích được: phone=02913.780781 | address=Lô B5, KCN Trà Kha, Phường 8, TP. Bạc Liêu, tỉnh Bạc Liêu | email=biasgbl.qlns@gmail.com
-- [success] https://vieclam24h.vn/danh-sach-tin-tuyen-dung-cong-ty-cp-bia-sai-gon-bac-lieu-ntd4015529p134.html
-  - trích được: phone=02913.780781 | address=Lô B5, KCN Trà Kha, Phường 8, TP. Bạc Liêu, tỉnh Bạc Liêu | email=biasgbl.qlns@gmail.com
-- [success] https://timviec.com.vn/cong-ty-cp-bia-sai-gon-bac-lieu-tuyen-dung-24750
-  - trích được: phone=None | address=Lô B5, KCN Trà Kha, phường 8, TP Bạc Liêu | email=None
+- [timeout] https://jobsgo.vn/tuyen-dung/cong-ty-tnhh-hung-tong-6004796748.html
+- [success] https://masothue.com/0303129002-cong-ty-tnhh-hung-tong
+  - trích được: phone=028 3756 1244 | address=Lô Số 38 Song Hành, Khu công nghiệp Tân Tạo, Phường Tân Tạo, Thành phố Hồ Chí Minh, Việt Nam | email=None
+- [success] https://www.yellowpages.vn/lgs/701727/cong-ty-tnhh-hung-tong.html
+  - trích được: phone=(028) 37561244 | address=KCN Tân Tạo, Lô 38, Song Hành, P. Tân Tạo A, Q. Bình Tân, TP. Hồ Chí Minh | email=hungtong1969@gmail.com
+- [success] https://www.trangvangvietnam.com/listings/701727/cong-ty-tnhh-hung-tong.html
+  - trích được: phone=(028) 37561244 | address=KCN Tân Tạo, Lô 38, Song Hành, P. Tân Tạo A, Q. Bình Tân, TP. Hồ Chí Minh, Việt Nam | email=hungtong1969@gmail.com
+- [success] https://nld.com.vn/quach-hung-tong.html
+  - trích được: phone=(+84) 028 3756 1244 | address=Lot No. 38 Song Hanh, Tan Tao Industrial Park, Tan Tao A Ward, Binh Tan District, Ho Chi Minh City | email=hungtong1969@gmail.com
+- [success] https://thuvienphapluat.vn/ma-so-thue/cty-tnhh-trang-trai-nuoi-trong-cung-ung-cay-giong-viet-lan-mst-0303388712.html
+- [success] https://en.idpvn.com/company/hung-tong-company-limited/
+  - trích được: phone=(+84) 028 3756 1244 | address=Lot No. 38 Song Hanh, Tan Tao Industrial Park, Tan Tao A Ward, Binh Tan District, Ho Chi Minh City | email=hungtong1969@gmail.com
+- [success] https://www.growkudos.com/profile/H%C6%B0ng_T%C3%B2ng
+  - trích được: phone=(+84) 028 3756 1244 | address=Lot No. 38 Song Hanh, Tan Tao Industrial Park, Tan Tao A Ward, Binh Tan District, Ho Chi Minh City | email=hungtong1969@gmail.com
+- [timeout] https://bandantoc.hochiminhcity.gov.vn/zh_CN/web/bdt/cong-dong/-/asset_publisher/u0Dkilk6p2nV/content/doanh-nghiep-viet-kieu-nguoi-hoa-quach-hung-tong-tich-cuc-phat-trien-kinh-te-que-nha/normal?inheritRedirect=false&redirect=https%3A%2F%2Fbandantoc.hochiminhcity.gov.vn%2Fzh_CN%2Fweb%2Fbdt%2Fcong-dong%3Fp_p_id%3D101_INSTANCE_u0Dkilk6p2nV%26p_p_lifecycle%3D0%26p_p_state%3Dnormal%26p_p_mode%3Dview%26_101_INSTANCE_u0Dkilk6p2nV_advancedSearch%3Dfalse%26_101_INSTANCE_u0Dkilk6p2nV_keywords%3D%26_101_INSTANCE_u0Dkilk6p2nV_delta%3D10%26p_r_p_564233524_resetCur%3Dfalse%26_101_INSTANCE_u0Dkilk6p2nV_cur%3D323%26_101_INSTANCE_u0Dkilk6p2nV_andOperator%3Dtrue
+- [success] https://www.lemon8-app.com/@tonghung199?region=vn
+  - trích được: phone=(+84) 028 3756 1244 | address=Lot No. 38 Song Hanh, Tan Tao Industrial Park, Tan Tao A Ward, Binh Tan District, Ho Chi Minh City | email=hungtong1969@gmail.com
 
-## company_id=32 | nhóm B | CÔNG TY TNHH LỤC GIAO
+## company_id=1935 | nhóm B | CÔNG TY TNHH GIA MINH
 
-- [timeout] https://thuvienphapluat.vn/phap-luat-doanh-nghiep/phu-luc-giao-dich-lien-ket/tags.html?tagName=Ph%E1%BB%A5%20l%E1%BB%A5c%20giao%20d%E1%BB%8Bch%20li%C3%AAn%20k%E1%BA%BFt
-- [success] https://masothue.com/2300234482-cong-ty-tnhh-luc-giao
-  - trích được: phone=0913545654 | address=Số 632 Phố Mới, Phường Đồng Nguyên, Thành phố Từ Sơn, Tỉnh Bắc Ninh, Việt Nam | email=None
-- [success] https://www.seattleschools.org/wp-content/uploads/2024/04/SPED-Addendum-Vietnamese.pdf
-- [success] https://vietnamnet.vn/ky-luc-giao-dich-co-phieu-vai-ty-usd-phien-uy-ban-chung-khoan-dua-ra-canh-bao-2429509.html
-- [success] https://bvnguyentriphuong.com.vn/y-hoc-co-truyen/nhat-da-luc-giao-sinh-ngu-tu-la-gi
-- [success] https://thanhnien.vn/vinfast-lap-ky-luc-giao-hon-100000-xe-chi-sau-3-quy-185251011123211443.htm
-- [success] https://nld.com.vn/suc-khoe/thuc-hu-nhat-da-luc-giao-sinh-ngu-tu-20111226024112711.htm
-- [success] https://www.tonggiaophanhanoi.org/ngay-20-9-cac-giao-xu-mien-binh-luc-giao-hat-phu-ly-hanh-huong-so-kien/
-- [success] https://suckhoedoisong.vn/thuc-hu-nhat-da-luc-giao-sinh-ngu-tu-169133173.htm
-- [success] https://luatminhkhue.vn/thoi-han-nop-phu-luc-giao-dich-lien-ket-2024-theo-nghi-dinh-132.aspx
+- [success] https://thuvienphapluat.vn/ma-so-thue/cong-ty-co-phan-gia-minh-mst-0600444039.html
+  - trích được: phone=0228.3861331, 0917840369 | address=65 Võ Nguyên Giáp, Phường Thiên Trường, Tỉnh Ninh Bình, Việt Nam | email=None
+- [success] https://giaminhhue.com/lien-he/
+  - trích được: phone=0932528069 | address=Sóng Hồng, Tp. Huế, Huế, Việt Nam | email=None
+- [success] https://congan.haiphong.gov.vn/Tin-hoat-dong-cua-CATP/Cai-cach-hanh-chinh/Co-so-cai-nghien-ma-tuy-Gia-Minh-ky-niem-20-nam-ngay-thanh-lap-137305.html
+  - trích được: phone=None | address=xã Gia Minh, huyện Thủy Nguyên, thành phố Hải Phòng | email=None
+- [success] https://www.yellowpages.vn/lgs/1187732196/cong-ty-tnhh-san-xuat-va-dich-vu-thuong-mai-gia-minh.html
+  - trích được: phone=0983564622 | address=Số 10, Ngõ 120, Phố Trần Bình, P. Mai Dịch, Q. Cầu Giấy, Hà Nội | email=giaminhtape@gmail.com
+- [success] https://careerviet.vn/vi/nha-tuyen-dung/cong-ty-tnhh-thuong-mai-dau-tu-xay-dung-gia-minh.35A6EFB8.html
+  - trích được: phone=None | address=123-125 Nguyễn Hoàng, Phường An Khánh, TP. Thủ Đức, TP. Hồ Chí Minh | email=None
+- [success] https://vieclamcantho.com.vn/cong-ty-tnhh-tm-dv-phap-ly-gia-minh-thong-tin-tuyen-dung-12624.html
+  - trích được: phone=0932785561 | address=Số 135 Sóng Hồng, P. Phú Bài, Thị xã Hương Thủy, Thành phố Huế | email=None
+- [success] https://sanvieclamcantho.com/cong-ty-tnhh-ke-toan-kiem-toan-gia-minh-thong-tin-tuyen-dung-16867.html
+  - trích được: phone=0932785561 | address=Đường số 8 Khu dân cư Ngân Thuận, khu vực 5, phường Bình Thủy, quận Bình Thủy, thành phố Cần Thơ | email=None
+- [success] https://cafef.vn/cong-ty-cua-dai-gia-minh-nhua-canh-bao-lua-dao-ve-tinh-trang-gia-mao-tuyen-dung-nhan-vien-188250221162939723.chn
+  - trích được: phone=0933 777 405 | address=None | email=None
+- [success] https://vieclam24h.vn/danh-sach-tin-tuyen-dung-cong-ty-tnhh-duoc-pham-gia-minh-ntd2862117p73.html
+  - trích được: phone=None | address=123-125 Nguyễn Hoàng, Phường An Khánh, TP. Thủ Đức, TP. Hồ Chí Minh | email=None
+- [success] https://www.zoominfo.com/p/Gia-Minh/13916427537
+  - trích được: phone=None | address=123-125 Nguyễn Hoàng, Phường An Khánh, TP. Thủ Đức, TP. Hồ Chí Minh | email=None
 
-## company_id=39 | nhóm B | CÔNG TY CỔ PHẦN DUY ANH
+## company_id=2384 | nhóm B | CÔNG TY TNHH THẾ GIỚI GEN
 
-- [success] https://masothue.com/2300310905-cong-ty-co-phan-duy-anh
-  - trích được: phone=0934406886 | address=Cụm công nghiệp Phong Khê, Phường Phong Khê, Thành phố Bắc Ninh, Tỉnh Bắc Ninh, Việt Nam | email=None
-- [success] https://www.topcv.vn/cong-ty/cong-ty-co-phan-thuong-mai-duy-anh/98538.html
-- [success] https://cafef.vn/ai-la-bi-hai-cua-ta-duy-anh-lien-he-ngay-so-dien-thoai-0984492614-188260605055341089.chn
-- [success] https://www.noithatnhuamientay.com/lien-he
-  - trích được: phone=0942.796.368 | address=601 Nguyễn Văn Linh (QL91B), Phường Long Tuyền, Thành phố Cần Thơ, Việt Nam | email=tongkhonhuadanggia@gmail.com
-- [success] https://kenh14.vn/ai-la-bi-hai-cua-ta-duy-anh-lien-he-ngay-so-dien-thoai-0984492614-215260604224629641.chn
-- [success] https://phunumoi.net.vn/ai-lien-quan-den-ta-duy-anh-sn-2005-khan-truong-lien-he-cong-an-d355507.html
-- [success] http://ledtoplight.vn/lienhe
-  - trích được: phone=0961199781, 0966889429 | address=145 Đội Cấn, Ngọc Hà, Hà Nội, Việt Nam | email=anhntk.tvh@gmail.com
-- [success] https://lawyers.findlaw.com/texas/houston/4516892_1/contact/
-  - trích được: phone=(281) 530-1600 | address=11209 Bellaire Boulevard, Suite C-21, Houston, TX 77072-2538, USA | email=None
-- [success] https://www.yellowpages.vn/lgs/1187767368/co-so-co-khi-duy-anh.html
-  - trích được: phone=(028) 37517915, 0903 335 543 | address=870/15 An Dương Vương, P. 13, Q. 6, TP. Hồ Chí Minh | email=truonganhtam@gmail.com
-- [success] https://rocketreach.co/duy-anh-dang-email_727934734
+- [success] https://jobsgo.vn/tuyen-dung/cong-ty-tnhh-the-gioi-gen-ho-chi-minh-1311731400.html
+  - trích được: phone=None | address=Lô I5-1, đường N7, Khu công nghệ cao, Phường Tăng Nhơn Phú A, Thành phố Thủ Đức, Thành phố Hồ Chí Minh, Việt Nam | email=None
+- [success] https://thuvienphapluat.vn/ma-so-thue/cong-ty-tnhh-the-gioi-gen-mst-0309215120.html
+  - trích được: phone=08.37361979 | address=Lô I5-1, đường N7, Khu công nghệ cao, Phường Tăng Nhơn Phú, Thành phố Hồ Chí Minh, Việt Nam | email=info@geneworld.vn
+- [success] https://masothue.com/0309215120-cong-ty-tnhh-the-gioi-gen
+  - trích được: phone=0837361979 | address=Lô I5-1, đường N7, Khu công nghệ cao, Phường Tăng Nhơn Phú A, Thành phố Thủ Đức, Thành phố Hồ Chí Minh, Việt Nam | email=None
+- [success] https://vieclamnhamay.vn/gian-tuyen-dung/cong-ty-tnhh-the-gioi-gen-30726
+  - trích được: phone=0364815277, 0937066536 | address=Lô I5-1, Đường N7, Khu Công Nghệ Cao, Quận 9, TP.HCM | email=None
+- [success] https://vieclam24h.vn/danh-sach-tin-tuyen-dung-cong-ty-tnhh-the-gioi-gen-ntd2845807p122.html
+  - trích được: phone=0364815277, 0937066536 | address=Lô I5-1, Đường N7, Khu Công Nghệ Cao, Quận 9, TP.HCM | email=None
+- [success] https://careerviet.vn/vi/nha-tuyen-dung/cong-ty-tnhh-the-gioi-gen.35A7FB52.html
+  - trích được: phone=0364815277, 0937066536 | address=Lô I5-1, Đường N7, Khu Công Nghệ Cao, Quận 9, TP.HCM | email=None
+- [success] https://geneworld.vn/cong-ty-tnhh-the-gioi-gen-da-ra-mat-bo-san-pham-cham-soc-vet-thuong-sau-xam-lan-da-lieu-tham-my-ung-dung-cong-nghe-tang-sinh-te-bao-goc-da-tu-chiet-xu
+  - trích được: phone=0961580039 | address=None | email=contact@geneworld.vn
+- [success] https://www.careerlink.vn/viec-lam-cua/cong-ty-tnhh-the-gioi-gen/402084
+  - trích được: phone=0364815277, 0937066536 | address=Lô I5-1, Đường N7, Khu Công Nghệ Cao, Quận 9, TP.HCM | email=None
+- [success] https://www.studocu.vn/vn/document/truong-dai-hoc-su-pham-ky-thuat-thanh-pho-ho-chi-minh/quan-tri-tai-chinh/nhat-ky-kien-tap-thuc-tap-cong-ty-tnhh-the-gioi-gen-geneworld/125837336
+  - trích được: phone=None | address=Lô I5-1, Đường N7, Khu Công nghệ cao, Phường Tăng Nhơn Phú A, TP. Thủ Đức, TP. Hồ Chí Minh | email=None
+- [success] https://thanhnien.vn/cong-ty-tnhh-the-gioi-gen-tags948249.html
+  - trích được: phone=0364815277, 0937066536 | address=Lô I5-1, Đường N7, Khu Công Nghệ Cao, Quận 9, TP.HCM | email=None
 
 ## company_id=12 | nhóm C | CÔNG TY TRÁCH NHIỆM HỮU HẠN PHƯƠNG HẬU BẠC LIÊU
 

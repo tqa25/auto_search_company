@@ -76,81 +76,81 @@
     "duration_seconds_total": 51.0
   },
   {
-    "company_id": 3,
+    "company_id": 594,
     "groups": [
       "B"
     ],
-    "name": "CÔNG TY CỔ PHẦN BIA SÀI GÒN - BẠC LIÊU",
+    "name": "CÔNG TY TNHH SƠN SAMHWA VINA",
     "status": "done",
     "business_status": null,
-    "address": "Lô B5, Khu công nghiệp Trà Kha, Phường 8, Thành phố Bạc Liêu, Tỉnh Bạc Liêu, Việt Nam",
-    "tax_code": "1900333973",
-    "search_results": 100,
+    "address": "Lô 080A, Số 11, đường 11, KCN, đô thị và DV VSIP Bắc Ninh, Phường Phù Chẩn, Thành phố Từ Sơn, Tỉnh Bắc Ninh, Việt Nam",
+    "tax_code": "2300575073",
+    "search_results": 89,
     "filtered_should_scrape": 11,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 120.0
+  },
+  {
+    "company_id": 1794,
+    "groups": [
+      "B"
+    ],
+    "name": "CÔNG TY TNHH HƯNG TÒNG",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô Số 38 Song Hành, Khu công nghiệp Tân Tạo, Phường Tân Tạo A, Quận Bình Tân, Thành phố Hồ Chí Minh, Việt Nam",
+    "tax_code": "0303129002",
+    "search_results": 311,
+    "filtered_should_scrape": 12,
+    "scraped_pages_by_status": {
+      "success": 8,
+      "timeout": 2
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 16.0,
+    "duration_seconds_total": 170.0
+  },
+  {
+    "company_id": 1935,
+    "groups": [
+      "B"
+    ],
+    "name": "CÔNG TY TNHH GIA MINH",
+    "status": "done",
+    "business_status": null,
+    "address": "Ngõ 640, Đường Nguyễn Văn Cừ, Phường Gia Thuỵ, Quận Long Biên, Thành phố Hà Nội, Việt Nam",
+    "tax_code": "0100954257",
+    "search_results": 100,
+    "filtered_should_scrape": 58,
+    "scraped_pages_by_status": {
+      "success": 10
+    },
+    "extracted_contacts": 10,
+    "credits_used_total": 12.0,
+    "duration_seconds_total": 138.0
+  },
+  {
+    "company_id": 2384,
+    "groups": [
+      "B"
+    ],
+    "name": "CÔNG TY TNHH THẾ GIỚI GEN",
+    "status": "done",
+    "business_status": null,
+    "address": "Lô I5-1, đường N7, Khu công nghệ cao, Phường Tăng Nhơn Phú A, Thành phố Thủ Đức, Thành phố Hồ Chí Minh, Việt Nam",
+    "tax_code": "0309215120",
+    "search_results": 100,
+    "filtered_should_scrape": 18,
     "scraped_pages_by_status": {
       "success": 10
     },
     "extracted_contacts": 12,
     "credits_used_total": 12.0,
     "duration_seconds_total": 118.0
-  },
-  {
-    "company_id": 4,
-    "groups": [
-      "B"
-    ],
-    "name": "CÔNG TY CỔ PHẦN BIA SÀI GÒN-BẠC LIÊU",
-    "status": "done",
-    "business_status": null,
-    "address": "Lô B5, Khu công nghiệp Trà Kha, Phường 8, Thành phố Bạc Liêu, Tỉnh Bạc Liêu, Việt Nam",
-    "tax_code": "1900333973",
-    "search_results": 200,
-    "filtered_should_scrape": 11,
-    "scraped_pages_by_status": {
-      "success": 10
-    },
-    "extracted_contacts": 11,
-    "credits_used_total": 11.0,
-    "duration_seconds_total": 80.0
-  },
-  {
-    "company_id": 32,
-    "groups": [
-      "B"
-    ],
-    "name": "CÔNG TY TNHH LỤC GIAO",
-    "status": "done",
-    "business_status": null,
-    "address": "Số 632 Phố Mới, Phường Đồng Nguyên, Thành phố Từ Sơn, Tỉnh Bắc Ninh, Việt Nam",
-    "tax_code": "2300234482",
-    "search_results": 100,
-    "filtered_should_scrape": 19,
-    "scraped_pages_by_status": {
-      "success": 9,
-      "timeout": 1
-    },
-    "extracted_contacts": 10,
-    "credits_used_total": 11.0,
-    "duration_seconds_total": 154.0
-  },
-  {
-    "company_id": 39,
-    "groups": [
-      "B"
-    ],
-    "name": "CÔNG TY CỔ PHẦN DUY ANH",
-    "status": "done",
-    "business_status": null,
-    "address": "Cụm công nghiệp Phong Khê, Phường Phong Khê, Thành phố Bắc Ninh, Tỉnh Bắc Ninh",
-    "tax_code": "2300310905",
-    "search_results": 100,
-    "filtered_should_scrape": 73,
-    "scraped_pages_by_status": {
-      "success": 10
-    },
-    "extracted_contacts": 12,
-    "credits_used_total": 12.0,
-    "duration_seconds_total": 126.0
   },
   {
     "company_id": 12,
