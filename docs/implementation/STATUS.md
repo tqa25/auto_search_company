@@ -29,8 +29,11 @@ Stage 0 — build the 30-company baseline into
 `docs/implementation/work-items/stage0-baseline.md` (plan §3.0); Stage 1's replay
 gate cannot conclude anything without it.
 
-Blocked: the Vietnamese and Korean plan files still carry the superseded text
-(sync debt recorded in `.en.md` §21.5).
+All three plan files are now in sync (English, Vietnamese, Stage 1). The Korean copy
+`docs/v2-modular-refactor-plan.ko.md` was deleted — nobody kept it current and a third
+drifting translation is worse than none.
+
+Blocked: nothing.
 
 Standing facts — do not re-derive, do not redo:
 

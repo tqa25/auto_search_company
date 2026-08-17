@@ -52,7 +52,7 @@ Nếu hệ thống dừng sau khi đã xử lý 13/20 URL, lần chạy sau ch�
 | Dừng thật sự | Dashboard dừng cả nơi phát việc mới và các worker đang chạy, không chỉ đổi trạng thái hiển thị. |
 | Dễ thay đổi nghiệp vụ | Domain, thứ tự nguồn, điểm số và công thức query nằm trong file cấu hình. |
 
-### Cách xây V2: sửa dần trên bản copy của V1
+### Cách xây V2: sửa dần ngay trên repo hiện tại
 
 V2 **không** được viết lại từ số không.
 
@@ -72,27 +72,55 @@ Lý do: V1 đã có sẵn nhiều thứ mà V2 cần và các thứ đó đang c
 
 Việc thật của V2 là **chia nhỏ đơn vị công việc** từ mức “một công ty” xuống mức “một việc nhỏ”, và **tách code thành nhiều module nhỏ**. Đây là việc sửa lại, không phải xây mới.
 
-Cách triển khai:
+#### Cách triển khai — đã đổi ngày 17/08/2026
+
+Kế hoạch bản đầu (29/07/2026) nói: copy toàn bộ code sang một thư mục riêng cho V2,
+khóa V1 lại chỉ đọc, tạo môi trường Python mới. **Cách đó đã bị bỏ.**
+
+Lý do: từ 14/08/2026 repo đã có bộ luật riêng trong file `AGENTS.md` ở thư mục gốc,
+và bộ luật đó đi theo hướng khác:
+
+- mỗi lần sửa code phải nằm trên một **branch** (nhánh — một bản làm việc song song
+  trong cùng repo, tách khỏi nhánh chính, gộp lại khi xong);
+- có một **gate** (cổng kiểm tra tự động) `scripts/check-doc-sync.sh` chặn lệnh
+  `git commit` nếu sửa code mà không cập nhật tài liệu.
+
+Nếu copy code sang thư mục thứ hai, cổng kiểm tra đó mất tác dụng ngay: nó chỉ nhìn
+được repo mà nó đang nằm trong. Hai bản code song song cũng đồng nghĩa với việc mọi
+sửa lỗi phải làm hai lần.
+
+Cách làm hiện tại:
 
 ```text
-Copy V1 sang root dành cho V2
-Bỏ lại: output/, re_extract_tool/, venv/, graphify/, graphify-out/, index/
-Copy riêng: data/company_data.db
-Tạo lại venv trong root V2 (không copy venv cũ)
+1. Chạy git status. Nếu có thay đổi chưa commit không phải của mình → dừng, hỏi người dùng.
+2. Ghi lại tên nhánh đang đứng. Đó là nhánh sẽ gộp về, không mặc định là main.
+3. Tạo nhánh làm việc từ đó. Ví dụ tên nhánh:
+      perf/stage1-remove-fixed-wait
+      fix/stage1-cache-readonly
+      fix/stage1-retry-attempts
+4. Làm việc, commit theo từng bước nhỏ, cập nhật tài liệu trong cùng commit.
+5. Chạy test, báo cáo cho người dùng, rồi DỪNG.
+6. Chỉ gộp về nhánh gốc sau khi người dùng xác nhận rõ ràng.
 ```
 
-Sau khi copy, V1 được giữ nguyên và không sửa nữa. V1 dùng để so sánh kết quả và làm phương án quay lại nếu V2 chưa đạt yêu cầu.
+Phương án quay lại (rollback) không còn là "chạy bản V1 bên cạnh", mà là revert
+commit (hoàn tác một lần ghi trong lịch sử Git) hoặc bỏ luôn nhánh đó. Cách này nhẹ
+hơn và không có nguy cơ hai bản code trôi khỏi nhau.
 
 ## 2. Bốn vấn đề V1 mà V2 phải sửa
 
 Phần này chỉ ghi quyết định V2. Bằng chứng code, database và giới hạn dữ liệu V1 nằm tại `docs/v1-operational-audit.md`.
 
-| Vấn đề V1 | Quyết định bắt buộc của V2 |
-|---|---|
-| Query thiếu tỉnh/thành và AI có thể lấy contact ở footer của trang tin | Query theo tên phải có tỉnh/thành. AI chỉ đọc đoạn gần bằng chứng nhận diện công ty. |
-| Retry dừng sớm hoặc lỗi tạm thời bị đổi thành kết quả rỗng | Dùng một retry executor chung. HTTP 5xx và timeout phải giữ đúng loại lỗi cho đến lớp điều phối. |
-| Cache hit vẫn lưu thêm search result | Không lưu lại khi cache hit. Thêm unique key `(company_id, search_query, url)` sau khi dọn dữ liệu trùng. |
-| Mọi trang bị chờ cố định ba giây | `wait_for_ms=0` mặc định. Chỉ domain đặc biệt mới có selector hoặc thời gian chờ riêng. |
+Toàn bộ bảng dưới đây đã được **đối chiếu lại với code thật ngày 17/08/2026**. Cả
+bốn vấn đề vẫn còn nguyên, chưa sửa dòng nào; thư mục `src/v2/` chưa tồn tại.
+
+| Vấn đề V1 | Chỗ nằm trong code (kiểm 17/08/2026) | Quyết định bắt buộc của V2 |
+|---|---|---|
+| Query thiếu tỉnh/thành và AI có thể lấy contact ở footer của trang tin | — | Query theo tên phải có tỉnh/thành. AI chỉ đọc đoạn gần bằng chứng nhận diện công ty. |
+| Retry dừng sớm hoặc lỗi tạm thời bị đổi thành kết quả rỗng | `src/company_run.py:59` ghi `max_retries = 2`; `src/firecrawl_deep_search.py` trả về danh sách rỗng ở dòng 77, 88, 144 | Dùng một retry executor chung. HTTP 5xx và timeout phải giữ đúng loại lỗi cho đến lớp điều phối. |
+| Cache hit vẫn lưu thêm search result | `src/search_module.py:214-216` — hàm lưu chạy vô điều kiện, bất kể vừa lấy từ cache hay vừa gọi API | Không lưu lại khi cache hit. Thêm unique key sau khi dọn dữ liệu trùng (mục 10.2). |
+| Mọi trang bị chờ cố định ba giây | `src/scrape_module.py:230` và `:452` đặt `"waitFor": 3000`; `src/config.py:178` và `pipeline_config.json:96` đặt `DELAY_SECONDS = 3.0` | `wait_for_ms=0` mặc định, **sau khi đã đo** (mục 12.1). Chỉ domain đặc biệt mới có thời gian chờ riêng. |
+| Hàm gộp nhiều trang vào một lần gọi AI vẫn nằm trong code dù không ai gọi | `src/ai_extractor.py:285`, tên `_batch_short_pages` | Xóa hẳn trong Stage 1. Để lại thì một AI agent được giao việc "giảm chi phí AI" sẽ tìm thấy và đấu nó vào lại — lỗi này đã từng xảy ra một lần (mục 17.4b). |
 
 Kế hoạch cũ từng đề xuất một bộ search result dùng chung cho nhiều công ty. Đề xuất đó đã bị bỏ vì query thường chứa tên công ty và gần như không được dùng chung.
 
@@ -1277,11 +1305,27 @@ Nếu hai worker cùng chạy câu này thì chỉ một worker cập nhật đ�
 
 ## 10. Search Cache và chống dữ liệu trùng
 
-### 10.1 Nguyên nhân thật của 89.070 dòng trùng
+### 10.1 Nguyên nhân thật của các dòng trùng
 
 Trong V1, sau khi lấy kết quả từ cache, luồng bên ngoài vẫn gọi hàm lưu thêm một lần nữa. Database lại không có hàng rào chặn dòng trùng, nên lỗi này tích lũy dần.
 
-Toàn bộ 89.070 dòng dư đều là trùng **trong cùng một công ty**, không phải trùng giữa các công ty.
+Toàn bộ dòng dư đều là trùng **trong cùng một công ty**, không phải trùng giữa các công ty.
+
+#### Con số 89.070 là số đo cũ, không được dùng lại
+
+Con số đó đo ngày 29/07/2026, và **không ghi lại là đo trên file database nào**.
+Hiện repo có ít nhất hai file, số liệu khác hẳn nhau. Đo lại ngày 17/08/2026:
+
+| File database | Tổng dòng `search_results` | Số nhóm trùng | Số dòng dư |
+|---|---:|---:|---:|
+| `data/company_data_1013_companies.db` (310 MB) | 193.588 | 19.069 | 19.946 — tức 10,3% |
+| `data/company_data.db` (1,98 GB, sửa lần cuối 17/07/2026) | chưa đo | chưa đo | chưa đo |
+
+Tỷ lệ trùng khớp với chẩn đoán ban đầu, nhưng con số tuyệt đối thì không.
+
+Quy tắc: script dọn dữ liệu phải **nhận đường dẫn database cụ thể** và tự đo lại tại
+thời điểm chạy. Không viết sẵn con số vào script, không dùng con số cũ làm tiêu chí
+nghiệm thu, không dùng ký tự đại diện kiểu `data/*.db` để tự tìm file.
 
 ### 10.2 Hai thay đổi để sửa
 
@@ -1294,15 +1338,72 @@ Cache hit → trả kết quả cũ → ghi một event cache_reused để báo 
 
 **Thay đổi 2 — thêm hàng rào ở database.**
 
-`Unique key` là quy tắc database không cho phép hai dòng có cùng danh tính được lưu lặp.
+`Unique key` (khóa duy nhất) là quy tắc database không cho phép hai dòng có cùng danh tính được lưu lặp.
 
 ```text
-UNIQUE (company_id, search_query, url) trên bảng search_results
+UNIQUE (company_id, search_query, <url đã chuẩn hóa>) trên bảng search_results
 ```
 
 Sau thay đổi này, dòng trùng bị database từ chối. Lỗi không thể quay lại dù code sau này viết sai.
 
-**Việc kèm theo:** chạy một script dọn 89.070 dòng trùng đang có, trước khi thêm unique key. Nếu chưa dọn thì không thêm được.
+**Việc kèm theo:** chạy một script dọn số dòng trùng hiện có, trước khi thêm unique key. Nếu chưa dọn thì không thêm được.
+
+### 10.2b Khóa duy nhất phải đặt trên URL đã chuẩn hóa
+
+Đây là chỗ bản kế hoạch đầu viết chưa chặt, và nếu làm theo thì lỗi trùng sẽ quay lại
+bằng cửa sau.
+
+`Chuẩn hóa URL` (normalize) là đưa các cách viết khác nhau của cùng một địa chỉ về một
+dạng chung. Repo đã có sẵn hàm này: `src/utils.py::normalize_url` — nó hạ chữ thường
+tên miền, bỏ `www.`, bỏ dấu `/` ở cuối, bỏ các tham số quảng cáo `utm_*` và `fbclid`.
+
+Bốn địa chỉ dưới đây là **cùng một trang**:
+
+```text
+https://www.masothue.com/0100112437/
+http://masothue.com/0100112437
+https://masothue.com/0100112437/?utm_source=google
+https://Masothue.com/0100112437
+        ↓ sau khi chuẩn hóa, cả bốn thành:
+masothue.com/0100112437
+```
+
+Nếu đặt khóa duy nhất trên cột `url` **thô** (chuỗi lưu y nguyên như lúc nhận về), database
+nhìn bốn dòng trên là bốn danh tính khác nhau và cho lưu cả bốn. Khóa duy nhất coi như
+không tồn tại đối với chúng.
+
+Phải chọn một trong hai, và ghi rõ lựa chọn trong script:
+
+| Cách | Làm gì | Đánh đổi |
+|---|---|---|
+| **Nên chọn** | Thêm cột `normalized_url`, điền cho **toàn bộ** bảng bằng đúng hàm production, rồi đặt khóa duy nhất trên `(company_id, search_query, normalized_url)` | Giữ được URL gốc để tra cứu về sau |
+| Chấp nhận được | Ghi đè cột `url` thành dạng đã chuẩn hóa cho **mọi dòng**, rồi đặt khóa trên `(company_id, search_query, url)` | Mất chuỗi gốc. Chỉ chọn khi chắc chắn không chỗ nào cần URL thô |
+
+Lưu ý kỹ thuật: SQLite có kiểu cột tự tính (`generated column` — cột suy ra bằng một
+biểu thức SQL). Cách đó **không dùng được ở đây**, vì `normalize_url` là hàm Python,
+không viết lại được bằng SQL. Phải điền bằng Python.
+
+**Kiểm tra bắt buộc sau khi dọn:** chạy chuẩn hóa lại toàn bộ bảng một lần nữa và đếm
+— phải ra **0 nhóm trùng mới**. Chỉ chuẩn hóa những dòng đang nằm trong nhóm trùng là
+đúng cái bẫy mà mục này sinh ra để chặn.
+
+### 10.2c Ba thứ bị ảnh hưởng dây chuyền, phải kiểm cùng lúc
+
+Gộp các dòng trùng lại làm đổi `id` (mã số dòng) mà bảng khác đang trỏ tới.
+
+1. **`filtered_links`** có cột `search_result_id` trỏ sang `search_results`. Script phải
+   trỏ lại về dòng canonical (dòng được giữ lại làm bản chính). Nhưng bản thân
+   `filtered_links` **cũng tích lũy URL trùng qua mỗi lần chạy** — xem `MAP.md` mục 9,
+   bẫy số 4. Stage 1 **không** dọn bảng này; đừng đọc kế hoạch như thể đã dọn.
+2. **`src/completion_audit.py`** — file quyết định một công ty đã xong hay chưa — cố ý
+   ghép dữ liệu **theo `url`, không theo `filtered_link_id`**, chính vì sự tích lũy nói
+   trên. Sau khi dọn phải kiểm: lấy một mẫu công ty đang ở trạng thái `done`, chạy lại
+   kiểm tra hoàn tất, chúng vẫn phải ra `done`.
+
+   Vì sao đây là rủi ro đáng sợ nhất của cả work item: hỏng ở đây **không mất dữ liệu**,
+   nên không ai thấy báo lỗi. Nó chỉ làm công ty bị xếp hàng chạy lại — và mỗi lần chạy
+   lại là một lần tốn tiền search, scrape và AI. Sai lặng lẽ tốn tiền lâu hơn sai ồn ào.
+3. **Export và dashboard** vẫn phải truy được từng contact về đúng một URL đã sinh ra nó.
 
 ### 10.3 Idempotency key cho work unit
 
@@ -1386,6 +1487,55 @@ Mỗi attempt được ghi vào Work Log. Retry chỉ chạy lại API operation
 
 Lệnh shutdown có thể ngắt thời gian backoff. Worker không phải chờ đủ 60 giây mới tắt.
 
+### 11.1 Hiện có sáu chỗ tự quyết định thử lại, không phải năm
+
+Bản kế hoạch đầu liệt kê năm chỗ và **bỏ sót `src/rate_limiter.py`**. Bỏ sót một chỗ
+là đủ hỏng: nếu hai lớp cùng thử lại, "3 lần" ở lớp trên nhân với "3 lần" ở lớp dưới
+thành **9 lần gọi thật** — tốn gấp ba lần tiền mà bảng cấu hình vẫn ghi là 3.
+
+Danh sách đầy đủ, kiểm ngày 17/08/2026:
+
+| Chỗ | Hiện đang làm gì | Sau Stage 1 |
+|---|---|---|
+| `src/connection_pool.py:75-78` | Thư viện `urllib3` tự thử lại với danh sách `[500, 502, 504]` — **không có 503 trong danh sách** | Tắt phần thử lại theo mã lỗi; chỉ giữ pool kết nối và timeout |
+| `src/search_module.py:606-679` | Vòng lặp riêng, 3 lần, gặp 429 thì chờ cứng 60 giây | Giao cho retry executor |
+| `src/scrape_module.py:235` và `:462` | Hai vòng lặp riêng, mỗi cái 3 lần | Giao cho retry executor |
+| `src/ai_extractor.py:371-545` | Vòng lặp riêng 3 lần, có đường xử lý riêng cho lỗi 503 của Gemini là chờ 60 giây, hết lần thì trả về `{"status": "failed"}` | Giao cho retry executor, và ngừng biến lỗi thành một kết quả **trông giống thành công** |
+| `src/company_run.py:59` | Chạy lại **cả công ty**, tối đa 2 lần | Bỏ vai trò thử lại (mục 11.2) |
+| `src/rate_limiter.py` | **Đây là throttle (điều tiết tốc độ), không phải retry**: gặp 429 thì nhân đôi khoảng nghỉ, gặp 403/503 thì nhảy lên mức nghỉ tối đa kèm 5 phút "nguội máy" | Giữ nguyên. Nó chỉ nắn khoảng nghỉ **trước** một lần gọi; tuyệt đối không đồng thời quyết định có gọi lại hay không |
+
+Bảng này phơi ra một mâu thuẫn có thật đang chạy trong production. Cùng một lỗi 503:
+
+```text
+ai_extractor  → chờ 60 giây rồi thử lại
+connection_pool → không thử lại (503 không nằm trong danh sách [500, 502, 504])
+rate_limiter    → coi là nghiêm trọng, nghỉ 5 phút
+```
+
+Ba cách xử lý khác nhau cho cùng một tình huống, trong cùng một lần chạy. Thống nhất
+ba chỗ này chính là phần việc thật của mục 11 — không phải chỉ đổi con số 2 thành 3.
+
+### 11.2 Bỏ retry cấp công ty thì công ty mang trạng thái gì
+
+Đây là câu hỏi bản kế hoạch đầu không trả lời, và để trống thì rất nguy hiểm.
+
+Lý do: `src/completion_audit.py` đẩy ngược trạng thái mọi công ty chưa đạt điều kiện
+hoàn tất chặt. Nếu đặt sai trạng thái, công ty bị xếp hàng chạy lại **vô hạn**, mỗi
+vòng lại tốn tiền.
+
+Ánh xạ bắt buộc, đối chiếu bảng chuyển trạng thái `Pipeline.STATUS_FLOW` (mô tả ở
+`docs/architecture/MAP.md` mục 3):
+
+| Operation cạn số lần thử | `companies.status` sau đó | Vì sao |
+|---|---|---|
+| Search hoặc scrape | `failed` | Chạy lại từ đầu bước đó. Các trang đã scrape thành công vẫn nằm trong `scraped_pages` và vẫn được dùng lại, không scrape lại |
+| AI extraction | **Giữ `ai_extract_pending`** | Phần scrape đã trả tiền rồi và đã lưu xuống. Lùi qua checkpoint này là bắt trả tiền lần hai cho đúng dữ liệu đã có |
+| `CriticalError` — sai API key (401), hết credit (402), hỏng dữ liệu | Giữ checkpoint hiện tại, dừng cả batch | Hành vi V1, không đổi |
+
+Mỗi dòng cần một test khẳng định **giá trị `companies.status` cuối cùng**, không chỉ
+khẳng định app đã ném ra đúng loại lỗi. Ném đúng lỗi mà ghi sai trạng thái thì hậu quả
+vẫn nguyên.
+
 ## 12. Scrape nhanh hơn nhưng vẫn có kiểm soát
 
 Mục này nói về bốn cái núm điều chỉnh khi gọi Firecrawl Scrape.
@@ -1410,6 +1560,38 @@ V1 đặt 3.000 ms cho mọi trang. Nghĩa là mọi trang đều bị cộng th
 ```
 
 V2 đặt `wait_for_ms: 0`. Chỉ những domain có trang tải chậm bằng JavaScript mới được cấu hình riêng.
+
+#### Phải đo trước, đổi mặc định sau
+
+Câu "3 giây đó vô ích" là **suy đoán, chưa ai đo**. Nghe hợp lý, nhưng đây là thay đổi
+duy nhất trong Stage 1 có thể **âm thầm làm giảm chất lượng dữ liệu**.
+
+Cơ chế hỏng: một số trang không gửi sẵn nội dung trong HTML mà để trình duyệt tự dựng
+bằng JavaScript sau khi tải (trang "nặng JS"). Trang loại này đang dùng chính 3 giây đó
+để dựng xong bảng thông tin liên hệ. Bỏ đi thì Firecrawl đọc sớm, trả về trang chưa có
+số điện thoại — **nhưng vẫn là một lần scrape thành công, mã 200, không có lỗi nào**.
+
+Hậu quả hiện ra ba bước sau, dưới dạng "công ty này không tìm được số điện thoại", và
+không ai truy được về nguyên nhân thật. Test kiểu "đã bỏ được lệnh chờ chưa" hoàn toàn
+không phát hiện được chuyện này.
+
+Cách đo, làm trước khi đổi mặc định:
+
+```text
+1. Chọn ≥50 URL đã có sẵn trong bảng scraped_pages, trải đều theo nhóm nguồn:
+   trang tra cứu chính thức, trang tra mã số thuế, trang danh bạ doanh nghiệp,
+   trang tuyển dụng, Facebook — cố tình lấy cả những trang nặng JS nhất.
+2. Scrape mỗi URL hai lần vào một database tạm: một lần waitFor 3000, một lần 0.
+3. So sánh từng URL: mã HTTP, độ dài nội dung markdown, và số trường mà
+   src/ai_extractor.py trích được ra từ nội dung đó.
+4. Chỉ đổi mặc định thành 0 nếu KHÔNG nhóm nguồn nào bị mất nội dung.
+   Nhóm nào bị mất thì nhận cấu hình chờ riêng theo domain —
+   chính cấu hình riêng đó là cách sửa, không phải giữ 3 giây cho tất cả.
+5. Lưu bảng so sánh lại làm bằng chứng nghiệm thu.
+```
+
+Bước đo này **tốn credit Firecrawl thật** nên phải hỏi người dùng trước. Nó là phép đo,
+không phải test — quy tắc "không gọi API tốn tiền trong test" vẫn giữ nguyên.
 
 ### 12.2 `only_main_content` — chỉ lấy phần nội dung chính
 
@@ -1588,7 +1770,7 @@ Completed không đồng nghĩa “đã tìm thấy contact”.
 
 Work unit bị dừng vì đã tìm đủ số hợp lệ có thể kết thúc bằng `cancelled_by_policy`. Đây vẫn là trạng thái kết thúc hợp lệ.
 
-## 16. Lộ trình sửa dần trên codebase đã copy
+## 16. Lộ trình sửa dần trên repo hiện tại
 
 `Application service` là lớp xử lý chung nằm giữa các giao diện và module nghiệp vụ. Nhờ đó, dashboard và dòng lệnh không tự viết hai cách stop/resume khác nhau.
 
@@ -1605,7 +1787,7 @@ Work unit bị dừng vì đã tìm đủ số hợp lệ có thể kết thúc 
 
 | Giai đoạn | Việc thực hiện | Kết quả cần kiểm tra |
 |---|---|---|
-| 0. Chọn bộ mẫu | Chọn 30 công ty gồm: trùng tên khác tỉnh, trang tin, timeout, cache hit, blacklist, công ty đã giải thể, công ty thiếu tỉnh/thành. Chạy V1 và lưu kết quả. | Có bộ kết quả V1 để so sánh về sau. |
+| 0. Chọn bộ mẫu — **điều kiện tiên quyết, tính đến 17/08/2026 vẫn chưa làm** | Chọn 30 công ty gồm: trùng tên khác tỉnh, trang tin, timeout, cache hit, blacklist, công ty đã giải thể, công ty thiếu tỉnh/thành. Chạy V1 và lưu kết quả vào `docs/implementation/work-items/stage0-baseline.md`. | Có bộ kết quả V1 để so sánh về sau. Không có nó thì cổng nghiệm thu của giai đoạn 1 không kết luận được gì — "không có regression" so với cái gì? |
 | 1. Sửa ba lỗi rẻ nhất | Bỏ `waitFor: 3000`, đặt `DELAY_SECONDS` về 0, sửa bug cache hit, dọn dòng trùng, thêm unique key, tạo retry executor tối thiểu với `max_attempts` và phân loại lỗi 5xx. | Trang tĩnh không còn chờ cố định. Cache hit không sinh dòng mới. Chuỗi 503,503,200 thành công ở lần thứ ba. |
 | 2. Tách module không gọi API | `input/`, `policy/`, `identity/taxcode.py`. Chưa đổi luồng chạy. | Test chạy được từng file riêng. Tax code trả đúng match/mismatch/unknown. |
 | 3. Query có tỉnh/thành | `query/`, đo tỷ lệ lấy được tỉnh/thành trên 8.701 công ty, thêm bản xem trước trước khi mở batch. | Query theo tên luôn có tỉnh/thành. Placeholder sai báo trước khi gọi API. |
@@ -1617,7 +1799,7 @@ Work unit bị dừng vì đã tìm đủ số hợp lệ có thể kết thúc 
 | 9. Policy ra file cấu hình | Chuyển domain, tier, điểm, công thức query từ code sang file policy có version. | Thêm domain mới không cần sửa code. |
 | 10. Màn hình Deferred | API và giao diện review. | Review không chặn các công ty khác. |
 | 11. Gộp giao diện | Dòng lệnh, API và dashboard cùng gọi `service/application.py`. | Ba giao diện cho cùng kết quả và cùng lệnh điều khiển. |
-| 12. Chạy song song V1–V2 | Cùng bộ input, hai database tách biệt. | Có báo cáo chi phí, độ chính xác và thời gian. |
+| 12. Chạy song song V1–V2 | Cùng bộ input, hai database tách biệt. **Chạy hai lần trên cùng bộ dữ liệu nghĩa là trả tiền API gấp đôi cho bộ mẫu đó** — phải có ngân sách và người dùng đồng ý trước; khoản này chưa nằm trong bảng ước lượng nào ở mục 22. | Có báo cáo chi phí, độ chính xác và thời gian. |
 | 13. Chuyển vận hành | Chọn V2 làm hệ thống chính, giữ V1 chỉ đọc. | Có hướng dẫn quay lại V1 và chạy tiếp từ checkpoint. |
 
 ### 16.3 Giai đoạn 1 tách riêng vì có giá trị ngay
@@ -1629,6 +1811,34 @@ Nên hoàn thành và chạy thật giai đoạn 1 trước, rồi mới làm c�
 Nếu vì lý do nào đó phải dừng dự án, giai đoạn 1 vẫn để lại một hệ thống tốt hơn V1 hiện tại.
 
 Kế hoạch triển khai chi tiết, thứ tự commit, migration, rollback và test gate của ba mục này nằm tại `docs/v2-stage1-critical-fixes-implementation-plan.md`.
+
+### 16.4 Dừng giữa chừng ở đâu thì an toàn
+
+Lộ trình này có 13 giai đoạn, và theo chính mục 22, thứ bị thiếu không phải là thời
+gian viết code mà là **thời gian người dùng ngồi kiểm tra kết quả** — khoảng 28 giờ
+riêng cho nhóm bắt buộc.
+
+Nên rủi ro thật không phải là "làm hỏng", mà là **làm được nửa đường rồi dừng**. Khi
+đó `src/` và `src/v2/` mỗi bên giữ một nửa của cùng một quyết định: sửa một quy tắc
+nghiệp vụ phải nhớ sửa hai chỗ, quên một chỗ thì hai chỗ cho hai kết quả khác nhau.
+Trạng thái đó tệ hơn cả V1 lẫn V2 hoàn chỉnh.
+
+Một ranh giới giai đoạn chỉ là **điểm dừng an toàn** khi ở đó không có logic nghiệp vụ
+nào tồn tại song song hai bản.
+
+| Dừng sau giai đoạn | An toàn? | Hệ thống lúc đó ra sao |
+|---|---|---|
+| 1 | **An toàn — nên dừng ở đây nếu phải dừng** | Vẫn là V1 nguyên vẹn, chỉ khác là đã sửa bốn lỗi. Chưa có logic nghiệp vụ nào trong `src/v2/` để phải giữ đồng bộ |
+| 2–3 | An toàn | Module mới đã có nhưng luồng cũ vẫn là bên quyết định. Muốn quay lại thì xóa `src/v2/` là xong |
+| 4 | **Không an toàn** | Việc chấm điểm URL nằm ở hai nơi. Hoặc bảng điểm cũ bị bỏ hẳn, hoặc bảng mới chưa được dùng — không được để cả hai cùng sống |
+| 5 | An toàn | Cắt ngữ cảnh và kiểm chứng contact là hai lớp thêm vào trước bước extract, không thay thế gì |
+| 6 | **Không an toàn** | Quyền quyết định thử lại phải thuộc về đúng một chỗ. Chuyển được một nửa còn tệ hơn giữ nguyên V1, vì lúc đó vừa có executor mới vừa còn vòng lặp cũ |
+| 7 | **Không an toàn** | Work unit và job theo công ty không thể cùng giữ trạng thái |
+| 9, 11 | An toàn | Chuyển cấu hình và gộp giao diện là loại việc hoặc xong hẳn hoặc chưa bắt đầu |
+
+Trước khi bắt đầu một giai đoạn ghi **Không an toàn**, phải cân nhắc còn đủ sức làm
+hết hay không. Ghi lại quyết định đó vào `STATUS.md` là một phần của việc bắt đầu giai
+đoạn, không phải thủ tục thừa.
 
 
 ## 17. Bộ test bắt buộc trước khi đưa V2 vào vận hành
@@ -1767,16 +1977,27 @@ Hai mã quan trọng nhất cần phân biệt:
 6. `429` chờ đúng số giây trong `Retry-After`, không tự đoán.
 7. Shutdown ngắt được thời gian chờ giữa các lần thử. Worker không phải chờ hết 60 giây mới tắt.
 8. Retry không tạo thêm dòng dữ liệu trùng.
+9. Search hoặc scrape cạn số lần thử → `companies.status` bằng `failed` (mục 11.2).
+10. AI extraction cạn số lần thử → `companies.status` giữ nguyên `ai_extract_pending`, phần scrape đã trả tiền vẫn còn (mục 11.2).
+11. Sau khi tắt phần thử lại của `connection_pool`, không operation nào tạo ra nhiều hơn `max_attempts` lần gọi HTTP thật. Test này bắt đúng lỗi 3 × 3 = 9 lần gọi nói ở mục 11.1.
+12. Một lỗi 503 chỉ do đúng một chỗ xử lý; `rate_limiter` được phép nắn khoảng nghỉ nhưng không được tự gọi lại.
 
 Test 1 và 2 là hai test quan trọng nhất, vì V1 hiện đang sai đúng chỗ này: V1 chỉ chạy hai lần rồi báo thất bại.
+
+Test 9 đến 12 có mặt vì bỏ retry cấp công ty chỉ an toàn khi trạng thái sau đó được
+định nghĩa rõ. Kiểm tra app ném đúng loại lỗi là chưa đủ — phải kiểm giá trị thật nằm
+lại trong cột `companies.status`.
 
 ### 17.4 Cache và nhiều worker
 
 1. Cùng query cache hit 100 lần vẫn không sinh thêm dòng nào trong `search_results`.
-2. Cố tình lưu lại đúng `(company_id, search_query, url)` phải bị database từ chối.
-3. Hai worker cùng lưu một kết quả chỉ có một bản được chấp nhận.
-4. Worker chết giữa chừng thì work unit quay lại pending sau khi lease hết.
-5. Resume không chạy lại work unit đã hoàn tất.
+2. Cố tình lưu lại đúng `(company_id, search_query, url đã chuẩn hóa)` phải bị database từ chối.
+3. Hai URL chỉ khác nhau ở `http`/`https`, có hay không `www.`, có hay không dấu `/` cuối, có hay không `utm_*` → chỉ còn một dòng, không phải hai (mục 10.2b).
+4. Chạy chuẩn hóa lại toàn bộ bảng sau khi dọn → ra 0 nhóm trùng mới (mục 10.2b).
+5. Không có dòng `filtered_links` nào trỏ tới search result đã bị xóa, và một công ty đang `done` trước khi dọn thì sau khi dọn vẫn `done` (mục 10.2c).
+6. Hai worker cùng lưu một kết quả chỉ có một bản được chấp nhận, và cả hai đều nhận về id của dòng canonical.
+7. Worker chết giữa chừng thì work unit quay lại pending sau khi lease hết.
+8. Resume không chạy lại work unit đã hoàn tất.
 
 ### 17.4b Một lần gọi AI chỉ được ứng với một URL
 
@@ -1943,28 +2164,48 @@ Không tự dọn thì sau vài tháng bảng log sẽ lớn hơn cả dữ li�
 
 Mục này phục vụ tình huống thật: phần lớn code sẽ do AI agent viết, và mỗi lần agent phải tự đọc lại cả codebase thì vừa chậm vừa tốn token vừa dễ hiểu sai.
 
-### 21.1 Bốn file bắt buộc
+### 21.1 Bộ tài liệu — đã dựng xong, không dựng lại
 
-| File | Dùng để làm gì | Ai đọc |
+Mọi file mà mục này từng yêu cầu AI agent tự tạo thì **nay đã có sẵn**, dựng ngày
+14/08/2026. Việc của agent bây giờ không phải là tạo, mà là dùng đúng và sửa lại nếu
+có file bị mất.
+
+| File | Dùng để làm gì | Quy tắc của nó do đâu định |
 |---|---|---|
-| `AGENTS.md` ở thư mục gốc | Quy tắc bắt buộc và bảng chỉ đường | AI agent đọc đầu tiên, tự động |
-| `docs/architecture/INDEX.md` | Bảng “muốn sửa X thì đọc file nào” | AI agent, khi nhận việc |
-| `docs/architecture/<module>.md` | Hợp đồng của một module | AI agent, khi sửa đúng module đó |
-| `docs/implementation/STATUS.md` | Trạng thái triển khai, bằng chứng kiểm tra và bước tiếp theo | Mọi agent khi bắt đầu và trước khi kết thúc phiên |
+| `AGENTS.md` ở thư mục gốc | Quy tắc quy trình: đọc gì đầu phiên, mỗi lần sửa code phải nằm trên nhánh riêng, tài liệu cập nhật cùng commit, thế nào là xong | Chính `AGENTS.md` |
+| `docs/architecture/MAP.md` | Hệ thống hiện đang chạy thế nào. Đọc đầu tiên, mỗi phiên | `AGENTS.md` mục 1, 7, 10 |
+| `docs/architecture/INDEX.md` | Bảng "muốn sửa X thì đọc file nào, kiểm bằng test nào" | `AGENTS.md` mục 2, 7 |
+| `docs/architecture/symbols.md` | Bảng tra tên hàm/lớp → số dòng, sinh tự động bằng `scripts/gen-symbols.sh` | `AGENTS.md` mục 7 |
+| `docs/architecture/<module>.md` | Hợp đồng của một module, thêm dần khi module V2 ra đời, và ghi một dòng vào `INDEX.md` | Kế hoạch này, mục 21.3 |
+| `docs/implementation/STATUS.md` | Ghi chú bàn giao: đang làm gì, vừa quyết gì, việc tiếp theo là gì, đang kẹt ở đâu | **`AGENTS.md` mục 9** |
+| `docs/implementation/work-items/` | Mỗi việc một file: người phụ trách, phạm vi file, tiêu chí nghiệm thu, bằng chứng | Kế hoạch này, mục 21.6 |
+| `scripts/check-doc-sync.sh` + `.claude/hooks/precommit-doc-sync.sh` | Cổng kiểm tra tự động, chặn `git commit` khi sửa code mà không cập nhật tài liệu | `AGENTS.md` mục 8 |
 
 `AGENTS.md` là tên file mà Codex và nhiều công cụ AI tự đọc trước khi làm việc. Đặt đúng tên này thì không cần nhắc agent mỗi lần.
 
-`AGENTS.md` chỉ giữ quy tắc ổn định. Không ghi tiến độ thay đổi theo từng phiên vào file này. Tiến độ nằm trong `STATUS.md` để agent không hiểu nhầm một ghi chú tạm thời thành instruction lâu dài.
+Hai quy tắc từ bản kế hoạch đầu vẫn còn nguyên giá trị:
 
-`AGENTS.md` phải có instruction cố định: **đọc và xác minh `docs/implementation/STATUS.md` trước khi bắt đầu; cập nhật file đó trước khi kết thúc hoặc bàn giao một phiên triển khai.**
+- `AGENTS.md` chỉ giữ quy tắc ổn định. Không ghi tiến độ từng phiên vào đó, để một ghi
+  chú tạm thời không bị hiểu nhầm thành luật lâu dài. Tiến độ nằm ở `STATUS.md`.
+- `MAP.md` và `INDEX.md` là nguồn đáng tin. Khi bất kỳ tài liệu nào — kể cả kế hoạch
+  này — nói khác chúng, thì **code là bên đúng**, và bên nói sai phải sửa.
 
-Nếu bộ bootstrap chưa tồn tại hoặc thiếu một phần, `AGENTS.md` phải yêu cầu agent tự tạo theo protocol ở §21.6 **trước lần sửa code đầu tiên**. Nhiệm vụ chỉ đọc/đánh giá không tự ý tạo file; agent chỉ báo bootstrap đang thiếu.
+**Định dạng `STATUS.md` do `AGENTS.md` mục 9 quyết định, không phải kế hoạch này:**
+thay nội dung chứ không nối thêm, giữ dưới khoảng 40 dòng, mọi việc đã xong để cho
+lịch sử Git và thư mục `work-items/` giữ. Mẫu 8 đề mục mà mục 21.6 bản cũ đưa ra
+**đã bị rút lại** — nó tạo ra đúng cái đống ghi chép dài mà `AGENTS.md` mục 9 sinh ra
+để chặn.
 
 ### 21.2 Bảng chỉ đường
 
 Đây là phần tiết kiệm token nhiều nhất. Thay vì để agent đọc cả `src/`, bảng này chỉ thẳng vào file cần sửa.
 
-Ví dụ nội dung `docs/architecture/INDEX.md`:
+Bảng chỉ đường thật đang dùng là **`docs/architecture/INDEX.md`** — nó đã bao phủ các
+module V1 hiện tại và được cập nhật theo `AGENTS.md` mục 7. **Không giữ một bản sao
+cạnh tranh trong kế hoạch này**; hai bảng chỉ đường sẽ trôi khỏi nhau.
+
+Module V2 mới được thêm một dòng vào `INDEX.md` ngay trong commit tạo ra nó. Các dòng
+dự kiến, chỉ để tham khảo:
 
 ```text
 | Muốn sửa                          | Đọc file                        | Test liên quan              |
@@ -2048,105 +2289,72 @@ Kế hoạch này có hai bản:
 
 | Bản | File | Dành cho |
 |---|---|---|
-| Tiếng Việt | `docs/v2-modular-refactor-plan.md` | Người đọc, quản lý |
-| Tiếng Anh | `docs/v2-modular-refactor-plan.en.md` | AI agent |
+| Tiếng Việt | `docs/v2-modular-refactor-plan.md` | Người đọc, quản lý. **Bản quyết định về nghiệp vụ** |
+| Tiếng Anh | `docs/v2-modular-refactor-plan.en.md` | AI agent. Bản đặc tả ngắn gọn |
 
 Bản tiếng Anh không phải bản dịch từng câu. Nó là bản đặc tả ngắn hơn, dùng cùng số mục và cùng con số.
 
+Trước đây còn một bản tiếng Hàn (`v2-modular-refactor-plan.ko.md`). **Đã xóa ngày
+17/08/2026.** Lý do: nó là bản dịch chụp tại một thời điểm, không ai cập nhật cùng hai
+bản kia, nên chỉ sau ba tuần đã lệch. Ba bản cùng nói ba điều khác nhau còn tệ hơn hai
+bản — người đọc không biết tin bản nào. Cần bản tiếng Hàn thì dịch lại từ bản tiếng
+Việt khi các quyết định nghiệp vụ đã ổn định.
+
 Quy tắc giữ hai bản khớp nhau:
 
-1. Cùng hệ thống số mục. Mục 3.7 ở bản Việt là mục 3.7 ở bản Anh.
+1. Cùng hệ thống số mục. Mục 3.7 ở bản Việt là mục 3.7 ở bản Anh. Một tham chiếu chéo trong một bản phải trỏ tới mục có thật **trong chính bản đó**.
 2. Đổi một quyết định nghiệp vụ thì **phải sửa cả hai bản trong cùng lần**.
 3. Mọi con số chỉ được viết một chỗ và lặp lại y nguyên ở bản kia. Ví dụ ngưỡng 35 điểm, 10 URL, 25% điểm giảm.
 4. Khi hai bản khác nhau thì **bản tiếng Việt đúng**, vì đó là bản người dùng quyết định.
 5. Cuối mỗi bản có bảng lịch sử thay đổi ghi ngày và mục đã sửa.
+6. **Về quy trình làm việc thì `AGENTS.md` mới là bên đúng**, kể cả khi kế hoạch này nói khác. Kế hoạch giữ phần nghiệp vụ: làm gì và vì sao. `AGENTS.md` giữ phần quy trình: làm thế nào, nhánh nào, kiểm ra sao, thế nào là xong.
 
 ### 21.6 Bàn giao tiến độ giữa AI agent và chat session
 
 Mục tiêu: một agent hoặc chat session mới có thể tiếp tục ngay mà không phải đoán việc nào đã làm, nhưng vẫn phải kiểm tra trạng thái thật trước khi tin tài liệu.
 
-#### Self-bootstrap khi bộ tài liệu chưa tồn tại
+#### Bộ tài liệu đã có sẵn — chỉ sửa khi mất, không dựng lại
 
-Với mọi nhiệm vụ được phép thêm/sửa/xóa code, agent phải kiểm tra các path sau trước lần edit code đầu tiên:
+Bộ tài liệu bootstrap (bộ khởi tạo) đã đầy đủ từ 14/08/2026, xem mục 21.1. Cổng
+`scripts/check-doc-sync.sh` tự báo lỗi nếu một file bắt buộc biến mất, nên việc kiểm
+tra này diễn ra tự động, agent không phải nhớ.
 
-```text
-AGENTS.md
-docs/architecture/INDEX.md
-docs/implementation/STATUS.md
-docs/implementation/work-items/
-scripts/check-doc-sync.sh
-```
+Nếu thật sự có file bị thiếu:
 
-Nếu thiếu, agent tự tạo phần thiếu trong phạm vi repository; không dừng để hỏi chỉ vì bootstrap chưa có. Quy tắc:
-
-1. Không ghi đè file đã tồn tại. Đọc và giữ nội dung hiện có; chỉ bổ sung section bắt buộc còn thiếu.
-2. Tạo directory bằng path chính xác, không quét hoặc copy tài liệu từ V1, backup, Graphify hay repository khác.
+1. Không ghi đè file đang có. Giữ nguyên nội dung cũ, chỉ bổ sung phần còn thiếu.
+2. Dùng đúng đường dẫn trong repo này. Không copy tài liệu từ bản backup, từ thư mục Graphify hay từ repo khác (`AGENTS.md` mục 3).
 3. Dùng kế hoạch V2 tiếng Việt làm nguồn nghiệp vụ. Không tự phát minh module, trạng thái hoặc quyết định chưa có bằng chứng.
-4. `INDEX.md` ban đầu chỉ liệt kê file đã xác minh bằng code và test. Mục chưa xác minh ghi `unverified`, không đoán.
-5. Tạo module contract cho module được task hiện tại chạm tới trước khi sửa module đó. Không cần tạo hàng loạt contract rỗng cho toàn codebase.
-6. `STATUS.md` ban đầu được lập từ `git status`, code/migration hiện có và test thực sự đã chạy. Không ghi `completed` dựa vào plan.
-7. Tạo work-item file cho task hiện tại, với owner, file scope, acceptance criteria, status và evidence.
-8. `scripts/check-doc-sync.sh` ban đầu phải chạy read-only, không tự sửa file, không gọi API và chặn code V2 thay đổi mà thiếu contract/STATUS liên quan.
-9. Ghi một event trong `STATUS.md`: `bootstrap_created` hoặc `bootstrap_repaired`, timestamp, file đã tạo/bổ sung và verification command.
-10. Chạy kiểm tra bootstrap trước khi code edit:
+4. Khôi phục dòng nào trong `INDEX.md` thì phải xác minh lại bằng code và test. Dòng chưa chắc thì ghi `unverified`, không đoán.
+5. Dựng lại `STATUS.md` từ `git status`, từ code như nó đang có, và từ test đã thật sự chạy. Không ghi "đã xong" dựa vào kế hoạch.
+6. Ghi lại việc sửa đó vào `STATUS.md` kèm lệnh đã dùng để kiểm tra.
 
-   ```text
-   mọi path bắt buộc tồn tại
-   STATUS có Current handoff và Verification
-   work item hiện tại có owner và acceptance criteria
-   doc-sync checker chạy được
-   ```
-
-Nếu task chỉ yêu cầu đọc, giải thích, review hoặc chẩn đoán không sửa code, agent không tự tạo bootstrap. Agent báo ngắn rằng bootstrap thiếu và chỉ tạo khi người dùng cho phép thay đổi repository.
-
-Nếu bootstrap tạo thất bại do permission hoặc trạng thái mâu thuẫn, agent không được tiếp tục sửa code. Ghi blocker nếu có thể và yêu cầu người dùng xử lý.
+Nếu task chỉ đọc, giải thích, review hoặc chẩn đoán: báo phần thiếu, không tự sửa gì.
 
 #### File trạng thái triển khai
 
-`docs/implementation/STATUS.md` là bản tổng hợp tiến độ hiện tại. File này phải ngắn, ưu tiên thông tin giúp thực hiện bước tiếp theo, và có cấu trúc bắt buộc:
+Định dạng và độ dài do **`AGENTS.md` mục 9** quyết định: là một ghi chú bàn giao, thay
+nội dung chứ không nối thêm, giữ dưới khoảng 40 dòng, và chỉ trả lời bốn câu — đang
+làm gì, vừa quyết định gì, hành động tiếp theo là gì, đang kẹt ở đâu. Cổng
+`scripts/check-doc-sync.sh` bắt buộc file phải có hai đề mục `## Current handoff` và
+`## Verification`.
 
-```markdown
-# V2 Implementation Status
+`Next action` phải là một hành động bắt tay làm được ngay — ví dụ "viết test số 7 đang
+fail trong `tests/test_taxcode.py`" — không ghi mơ hồ như "tiếp tục stage 2".
 
-Last updated: 2026-07-29 16:30 +07
-Updated by: <agent hoặc người cập nhật>
-Current milestone: <giai đoạn trong §16>
-Overall state: pending | in_progress | blocked | completed
-
-## Current handoff
-Next action: <một hành động cụ thể có thể bắt đầu ngay>
-Read first: <plan section, module contract, code và test cần đọc>
-Do not redo: <việc đã hoàn thành và có bằng chứng>
-
-## Stage progress
-| Stage/work item | Status | Evidence |
-
-## Work completed this session
-<hành vi đã thay đổi và danh sách file>
-
-## Verification
-<command đã chạy, kết quả, test còn fail hoặc chưa chạy>
-
-## Decisions made
-<quyết định mới và link tới plan/ADR/issue nếu có>
-
-## Blockers and open questions
-<blocker, chủ sở hữu, điều kiện để tiếp tục>
-
-## Working-tree warning
-<thay đổi không thuộc task hiện tại; không được sửa hoặc revert>
-```
-
-`Next action` phải là một hành động thực thi được, ví dụ “viết failing test số 7 trong `tests/test_taxcode.py`”, không ghi mơ hồ như “tiếp tục stage 2”.
+Mọi thứ đã xong thuộc về lịch sử Git và file
+`docs/implementation/work-items/<tên-việc>.md`. Đó mới là chỗ ghi người phụ trách, phạm
+vi file, tiêu chí nghiệm thu và bằng chứng. File đó được phép dài; `STATUS.md` thì không.
 
 #### Protocol khi bắt đầu phiên
 
-1. Đọc `AGENTS.md`.
-2. Nếu task có sửa code, chạy kiểm tra self-bootstrap và tạo/sửa phần còn thiếu theo mục trên.
-3. Đọc `docs/implementation/STATUS.md`.
-4. Kiểm tra trạng thái thật bằng `git status`, file/migration liên quan và test phù hợp.
-5. Nếu `STATUS.md` khác trạng thái thật, ghi rõ sai khác và sửa `STATUS.md` trước khi dựa vào nó.
-6. Bắt đầu từ `Next action`; không làm lại phần `Do not redo` nếu không có bằng chứng ngược lại.
+Theo `AGENTS.md` mục 1: đọc `docs/architecture/MAP.md`, rồi đọc
+`docs/implementation/STATUS.md`. Sau đó, nếu task có sửa code:
+
+1. Chạy `git status`. Có thay đổi chưa commit không phải của mình → dừng, hỏi người dùng (`AGENTS.md` mục 5).
+2. Đối chiếu `STATUS.md` với thực tế: code, Git, và test mà nó khai là đã chạy.
+3. Nếu `STATUS.md` khác thực tế, sửa `STATUS.md` trước khi dựa vào nó.
+4. Bắt đầu từ `Next action`. Không làm lại việc đã ghi là hoàn tất có bằng chứng, trừ khi có bằng chứng ngược lại.
+5. Tạo nhánh làm việc trước lần sửa file đầu tiên.
 
 #### Protocol trong lúc làm và trước khi kết thúc
 
@@ -2158,16 +2366,19 @@ Không cần sửa `STATUS.md` sau mỗi dòng code. Phải cập nhật tại c
 - Có blocker.
 - Chuyển việc cho agent khác hoặc kết thúc chat session.
 
-Trước khi kết thúc hoặc bàn giao, agent phải ghi:
+Trước khi kết thúc hoặc bàn giao, `STATUS.md` phải cho thấy:
 
-1. Hành vi đã hoàn thành và file đã đổi.
-2. Lệnh kiểm tra đã chạy và kết quả chính xác; nếu chưa chạy phải ghi `not run`.
+1. Hành vi đã thay đổi và file đã đổi.
+2. Lệnh kiểm tra đã chạy và kết quả chính xác; nếu chưa chạy phải ghi rõ là chưa chạy và vì sao.
 3. Test còn fail, blocker và câu hỏi mở.
 4. Một `Next action` cụ thể.
-5. Danh sách file/mục tài liệu agent sau cần đọc.
-6. Thay đổi trong working tree thuộc người dùng hoặc task khác cần giữ nguyên.
+5. Thay đổi trong thư mục làm việc thuộc người dùng hoặc task khác cần giữ nguyên.
 
-Không được ghi `completed` chỉ vì đã sửa code. Chỉ ghi `completed` khi acceptance criteria liên quan đã đạt và có evidence. Nếu session bị dừng giữa chừng, ghi phần đã làm là `in_progress`, không đoán kết quả.
+Chi tiết đằng sau từng mục trên nằm ở file work item, không nhồi vào `STATUS.md`.
+
+Không được ghi là xong chỉ vì đã sửa code (`AGENTS.md` mục 8). Chỉ ghi xong khi tiêu
+chí nghiệm thu đã đạt và có bằng chứng. Phiên bị dừng giữa chừng thì để nguyên trạng
+thái đang làm, không đoán kết quả.
 
 #### Khi có nhiều agent chạy song song
 
@@ -2214,15 +2425,16 @@ Với cách làm này, **kiểm tra tốn nhiều thời gian hơn viết code**
 
 | Việc | Mức | Lý do | AI viết code | Người kiểm tra |
 |---|---|---|---|---|
-| Bỏ `waitFor: 3000` và `DELAY_SECONDS` | **BẮT BUỘC** | Mỗi công ty tiết kiệm ~60 giây, sửa 2 dòng | 1 phiên | 1 giờ |
-| Sửa bug cache hit + dọn 89.070 dòng trùng + thêm unique key | **BẮT BUỘC** | Dữ liệu trùng đang tăng dần | 1 phiên | 3 giờ |
+| Bỏ `waitFor: 3000` và `DELAY_SECONDS` **kèm phép đo A/B ở mục 12.1** | **BẮT BUỘC** | Mỗi công ty tiết kiệm ~60 giây. Code chỉ sửa vài dòng, nhưng phải đo trước để không mất nội dung trang nặng JS | 1–2 phiên | 2 giờ |
+| Sửa bug cache hit + dọn dòng trùng + thêm unique key trên URL đã chuẩn hóa | **BẮT BUỘC** | Dữ liệu trùng đang tăng dần — 10,3% số dòng trên database 1013 công ty | 2 phiên | 3–4 giờ |
+| Chốt bộ mẫu 30 công ty của giai đoạn 0 | **BẮT BUỘC** | Không có nó thì không giai đoạn nào chứng minh được là "không làm hỏng gì" | 1 phiên | 1 giờ |
 | Sửa retry: `max_attempts`, phân loại 4xx/5xx | **BẮT BUỘC** | Đang mất kết quả vì bỏ cuộc quá sớm | 1–2 phiên | 3 giờ |
 | Module kiểm tra tax code (checksum, 3 kết quả) | **BẮT BUỘC** | Chặn dữ liệu sai công ty. Test được offline, không tốn tiền API | 1 phiên | 2 giờ |
 | Giữ Quick Search + đánh dấu `unconfirmed` | **BẮT BUỘC** | Không có thì 1.252 công ty thiếu địa chỉ bị dừng | 1–2 phiên | 4 giờ |
 | Giữ business status gate | **BẮT BUỘC** | Tiết kiệm chi phí lớn nhất | 1 phiên | 3 giờ |
 | Dedup domain: 1 URL mỗi domain | **BẮT BUỘC** | Tránh mua 10 lần cùng một trang | 1 phiên | 3 giờ |
 | Bảng log trực tiếp có cột `reason` | **BẮT BUỘC** | Không có thì mọi bước kiểm tra sau đều rất chậm | 1–2 phiên | 2 giờ |
-| `AGENTS.md` + `INDEX.md` + hợp đồng module + `STATUS.md` | **BẮT BUỘC** | Làm trước thì mọi phiên AI sau đều rẻ hơn, ít sai hơn và tiếp tục đúng chỗ | 1 phiên | 1 giờ |
+| ~~`AGENTS.md` + `INDEX.md` + `STATUS.md`~~ — **đã xong 14/08/2026** | **BẮT BUỘC** | Đã có `AGENTS.md`, `MAP.md`, `INDEX.md`, `symbols.md`, `STATUS.md`, cổng doc-sync và hook chặn commit. Còn lại chỉ là hợp đồng cho từng module V2 mới, viết cùng commit tạo ra module đó | 0 phiên | 0 giờ |
 | Query bắt buộc có tỉnh/thành + xem trước trước khi mở batch | **BẮT BUỘC** | Chặn tiêu tiền cho query sai | 2 phiên | 5 giờ |
 | Test khóa “một lần gọi AI = một URL” | **BẮT BUỘC** | Xóa hàm cũ còn sót, chặn lỗi tái diễn | 1 phiên | 1 giờ |
 | Chấm điểm ba loại bằng chứng (mục 3.3) | **NÊN LÀM** | Giảm URL sai công ty | 1–2 phiên | 5 giờ |
@@ -2251,21 +2463,24 @@ Con số “ước tính thực tế” lớn hơn tổng hai cột bên trái, 
 Nếu chỉ còn khoảng hai tuần, làm đúng bốn nhóm này theo thứ tự:
 
 ```text
-Ngày 1        AGENTS.md + INDEX.md + hợp đồng module + STATUS.md
-              → làm trước để mọi phiên AI sau đều rẻ hơn
+Ngày 0        Chốt bộ mẫu 30 công ty và ghi lại kết quả V1 của chúng
+              → không có bảng đối chứng thì cổng nghiệm thu của giai đoạn 1
+                không kết luận được gì
 
-Ngày 2        Bảng log có cột reason
+Ngày 1        Bảng log có cột reason
               → làm sớm để kiểm tra các bước sau nhanh hơn nhiều
 
-Ngày 3–5      Ba lỗi rẻ: waitFor, cache hit + unique key, retry
+Ngày 2–4      Ba lỗi rẻ: waitFor (kèm phép đo), cache hit + unique key, retry
               → đây là phần cho kết quả rõ nhất trên mỗi giờ bỏ ra
 
-Ngày 6–10     Bốn hành vi V1 đang có: Quick Search, status gate,
+Ngày 5–9      Bốn hành vi V1 đang có: Quick Search, status gate,
               dedup domain, tax code checksum
               → phần này bảo vệ độ chính xác và chi phí
 ```
 
-Hai việc đầu không tạo kết quả nhìn thấy được, nhưng làm trước sẽ rút ngắn tất cả các việc sau. Nếu làm sau, mỗi lần kiểm tra đều phải mò trong code.
+Ngày dựng tài liệu trong bản kế hoạch cũ đã bỏ — bộ tài liệu đó có sẵn từ 14/08/2026.
+
+Ngày 0 và ngày 1 không tạo kết quả nhìn thấy được, nhưng làm trước sẽ rút ngắn tất cả các việc sau. Nếu làm sau, mỗi lần kiểm tra đều phải mò trong code.
 
 Phần còn lại của kế hoạch để dành cho đợt sau, không ảnh hưởng đến việc V2 chạy được.
 
@@ -2287,3 +2502,4 @@ Bản tiếng Anh `docs/v2-modular-refactor-plan.en.md` phải được sửa c�
 | 2026-07-29 | 3.7, 3.8, 6, 17.1b, 21, 24 | Siết promotion: cấm field tự xác nhận qua query của chính nó, nhóm source family và nội dung copy, yêu cầu so khớp tên kèm bằng chứng độc lập, xử lý field đối thủ và lưu provenance. Thêm phanh `tax_code_veto_rejects_all`, phân biệt authoritative registry với tax directory, test hồi quy, Definition of Done, doc-sync gate, quy tắc nguồn quyết định và phạm vi dùng Graphify. Thêm `docs/implementation/STATUS.md`, protocol bắt đầu/kết thúc phiên, bằng chứng bàn giao, bảo vệ status cũ và work item cho nhiều agent chạy song song. |
 | 2026-07-29 | 16, 24 | Thêm `docs/v2-stage1-critical-fixes-implementation-plan.md`: kế hoạch chi tiết cho fixed wait, cache/dedup migration và retry; gồm baseline, test đỏ, thứ tự commit, backup/rollback, test gate và Definition of Done. Làm rõ Stage 1 tạo retry executor tối thiểu, Stage 6 mở rộng resource control. |
 | 2026-07-29 | 21, 24 | Thêm self-bootstrap protocol: trước code edit, agent tự tạo/sửa phần bootstrap còn thiếu, không ghi đè, không đoán tiến độ, xác minh bằng Git/test và tạo work item. Nhiệm vụ read-only chỉ báo thiếu, không tự ghi repository. Thêm `AGENTS.md` tối thiểu ở root để instruction được tự động phát hiện. |
+| 2026-08-17 | 1, 2, 10, 11, 12.1, 16, 17.3, 17.4, 21, 22, 24 | Đồng bộ kế hoạch với repo như nó đang thật sự tồn tại. **Bỏ mô hình copy code sang thư mục V2 riêng**, thay bằng làm trên nhánh trong chính repo này theo `AGENTS.md` mục 5; về quy trình thì `AGENTS.md` là bên đúng, kế hoạch giữ phần nghiệp vụ. Viết lại 21.1, 21.2, 21.6: bộ tài liệu đã dựng xong nên chỉ sửa khi mất, bảng chỉ đường thật là `INDEX.md`, và **rút lại mẫu `STATUS.md` 8 đề mục** vì mâu thuẫn với `AGENTS.md` mục 9. Đối chiếu lại toàn bộ bằng chứng code (mục 2) và thêm lỗi thứ năm: hàm chết `_batch_short_pages`. Con số 89.070 dòng trùng đánh dấu là số đo cũ không rõ nguồn, kèm số đo mới 19.069 nhóm / 19.946 dòng dư và yêu cầu nêu tên file database. Thêm 10.2b (khóa duy nhất phải đặt trên URL đã chuẩn hóa, và phải chuẩn hóa toàn bảng) và 10.2c (ảnh hưởng tới `filtered_links` và điều kiện hoàn tất). Thêm 11.1 (sáu chỗ tự thử lại, trước đây bỏ sót `src/rate_limiter.py`; ba cách xử lý 503 đang mâu thuẫn) và 11.2 (trạng thái công ty khi operation cạn số lần thử). Mục 12.1 thêm phép đo A/B bắt buộc trước khi đổi mặc định về 0. Thêm 16.4 điểm dừng an toàn, đưa giai đoạn 0 thành điều kiện tiên quyết, cảnh báo giai đoạn 12 tốn tiền API gấp đôi. Thêm test 17.3.9–12 và 17.4.3–5. Cập nhật bảng thời gian ở mục 22. **Xóa bản tiếng Hàn** `v2-modular-refactor-plan.ko.md` vì không được đồng bộ. |

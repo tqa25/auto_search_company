@@ -1118,7 +1118,12 @@ Every graph build/read must include only project paths such as `src/`, `dashboar
 |---|---|---|---|
 | Vietnamese | `docs/v2-modular-refactor-plan.md` | Humans, management | Authoritative for business intent |
 | English | `docs/v2-modular-refactor-plan.en.md` | AI agents | Condensed normative spec |
-| Korean | `docs/v2-modular-refactor-plan.ko.md` | Reference translation | **Not synchronized. Do not treat as current** |
+
+A Korean copy (`v2-modular-refactor-plan.ko.md`) existed until 2026-08-17 and was
+**deleted**: it was a point-in-time translation nobody updated alongside the other
+two, so it had already drifted. Three files disagreeing is worse than two — a
+reader cannot tell which one to trust. If a Korean version is needed again,
+re-derive it from the Vietnamese file once the business decisions settle.
 
 The English version is a condensed normative spec, not a sentence-by-sentence translation.
 
@@ -1127,13 +1132,15 @@ The English version is a condensed normative spec, not a sentence-by-sentence tr
 3. Every numeric constant is defined once (§0.1) and repeated verbatim in the other document.
 4. **On conflict, the Vietnamese version wins** — it is the one the user approves.
 5. Both documents end with a changelog table listing date and sections touched.
-6. The Korean file is a point-in-time translation. Either re-derive it from the Vietnamese file when the business decisions settle, or delete it — a third copy that silently drifts is worse than no copy.
+6. **Process rules come from `AGENTS.md`, not from either plan file.** The plans own business intent — what to do and why. `AGENTS.md` owns how: which branch, which tests, what counts as done.
 
-**Open sync debt (2026-08-17):** the corrections in this revision — §0.2, §2, §3.2,
-§3.4, §10.1, §10.2, §11.1, §11.2, §12.1, §16.1, §21 — were applied to this file
-and to `docs/v2-stage1-critical-fixes-implementation-plan.md` only. The
-Vietnamese and Korean plans still carry the superseded text. Reconcile the
-Vietnamese file before the next business-decision change to it.
+**Sync status (2026-08-17):** the corrections in this revision — §0.2, §2, §3.2,
+§3.4, §10.1, §10.2, §11.1, §11.2, §12.1, §16.1, §21 — were applied to this file,
+to the Vietnamese plan, and to
+`docs/v2-stage1-critical-fixes-implementation-plan.md` in the same change. No open
+sync debt. Section numbering differs slightly by design: this file condenses
+§10.1/§10.2 where the Vietnamese file uses §10.2b/§10.2c, and §16.1 here maps to
+§16.4 there — both are cross-referenced in place.
 
 ### 21.6 Cross-agent and cross-session implementation handoff
 
