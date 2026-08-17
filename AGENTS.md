@@ -153,6 +153,12 @@ A code-changing session is incomplete until:
 - `bash scripts/check-doc-sync.sh` passes.
 - The user was given the report from §5 step 6.
 
+The gate is enforced, not merely requested: `.claude/hooks/precommit-doc-sync.sh`
+is a `PreToolUse` hook that runs it before any `git commit` and blocks the commit
+when it fails. The hook fails open — if it cannot run, the commit proceeds — so a
+block always means the gate genuinely failed. Do not work around it by
+disabling the hook; fix the documentation.
+
 Never mark work complete merely because code was edited. Never claim a test
 passed without having run it.
 
