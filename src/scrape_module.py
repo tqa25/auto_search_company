@@ -6,7 +6,7 @@ from src.database import DatabaseManager
 from src.logger import PipelineLogger
 from src.errors import RetryableError, CriticalError, SkippableError, PipelineError
 from src.time_utils import vn_cache_expiry
-from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor
+from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor, parse_retry_after
 from src.config import default_config
 
 class ScrapeModule:
@@ -248,7 +248,10 @@ class ScrapeModule:
 
             # Classify and raise appropriate error
             error_msg = f"HTTP {response.status_code}: {response.text}"
-            err = classify_error(response.status_code, error_msg)
+            retry_after = None
+            if response.status_code == 429:
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            err = classify_error(response.status_code, error_msg, retry_after_seconds=retry_after)
             raise err
 
         try:
@@ -520,7 +523,10 @@ class ScrapeModule:
 
             # Non-200 status codes: classify and raise appropriate error
             error_msg = f"HTTP {response.status_code}: {response.text}"
-            err = classify_error(response.status_code, error_msg)
+            retry_after = None
+            if response.status_code == 429:
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            err = classify_error(response.status_code, error_msg, retry_after_seconds=retry_after)
             if self.rate_limiter:
                 self.rate_limiter.report_error(response.status_code)
             raise err

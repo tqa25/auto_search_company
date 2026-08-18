@@ -15,7 +15,7 @@ from src.logger import PipelineLogger
 from src.errors import RetryableError, CriticalError, PipelineError, SkippableError
 from src.schemas import validate_search_result
 from src.time_utils import vn_cache_expiry, vn_timestamp
-from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor
+from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor, parse_retry_after
 from src.config import default_config
 
 # Load .env file at module level and override stale shell exports.
@@ -624,7 +624,10 @@ class SearchModule:
 
             # Non-200 status codes: classify and raise appropriate error
             error_msg = f"Firecrawl API error: HTTP {resp.status_code} — {resp.text[:300]}"
-            err = classify_error(resp.status_code, error_msg)
+            retry_after = None
+            if resp.status_code == 429:
+                retry_after = parse_retry_after(resp.headers.get("Retry-After"))
+            err = classify_error(resp.status_code, error_msg, retry_after_seconds=retry_after)
             if self.rate_limiter:
                 self.rate_limiter.report_error(resp.status_code)
             raise err

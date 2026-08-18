@@ -5,7 +5,7 @@ import logging
 from typing import List, Dict, Set
 from src.time_utils import vn_now
 from urllib.parse import urlparse
-from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor
+from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor, parse_retry_after
 from src.errors import RetryableError, CriticalError, SkippableError
 from src.config import default_config
 
@@ -79,7 +79,10 @@ class FirecrawlDeepSearch:
                     data = resp.json()
                     if not data.get("success"):
                         error_msg = str(data.get('error', 'Unknown Error'))
-                        err = classify_error(resp.status_code, error_msg)
+                        retry_after = None
+                        if resp.status_code == 429:
+                            retry_after = parse_retry_after(resp.headers.get("Retry-After"))
+                        err = classify_error(resp.status_code, error_msg, retry_after_seconds=retry_after)
                         self.pipeline_logger.log_step_end(
                             log_id, status="failed", error_message=error_msg,
                             network_latency_ms=duration * 1000,
@@ -126,7 +129,10 @@ class FirecrawlDeepSearch:
 
                 # Non-200 status codes: classify and raise appropriate error
                 error_msg = f"HTTP {resp.status_code} - {resp.text[:300]}"
-                err = classify_error(resp.status_code, error_msg)
+                retry_after = None
+                if resp.status_code == 429:
+                    retry_after = parse_retry_after(resp.headers.get("Retry-After"))
+                err = classify_error(resp.status_code, error_msg, retry_after_seconds=retry_after)
                 self.pipeline_logger.log_step_end(
                     log_id, status="failed", error_message=error_msg,
                     network_latency_ms=duration * 1000,
