@@ -215,13 +215,13 @@ Use this to locate a symbol, then `Read` that file with a narrow
 (no top-level symbols)
 ```
 
-## `src/ai_extractor.py` (707 lines)
+## `src/ai_extractor.py` (408 lines)
 ```
-14     def _normalize_tax_code
-20     def _is_masothue_source
-30     def _extract_masothue_tax_code_from_url
-41     def _extract_tax_code_from_text
-55     class AIExtractor
+15     def _normalize_tax_code
+21     def _is_masothue_source
+31     def _extract_masothue_tax_code_from_url
+42     def _extract_tax_code_from_text
+57     class AIExtractor
 ```
 
 ## `src/business_status.py` (75 lines)
@@ -249,7 +249,7 @@ Use this to locate a symbol, then `Read` that file with a narrow
 284    def evidence_json
 ```
 
-## `src/company_run.py` (331 lines)
+## `src/company_run.py` (345 lines)
 ```
 9      class CompanyRun
 ```
@@ -262,7 +262,7 @@ Use this to locate a symbol, then `Read` that file with a narrow
 104    def audit_company_completion
 ```
 
-## `src/config.py` (303 lines)
+## `src/config.py` (325 lines)
 ```
 15     def _parse_bool
 22     def _parse_int
@@ -273,7 +273,7 @@ Use this to locate a symbol, then `Read` that file with a narrow
 69     class Config
 ```
 
-## `src/connection_pool.py` (206 lines)
+## `src/connection_pool.py` (207 lines)
 ```
 25     class ConnectionManager
 ```
@@ -305,9 +305,9 @@ Use this to locate a symbol, then `Read` that file with a narrow
 40     class LinkFilter
 ```
 
-## `src/firecrawl_deep_search.py` (218 lines)
+## `src/firecrawl_deep_search.py` (230 lines)
 ```
-12     class FirecrawlDeepSearch
+15     class FirecrawlDeepSearch
 ```
 
 ## `src/gemini_quick_search.py` (433 lines)
@@ -370,16 +370,16 @@ Use this to locate a symbol, then `Read` that file with a narrow
 113    def validate_extracted_contact
 ```
 
-## `src/scrape_module.py` (670 lines)
+## `src/scrape_module.py` (687 lines)
 ```
-10     class ScrapeModule
+12     class ScrapeModule
 ```
 
-## `src/search_module.py` (749 lines)
+## `src/search_module.py` (714 lines)
 ```
-47     class SearchModule
-742    class FirecrawlCreditExhausted
-747    class FirecrawlSearchError
+27     class SearchModule
+707    class FirecrawlCreditExhausted
+712    class FirecrawlSearchError
 ```
 
 ## `src/time_utils.py` (45 lines)

@@ -225,13 +225,41 @@ control-flow lever in `CompanyRun._run_with_retries`.
 
 | Exception | Handling |
 |---|---|
-| `RetryableError` | Retry up to 2x with 60s × attempt backoff, then `failed` |
+| `RetryableError` | Retry up to `MAX_ATTEMPTS-1` times with exponential backoff + jitter, then `failed` (or `ai_extract_pending` for AI extraction) |
 | `SkippableError` | Mark `failed` — **unless** the audit says `strict_done`, then `done` |
 | `CriticalError` | Preserve `ai_extract_pending` checkpoint, then **abort the whole batch** |
 | any other `Exception` | Mark `failed`, continue to next company |
 
 Hierarchy is flat: all three subclass `PipelineError(Exception)` directly. Each
 carries `(message, company_id, step)` and a `category` property.
+
+### Unified Retry Executor — `src/v2/runtime/retry.py`
+
+All external API retries are consolidated in `RetryExecutor` (created via
+`create_retry_executor(config)`). It handles:
+- Attempt counting with exact semantics: `MAX_ATTEMPTS=3` = 1 initial + 2 retries
+- Exponential backoff with jitter (base 1s, max 60s, ±20% jitter)
+- Error classification via `classify_error(status_code, message, original_exception)`
+- Structured logging of retry decisions
+
+**Error classification rules** (single source of truth):
+- **Retryable**: 429, 500, 502, 503, 504, timeout, connection error
+- **Critical**: 402, 401, quota exhausted, DB constraint violation
+- **Skippable**: 403, 404, 400, 410, 422, other 4xx
+- Unknown exceptions default to Retryable
+
+### 503 Handling Rule (Resolved Conflict)
+
+Previously 503 was handled three different ways simultaneously:
+- `ai_extractor.py` → sleep 60s → retry
+- `connection_pool.py` → skip (503 not in `status_forcelist`)
+- `rate_limiter.py` → treat as overload → sleep 5 minutes
+
+**Now unified**: 503 → **Retryable** (exponential backoff via `RetryExecutor`).
+`AdaptiveRateLimiter` still receives 503 reports for its own pacing logic, but
+HTTP-level retries are exclusively handled by `RetryExecutor`.
+
+---
 
 ---
 

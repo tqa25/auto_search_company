@@ -65,10 +65,11 @@ All test commands assume `venv/bin/python -m pytest ... --ignore=tests/manual`.
 | Want to change | Read first | Verify with |
 |---|---|---|
 | Config values, env vars, thresholds | `src/config.py`, `.env.example`, `pipeline_config.json` | `tests/test_integration_phase1.py` |
-| Error classes and retry semantics | `src/errors.py` | `tests/test_company_run.py` |
+| Error classes and retry semantics | `src/errors.py`, `src/v2/runtime/retry.py` | `tests/test_company_run.py`, `tests/test_retry.py` |
 | Rate limiting and daily quota | `src/rate_limiter.py` | `tests/test_rate_limiter.py` |
 | Logging and daily summaries | `src/logger.py` | `tests/test_logger.py` |
 | **Any date/time handling** | `src/time_utils.py` — never use bare `datetime.now()` | `tests/test_time_utils.py` |
+| HTTP connection pooling | `src/connection_pool.py` | `tests/test_connection_pool.py` |
 
 ## Generated reports (one-off deliverables)
 
