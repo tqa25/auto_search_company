@@ -398,3 +398,10 @@ Use this to locate a symbol, then `Read` that file with a narrow
 3      def normalize_url
 ```
 
+## `src/v2/runtime/retry.py` (202 lines)
+```
+23     class RetryExecutor
+137    def classify_error
+201    def create_retry_executor
+```
+
