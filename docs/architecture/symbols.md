@@ -283,12 +283,12 @@ Use this to locate a symbol, then `Read` that file with a narrow
 10     class DatabaseManager
 ```
 
-## `src/errors.py` (51 lines)
+## `src/errors.py` (55 lines)
 ```
 11     class PipelineError
 33     class RetryableError
-40     class SkippableError
-47     class CriticalError
+44     class SkippableError
+51     class CriticalError
 ```
 
 ## `src/excel_handler.py` (867 lines)
@@ -305,12 +305,12 @@ Use this to locate a symbol, then `Read` that file with a narrow
 40     class LinkFilter
 ```
 
-## `src/firecrawl_deep_search.py` (230 lines)
+## `src/firecrawl_deep_search.py` (236 lines)
 ```
 15     class FirecrawlDeepSearch
 ```
 
-## `src/gemini_quick_search.py` (433 lines)
+## `src/gemini_quick_search.py` (435 lines)
 ```
 32     class GeminiQuickSearch
 ```
@@ -370,16 +370,16 @@ Use this to locate a symbol, then `Read` that file with a narrow
 113    def validate_extracted_contact
 ```
 
-## `src/scrape_module.py` (687 lines)
+## `src/scrape_module.py` (693 lines)
 ```
 12     class ScrapeModule
 ```
 
-## `src/search_module.py` (714 lines)
+## `src/search_module.py` (717 lines)
 ```
 27     class SearchModule
-707    class FirecrawlCreditExhausted
-712    class FirecrawlSearchError
+710    class FirecrawlCreditExhausted
+715    class FirecrawlSearchError
 ```
 
 ## `src/time_utils.py` (45 lines)
@@ -398,10 +398,11 @@ Use this to locate a symbol, then `Read` that file with a narrow
 3      def normalize_url
 ```
 
-## `src/v2/runtime/retry.py` (202 lines)
+## `src/v2/runtime/retry.py` (297 lines)
 ```
-23     class RetryExecutor
-137    def classify_error
-201    def create_retry_executor
+25     class RetryExecutor
+195    def parse_retry_after
+228    def classify_error
+296    def create_retry_executor
 ```
 

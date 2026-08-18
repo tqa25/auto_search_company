@@ -238,12 +238,24 @@ carries `(message, company_id, step)` and a `category` property.
 All external API retries are consolidated in `RetryExecutor` (created via
 `create_retry_executor(config)`). It handles:
 - Attempt counting with exact semantics: `MAX_ATTEMPTS=3` = 1 initial + 2 retries
-- Exponential backoff with jitter (base 1s, max 60s, ±20% jitter)
-- Error classification via `classify_error(status_code, message, original_exception)`
-- Structured logging of retry decisions
+- Exponential backoff with jitter (base 2s, max 60s, ±20% jitter) — overridden by a
+  provider's `Retry-After` header when present (429 only; parsed by module function
+  `parse_retry_after()`, supports both delta-seconds and HTTP-date forms)
+- Error classification via `classify_error(status_code, message, original_exception, retry_after_seconds)`
+- Interruptible backoff: `execute(operation, should_stop=None, context=None)` — pass a
+  zero-arg `should_stop` callable to abort mid-backoff instead of blocking the full
+  delay. **Not yet wired into any call site** — `search_module.py`, `scrape_module.py`,
+  `firecrawl_deep_search.py`, `ai_extractor.py` all call `execute()` without passing
+  `should_stop`, so shutdown today still waits out an in-progress backoff. The
+  mechanism itself is implemented and unit-tested; threading a real stop signal from
+  `JobController.should_stop()` through these call chains is a follow-up, not done.
+- Structured logging of retry decisions (`company_id`, `operation`, `provider`,
+  `attempt`, `max_attempts`, `status`, `decision`, `delay_seconds`, `duration_ms`) —
+  populated only when the caller passes a `context=` dict; callers that don't pass one
+  still log with `-` placeholders.
 
 **Error classification rules** (single source of truth):
-- **Retryable**: 429, 500, 502, 503, 504, timeout, connection error
+- **Retryable**: 408, 429 (honors `Retry-After`), 500, 502, 503, 504, timeout, connection error
 - **Critical**: 402, 401, quota exhausted, DB constraint violation
 - **Skippable**: 403, 404, 400, 410, 422, other 4xx
 - Unknown exceptions default to Retryable
