@@ -149,7 +149,8 @@ class ReparseModule:
                     time.sleep(delay)
             except Exception as e:
                 logger.error(f"Error re-extracting from page ID {page_id}: {e}")
-                
+                results.append({"status": "failed", "reason": str(e)[:200], "page_id": page_id})
+
         return results
 
     def run_reparse(self, company_id: int, min_score: float = 0.3, max_urls: int = 5, delay_scrape: float = 2.0, delay_extract: float = 4.0):
