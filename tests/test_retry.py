@@ -10,6 +10,10 @@ All external API calls are mocked. Tests verify:
 
 import time
 import pytest
+import logging
+import inspect
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from unittest.mock import MagicMock, patch
 from src.database import DatabaseManager
 from src.errors import RetryableError, SkippableError, CriticalError
@@ -118,26 +122,173 @@ class TestRetryExecutor:
         intervals = [call_times[i+1] - call_times[i] for i in range(len(call_times)-1)]
         assert len(intervals) == 2
         
-        # First backoff ~1s (base), second ~2s (2x), both with jitter
-        assert 0.5 < intervals[0] < 2.0  # ~1s ± jitter
-        assert 1.0 < intervals[1] < 4.0  # ~2s ± jitter
+        # First backoff ~2s (base), second ~4s (2x), both with jitter
+        assert 1.0 < intervals[0] < 3.0  # ~2s ± jitter
+        assert 2.0 < intervals[1] < 6.0  # ~4s ± jitter
         assert intervals[1] > intervals[0]  # exponential growth
 
     def test_unknown_exception_wrapped_as_retryable(self, config):
         """Unknown exceptions are treated as retryable by default."""
         from src.v2.runtime.retry import RetryExecutor
-        
+
         executor = RetryExecutor(config)
         call_count = [0]
-        
+
         def unknown_error():
             call_count[0] += 1
             raise ValueError("unexpected")
-        
+
         with pytest.raises(RetryableError):
             executor.execute(unknown_error)
-        
+
         assert call_count[0] == 3
+
+    def test_timeout_timeout_success_exactly_three_calls(self, config):
+        """Operation raises RetryableError twice, succeeds on 3rd call."""
+        from src.v2.runtime.retry import RetryExecutor
+
+        executor = RetryExecutor(config)
+        call_count = [0]
+
+        def timeout_then_ok():
+            call_count[0] += 1
+            if call_count[0] < 3:
+                raise RetryableError("timeout")
+            return "ok"
+
+        result = executor.execute(timeout_then_ok)
+        assert result == "ok"
+        assert call_count[0] == 3
+
+    def test_500_then_success_two_calls(self, config):
+        """HTTP 500 on first call, success on second."""
+        from src.v2.runtime.retry import RetryExecutor, classify_error
+
+        executor = RetryExecutor(config)
+        call_count = [0]
+
+        def server_error_then_ok():
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise classify_error(500, "server error")
+            return "ok"
+
+        result = executor.execute(server_error_then_ok)
+        assert result == "ok"
+        assert call_count[0] == 2
+
+    def test_502_then_success_two_calls(self, config):
+        """HTTP 502 on first call, success on second."""
+        from src.v2.runtime.retry import RetryExecutor, classify_error
+
+        executor = RetryExecutor(config)
+        call_count = [0]
+
+        def gateway_error_then_ok():
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise classify_error(502, "server error")
+            return "ok"
+
+        result = executor.execute(gateway_error_then_ok)
+        assert result == "ok"
+        assert call_count[0] == 2
+
+    def test_504_then_success_two_calls(self, config):
+        """HTTP 504 on first call, success on second."""
+        from src.v2.runtime.retry import RetryExecutor, classify_error
+
+        executor = RetryExecutor(config)
+        call_count = [0]
+
+        def timeout_error_then_ok():
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise classify_error(504, "server error")
+            return "ok"
+
+        result = executor.execute(timeout_error_then_ok)
+        assert result == "ok"
+        assert call_count[0] == 2
+
+    def test_should_stop_interrupts_backoff_no_further_attempt(self, config):
+        """should_stop=True interrupts backoff and aborts retries."""
+        from src.v2.runtime.retry import RetryExecutor
+
+        executor = RetryExecutor(config)
+        call_count = [0]
+        stop_calls = [0]
+
+        def always_fails():
+            call_count[0] += 1
+            raise RetryableError("fail")
+
+        def should_stop():
+            stop_calls[0] += 1
+            # Return True on second and subsequent calls (interrupt backoff)
+            return stop_calls[0] > 1
+
+        start_time = time.monotonic()
+        with pytest.raises(RetryableError):
+            executor.execute(always_fails, should_stop=should_stop)
+        elapsed = time.monotonic() - start_time
+
+        # Should have stopped very quickly (not multiple seconds of backoff)
+        assert elapsed < 2.0, f"Test took {elapsed:.1f}s, should be fast"
+        # Should have called operation far fewer times than MAX_ATTEMPTS=5
+        assert call_count[0] <= 2, f"Operation called {call_count[0]} times, should be <= 2"
+
+    def test_attempt_logging_contains_required_fields(self, config, caplog):
+        """Structured logging contains company_id, operation, provider, attempt, etc."""
+        from src.v2.runtime.retry import RetryExecutor
+
+        executor = RetryExecutor(config)
+        call_count = [0]
+
+        def fail_then_ok():
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise RetryableError("transient")
+            return "ok"
+
+        with caplog.at_level(logging.INFO, logger="src.v2.runtime.retry"):
+            result = executor.execute(
+                fail_then_ok,
+                context={"company_id": 42, "operation": "search", "provider": "firecrawl"}
+            )
+
+        assert result == "ok"
+        # Check that structured log contains all required fields
+        log_text = caplog.text
+        assert "company_id=42" in log_text
+        assert "operation=search" in log_text
+        assert "provider=firecrawl" in log_text
+        assert "attempt=" in log_text
+        assert "max_attempts=" in log_text
+        assert "decision=" in log_text
+        assert "duration_ms=" in log_text
+
+    def test_retry_does_not_duplicate_db_insert(self, config, tmp_db):
+        """Operation inserts only on success, not on retried attempts."""
+        from src.v2.runtime.retry import RetryExecutor
+
+        executor = RetryExecutor(config)
+        call_count = [0]
+
+        def fail_then_insert():
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise RetryableError("fail before insert")
+            # Insert row only on successful attempt
+            company_id = tmp_db.insert_company(f"Company {call_count[0]}", status="searched")
+            return f"inserted_{company_id}"
+
+        result = executor.execute(fail_then_insert)
+        assert "inserted_" in result
+
+        # Query DB and assert exactly one row inserted
+        result = tmp_db.fetch_one("SELECT COUNT(*) as cnt FROM companies")
+        assert result["cnt"] == 1, "Should have exactly 1 row, not multiple"
 
 
 class TestErrorClassification:
@@ -207,9 +358,52 @@ class TestErrorClassification:
     def test_network_connection_error_is_retryable(self):
         from src.v2.runtime.retry import classify_error
         import requests
-        
+
         err = classify_error(0, "connection error", original_exception=requests.exceptions.ConnectionError())
         assert isinstance(err, RetryableError)
+
+    def test_retry_after_header_seconds_used_as_delay(self):
+        """classify_error with retry_after_seconds stores it; _calculate_delay uses it."""
+        from src.v2.runtime.retry import classify_error, RetryExecutor
+        from src.config import Config
+
+        # Create error with retry_after
+        err = classify_error(429, "rate limited", retry_after_seconds=7.0)
+        assert isinstance(err, RetryableError)
+        assert err.retry_after == 7.0
+
+        # Create executor and test that _calculate_delay returns the retry_after value
+        cfg = Config()
+        executor = RetryExecutor(cfg)
+        delay = executor._calculate_delay(attempt=1, error=err)
+        assert delay == 7.0, f"Expected delay 7.0, got {delay}"
+
+
+class TestRetryAfterHandling:
+    """Test parse_retry_after header parsing."""
+
+    def test_parse_retry_after_delta_seconds(self):
+        """parse_retry_after parses delta-seconds format (plain integer)."""
+        from src.v2.runtime.retry import parse_retry_after
+
+        assert parse_retry_after("7") == 7.0
+        assert parse_retry_after("0") == 0.0
+        assert parse_retry_after(None) is None
+        assert parse_retry_after("") is None
+
+    def test_parse_retry_after_http_date(self):
+        """parse_retry_after parses HTTP-date format (RFC 7231)."""
+        from src.v2.runtime.retry import parse_retry_after
+
+        # Create a date 10 seconds in the future
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=10)
+        header_value = format_datetime(future_time, usegmt=True)
+
+        result = parse_retry_after(header_value)
+        assert result is not None
+        # Should be roughly 10 seconds, with some slack for test execution time
+        assert 8.0 <= result <= 12.0, f"Expected ~10s, got {result}s"
+        assert result >= 0
 
 
 class TestOperationExhaustedStatusMapping:
@@ -325,7 +519,7 @@ class TestConfigMAX_ATTEMPTS:
     def test_max_retries_deprecated_warning(self, caplog):
         """Accessing MAX_RETRIES should emit deprecation warning."""
         import warnings
-        
+
         cfg = Config()
         # Accessing the deprecated alias should warn
         with warnings.catch_warnings(record=True) as w:
@@ -333,6 +527,60 @@ class TestConfigMAX_ATTEMPTS:
             _ = cfg.MAX_RETRIES
             # The property getter in Config should warn
             # (Implementation will add the warning)
+
+
+class TestConnectionPoolRetryDisabled:
+    """Test that HTTP-level retry is disabled in connection pool."""
+
+    def test_connection_pool_status_retry_disabled(self):
+        """Verify Retry(total=0) disables HTTP-status retries."""
+        from src.connection_pool import ConnectionManager
+
+        # Create ConnectionManager with a dummy API key
+        manager = ConnectionManager(firecrawl_api_key="test-api-key-dummy")
+        session = manager._session
+
+        # Check the adapter's max_retries configuration
+        adapter = session.get_adapter("https://")
+        assert adapter.max_retries is not None
+        # total=0 means no automatic HTTP-status retries
+        assert adapter.max_retries.total == 0
+        # status_forcelist should be empty
+        assert len(adapter.max_retries.status_forcelist) == 0
+
+    def test_rate_limiter_never_triggers_retry_itself(self):
+        """AdaptiveRateLimiter only adjusts delays, never retries operations."""
+        from src.rate_limiter import AdaptiveRateLimiter
+
+        limiter = AdaptiveRateLimiter()
+
+        # Check that public methods don't accept callable/operation parameters
+        public_methods = [m for m in dir(limiter) if not m.startswith("_")]
+
+        for method_name in public_methods:
+            attr = getattr(limiter, method_name)
+            if callable(attr):
+                sig = inspect.signature(attr)
+                param_names = list(sig.parameters.keys())
+
+                # Check for operation-like parameter names
+                operation_keywords = ["operation", "func", "callable", "fn", "call"]
+                for keyword in operation_keywords:
+                    assert keyword not in param_names, (
+                        f"Method {method_name} has parameter '{keyword}' "
+                        f"suggesting it accepts operations to execute"
+                    )
+
+        # Verify that core methods are only behavior-adjusting
+        assert callable(limiter.wait), "wait() should exist"
+        assert callable(limiter.report_success), "report_success() should exist"
+        assert callable(limiter.report_error), "report_error() should exist"
+        assert callable(limiter.get_stats), "get_stats() should exist"
+
+        # Verify no retry/execute methods exist
+        assert not hasattr(limiter, "retry"), "Should not have retry() method"
+        assert not hasattr(limiter, "execute"), "Should not have execute() method"
+        assert not hasattr(limiter, "call"), "Should not have call() method"
 
 
 if __name__ == "__main__":
