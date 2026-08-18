@@ -1,25 +1,3 @@
-"""
-Search Module — 2-Tier Coarse+Fallback Search Strategy for Company Data Extraction Pipeline.
-
-This module implements a two-tier search strategy to find Vietnamese business
-information from English company names:
-  ① Tier 1 — Coarse search: English name + contact keywords (broad, with early-stop check)
-  ② Tier 2 — Fallback (only if Tier 1 didn't trigger early-stop):
-      2a. Recruitment query
-      2b. Abbreviation query (if applicable)
-      2c. Facebook search (if below FB_FALLBACK_THRESHOLD good links)
-
-All search queries are deduplicated via a query_cache table before hitting the API.
-
-Dependencies:
-  - src.database.DatabaseManager (existing)
-  - src.logger.PipelineLogger (existing)
-  - src.config.Config (new)
-  - Firecrawl Search API (external)
-  - src.rate_limiter.AdaptiveRateLimiter (optional, for adaptive pacing)
-  - src.connection_pool.ConnectionManager (optional, for connection reuse)
-"""
-
 import hashlib
 import os
 import time
@@ -34,9 +12,11 @@ from dotenv import load_dotenv
 
 from src.database import DatabaseManager
 from src.logger import PipelineLogger
-from src.errors import RetryableError, CriticalError, PipelineError
+from src.errors import RetryableError, CriticalError, PipelineError, SkippableError
 from src.schemas import validate_search_result
 from src.time_utils import vn_cache_expiry, vn_timestamp
+from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor
+from src.config import default_config
 
 # Load .env file at module level and override stale shell exports.
 load_dotenv(override=True)
@@ -576,22 +556,24 @@ class SearchModule:
     def _firecrawl_search(
         self, query: str, limit: int = 10, max_retries: int = 3
     ) -> List[Dict]:
-        """Call the Firecrawl Search API with retry logic.
+        """Call the Firecrawl Search API with unified retry logic.
 
-        Uses ConnectionManager for connection pooling when available,
-        and reports success/error to AdaptiveRateLimiter when available.
+        Uses RetryExecutor for retry policy, ConnectionManager for connection pooling
+        when available, and reports success/error to AdaptiveRateLimiter when available.
 
         Args:
             query: The search query string.
             limit: Max results to return (default 10).
-            max_retries: Max retry attempts on rate-limit (429).
+            max_retries: DEPRECATED — kept for signature compatibility. RetryExecutor uses
+                         config.MAX_ATTEMPTS (1 initial + N retries).
 
         Returns:
             List of result dicts from Firecrawl (each with url, title, snippet, etc.).
 
         Raises:
-            FirecrawlCreditExhausted: If HTTP 402 is received.
-            FirecrawlSearchError: For other unrecoverable API errors.
+            RetryableError: If all retry attempts exhausted (transient failures).
+            CriticalError: If critical error (402, 401, quota exhausted).
+            SkippableError: If skippable error (403, 404, etc.).
         """
         headers = {
             "Authorization": f"Bearer {self.firecrawl_api_key}",
@@ -599,86 +581,69 @@ class SearchModule:
         }
         payload = {"query": query, "limit": limit}
 
-        # Wait for rate limiter before first attempt
-        if self.rate_limiter:
-            self.rate_limiter.wait()
+        # Create retry executor with config
+        retry_executor = create_retry_executor(self.config)
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                # Use ConnectionManager if available, otherwise raw requests
-                if self.connection_manager:
-                    resp = self.connection_manager.post(
-                        self.FIRECRAWL_SEARCH_URL,
-                        json=payload,
-                        request_type="search",
-                    )
-                else:
-                    resp = requests.post(
-                        self.FIRECRAWL_SEARCH_URL,
-                        headers=headers,
-                        json=payload,
-                        timeout=30,
-                    )
+        def _do_search():
+            # Wait for rate limiter before attempt
+            if self.rate_limiter:
+                self.rate_limiter.wait()
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # Report success to rate limiter
-                    if self.rate_limiter:
-                        self.rate_limiter.report_success()
-                    # Firecrawl returns {"success": true, "data": [...]}
-                    raw_results = data.get("data", [])
-                    # Validate each result
-                    validated_results = []
-                    for result in raw_results:
-                        try:
-                            validated = validate_search_result(result)
-                            validated_results.append(result)  # Return original dict, validation passed
-                        except ValueError as e:
-                            logger.warning(f"Skipping invalid search result: {e}")
-                            continue
-                    return validated_results
-
-                if resp.status_code == 402:
-                    if self.rate_limiter:
-                        self.rate_limiter.report_error(402)
-                    raise CriticalError(
-                        "Firecrawl credits exhausted (HTTP 402). Stop immediately."
-                    )
-
-                if resp.status_code == 429:
-                    if self.rate_limiter:
-                        self.rate_limiter.report_error(429)
-                    wait = 60 if attempt < max_retries else 0
-                    logger.warning(
-                        f"Rate-limited (429). Waiting {wait}s before retry "
-                        f"({attempt}/{max_retries})…"
-                    )
-                    if attempt < max_retries:
-                        time.sleep(wait)
-                        continue
-                    raise RetryableError(
-                        f"Rate-limited (429) after {max_retries} retries."
-                    )
-
-                if resp.status_code in (403, 503):
-                    if self.rate_limiter:
-                        self.rate_limiter.report_error(resp.status_code)
-
-                # Other errors (5xx, etc.)
-                raise FirecrawlSearchError(
-                    f"Firecrawl API error: HTTP {resp.status_code} — {resp.text[:300]}"
+            # Use ConnectionManager if available, otherwise raw requests
+            if self.connection_manager:
+                resp = self.connection_manager.post(
+                    self.FIRECRAWL_SEARCH_URL,
+                    json=payload,
+                    request_type="search",
+                )
+            else:
+                resp = requests.post(
+                    self.FIRECRAWL_SEARCH_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=30,
                 )
 
-            except requests.RequestException as e:
+            if resp.status_code == 200:
+                data = resp.json()
+                # Report success to rate limiter
                 if self.rate_limiter:
-                    self.rate_limiter.report_error(0)
-                if attempt < max_retries:
-                    logger.warning(f"Network error (attempt {attempt}): {e}")
-                    time.sleep(5)
-                    continue
-                raise FirecrawlSearchError(f"Network error after {max_retries} retries: {e}")
+                    self.rate_limiter.report_success()
+                # Firecrawl returns {"success": true, "data": [...]}
+                raw_results = data.get("data", [])
+                # Validate each result
+                validated_results = []
+                for result in raw_results:
+                    try:
+                        validated = validate_search_result(result)
+                        validated_results.append(result)  # Return original dict, validation passed
+                    except ValueError as e:
+                        logger.warning(f"Skipping invalid search result: {e}")
+                        continue
+                return validated_results
 
-        return []  # unreachable, but satisfies linters
+            # Non-200 status codes: classify and raise appropriate error
+            error_msg = f"Firecrawl API error: HTTP {resp.status_code} — {resp.text[:300]}"
+            err = classify_error(resp.status_code, error_msg)
+            if self.rate_limiter:
+                self.rate_limiter.report_error(resp.status_code)
+            raise err
+
+        try:
+            return retry_executor.execute(_do_search)
+        except (RetryableError, CriticalError, SkippableError):
+            # Re-raise pipeline errors as-is
+            raise
+        except requests.RequestException as e:
+            # Network errors
+            if self.rate_limiter:
+                self.rate_limiter.report_error(0)
+            err = classify_error(0, f"Network error: {e}", original_exception=e)
+            raise err
+        except Exception as e:
+            # Unexpected errors
+            err = classify_error(0, f"Unexpected error: {e}", original_exception=e)
+            raise err
 
     def _save_results(
         self,

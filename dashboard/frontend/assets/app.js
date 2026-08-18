@@ -1431,7 +1431,7 @@ async function renderSettings() {
                   ${formField("EARLY_STOP_COUNT", "Early Stop Count", pipelineConfig.EARLY_STOP_COUNT, { type: "number" })}
                   ${formField("EARLY_STOP_SCORE", "Early Stop Score", pipelineConfig.EARLY_STOP_SCORE, { type: "number" })}
                   ${formField("DELAY_SECONDS", "Delay Seconds", pipelineConfig.DELAY_SECONDS, { type: "number" })}
-                  ${formField("MAX_RETRIES", "Max Retries", pipelineConfig.MAX_RETRIES, { type: "number" })}
+                  ${formField("MAX_ATTEMPTS", "Max Attempts", pipelineConfig.MAX_ATTEMPTS, { type: "number" })}
                   ${formField("BATCH_SIZE", "Batch Size", pipelineConfig.BATCH_SIZE, { type: "number" })}
                   ${formField("MIN_CONFIDENCE_THRESHOLD", "Min Confidence", pipelineConfig.MIN_CONFIDENCE_THRESHOLD, { type: "number" })}
                   ${formField("MIN_SCRAPE_SCORE", "Min Scrape Score", pipelineConfig.MIN_SCRAPE_SCORE, { type: "number" })}
@@ -1605,7 +1605,7 @@ async function savePipelineConfig(e) {
             ["EARLY_STOP_COUNT", "Early Stop Count"],
             ["EARLY_STOP_SCORE", "Early Stop Score"],
             ["DELAY_SECONDS", "Delay Seconds"],
-            ["MAX_RETRIES", "Max Retries"],
+            ["MAX_ATTEMPTS", "Max Attempts"],
             ["BATCH_SIZE", "Batch Size"],
             ["MIN_CONFIDENCE_THRESHOLD", "Min Confidence"],
             ["MIN_SCRAPE_SCORE", "Min Scrape Score"],

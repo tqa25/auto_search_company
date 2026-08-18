@@ -70,12 +70,13 @@ class ConnectionManager:
         })
 
         # Configure retry strategy
-        # Note: We only auto-retry on connection-level errors (not on HTTP 429/402)
+        # Note: We only auto-retry on connection-level errors (not on HTTP 429/402/503)
         # because those require specific business logic (e.g. rate limiter adjustments).
+        # HTTP-level retries are handled by the unified RetryExecutor in src/v2/runtime/retry.py
         retry_strategy = Retry(
-            total=self._max_retries,
+            total=0,  # Disable HTTP-status retries; connection pooling only
             backoff_factor=self._backoff_factor,
-            status_forcelist=[500, 502, 504],  # Retry on server errors only
+            status_forcelist=[],  # Empty — no HTTP status retries
             allowed_methods=["POST", "GET"],
             raise_on_status=False,  # Don't raise — let caller inspect status code
         )

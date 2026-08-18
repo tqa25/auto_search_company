@@ -3,10 +3,13 @@ import time
 import requests
 import logging
 from typing import List, Dict, Set
-
 from src.time_utils import vn_now
 from urllib.parse import urlparse
+from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor
+from src.errors import RetryableError, CriticalError, SkippableError
+from src.config import default_config
 
+logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 class FirecrawlDeepSearch:
@@ -28,120 +31,129 @@ class FirecrawlDeepSearch:
             logger.warning("FIRECRAWL_API_KEY not set.")
 
     def search(self, company_id: int, query: str, limit: int = 100) -> List[Dict]:
-        """Execute a Search via Firecrawl /v2/search API.
+            """Execute a Search via Firecrawl /v2/search API.
         
-        Returns:
-            list of dicts: [{url, title, snippet}, ...]
-        """
-        if not self.api_key:
-            return []
+            Returns:
+                list of dicts: [{url, title, snippet}, ...]
+            
+            Raises:
+                RetryableError: If all retry attempts exhausted (transient failures)
+                CriticalError: If critical error (402, 401, quota exhausted)
+                SkippableError: If skippable error (403, 404, etc.)
+            """
+            if not self.api_key:
+                return []
 
-        log_id = self.pipeline_logger.log_step_start(
-            company_id, "firecrawl_search",
-            source_name=f"firecrawl_search: {query[:60]}",
-            raw_request={"query": query, "limit": limit}
-        )
-
-        started_at = vn_now()
-        start_time = time.time()
-        
-        credits_used = 2 # Firecrawl search always uses 2 credits
-
-        try:
-            resp = requests.post(
-                self.FIRECRAWL_SEARCH_URL,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}", 
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "query": query, 
-                    "limit": limit,
-                    "lang": "vi",
-                    "country": "vn"
-                },
-                timeout=30
+            log_id = self.pipeline_logger.log_step_start(
+                company_id, "firecrawl_search",
+                source_name=f"firecrawl_search: {query[:60]}",
+                raw_request={"query": query, "limit": limit}
             )
-            duration = time.time() - start_time
-            finished_at = vn_now()
 
-            if resp.status_code == 429:
-                logger.warning(f"[{company_id}] Firecrawl Search rate limited (429).")
+            started_at = vn_now()
+            credits_used = 2  # Firecrawl search always uses 2 credits
+
+            # Create retry executor with config
+            retry_executor = create_retry_executor(default_config)
+
+            def _do_search():
+                start_time = time.time()
+                resp = requests.post(
+                    self.FIRECRAWL_SEARCH_URL,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "query": query,
+                        "limit": limit,
+                        "lang": "vi",
+                        "country": "vn"
+                    },
+                    timeout=30
+                )
+                duration = time.time() - start_time
+                finished_at = vn_now()
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if not data.get("success"):
+                        error_msg = str(data.get('error', 'Unknown Error'))
+                        err = classify_error(resp.status_code, error_msg)
+                        self.pipeline_logger.log_step_end(
+                            log_id, status="failed", error_message=error_msg,
+                            network_latency_ms=duration * 1000,
+                            metadata={"started_at": started_at.isoformat(),
+                                      "finished_at": finished_at.isoformat(),
+                                      "credits_used": credits_used}
+                        )
+                        raise err
+
+                    raw_data = data.get("data", {})
+                    # Firecrawl v2 returns {data: {web: [...]}}
+                    if isinstance(raw_data, dict):
+                        firecrawl_results = raw_data.get("web", []) or []
+                    elif isinstance(raw_data, list):
+                        firecrawl_results = raw_data
+                    else:
+                        firecrawl_results = []
+
+                    results = []
+                    for item in firecrawl_results:
+                        if isinstance(item, dict):
+                            results.append({
+                                "url": item.get("url", ""),
+                                "title": item.get("title", ""),
+                                "snippet": item.get("description", ""),
+                            })
+
+                    self.pipeline_logger.log_step_end(
+                        log_id, status="success",
+                        credits_used=credits_used,
+                        data_saved=bool(results),
+                        network_latency_ms=duration * 1000,
+                        metadata={
+                            "started_at": started_at.isoformat(),
+                            "finished_at": finished_at.isoformat(),
+                            "duration_seconds": round(duration, 2),
+                            "firecrawl_credits_used": credits_used,
+                            "results_count": len(results),
+                        }
+                    )
+
+                    logger.info(f"[{company_id}] Firecrawl Search: {len(results)} results | {duration:.1f}s")
+                    return results
+
+                # Non-200 status codes: classify and raise appropriate error
+                error_msg = f"HTTP {resp.status_code} - {resp.text[:300]}"
+                err = classify_error(resp.status_code, error_msg)
                 self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message="429 Too Many Requests",
+                    log_id, status="failed", error_message=error_msg,
                     network_latency_ms=duration * 1000,
                     metadata={"started_at": started_at.isoformat(),
                               "finished_at": finished_at.isoformat(),
                               "credits_used": credits_used}
                 )
-                return []
-                
-            if resp.status_code != 200:
-                logger.warning(f"[{company_id}] Firecrawl Search error: HTTP {resp.status_code} - {resp.text}")
+                raise err
+
+            try:
+                return retry_executor.execute(_do_search)
+            except (RetryableError, CriticalError, SkippableError):
+                # Re-raise pipeline errors as-is
+                raise
+            except Exception as e:
+                # Wrap unexpected errors
+                duration = 0  # start_time not accessible here, but not critical for logging
+                error_msg = str(e)
+                err = classify_error(0, error_msg, original_exception=e)
                 self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=f"HTTP {resp.status_code}",
+                    log_id, status="failed", error_message=error_msg,
                     network_latency_ms=duration * 1000,
                     metadata={"started_at": started_at.isoformat(),
-                              "finished_at": finished_at.isoformat(),
+                              "finished_at": vn_now().isoformat(),
                               "credits_used": credits_used}
                 )
-                return []
-
-            data = resp.json()
-            if not data.get("success"):
-                logger.warning(f"[{company_id}] Firecrawl Search API returned success=false: {data.get('error')}")
-                self.pipeline_logger.log_step_end(
-                    log_id, status="failed", error_message=str(data.get('error', 'Unknown Error')),
-                    network_latency_ms=duration * 1000,
-                    metadata={"started_at": started_at.isoformat(),
-                              "finished_at": finished_at.isoformat(),
-                              "credits_used": credits_used}
-                )
-                return []
-                
-            raw_data = data.get("data", {})
-            # Firecrawl v2 returns {data: {web: [...]}}
-            if isinstance(raw_data, dict):
-                firecrawl_results = raw_data.get("web", []) or []
-            elif isinstance(raw_data, list):
-                firecrawl_results = raw_data
-            else:
-                firecrawl_results = []
-
-            results = []
-            for item in firecrawl_results:
-                if isinstance(item, dict):
-                    results.append({
-                        "url": item.get("url", ""),
-                        "title": item.get("title", ""),
-                        "snippet": item.get("description", ""),
-                    })
-
-            self.pipeline_logger.log_step_end(
-                log_id, status="success",
-                credits_used=credits_used,
-                data_saved=bool(results),
-                network_latency_ms=duration * 1000,
-                metadata={
-                    "started_at": started_at.isoformat(),
-                    "finished_at": finished_at.isoformat(),
-                    "duration_seconds": round(duration, 2),
-                    "firecrawl_credits_used": credits_used,
-                    "results_count": len(results),
-                }
-            )
-
-            logger.info(f"[{company_id}] Firecrawl Search: {len(results)} results | {duration:.1f}s")
-            return results
-
-        except Exception as e:
-            duration = time.time() - start_time
-            logger.error(f"[{company_id}] Firecrawl Search error: {e}")
-            self.pipeline_logger.log_step_end(
-                log_id, status="failed", error_message=str(e),
-                network_latency_ms=duration * 1000
-            )
-            return []
+                raise err
 
     def build_fallback_queries(self, gemini_result: dict, company_name: str = "") -> List[Dict]:
         """Build complementary queries based on Gemini Quick Search results.

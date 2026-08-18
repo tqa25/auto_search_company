@@ -6,6 +6,8 @@ from src.database import DatabaseManager
 from src.logger import PipelineLogger
 from src.errors import RetryableError, CriticalError, SkippableError, PipelineError
 from src.time_utils import vn_cache_expiry
+from src.v2.runtime.retry import RetryExecutor, classify_error, create_retry_executor
+from src.config import default_config
 
 class ScrapeModule:
     def __init__(self, db: DatabaseManager, logger: PipelineLogger, firecrawl_api_key: str,
@@ -218,6 +220,7 @@ class ScrapeModule:
             return None
 
     def _start_firecrawl_batch(self, links: list[dict]) -> str:
+        """Start a Firecrawl batch scrape job with unified retry logic."""
         max_concurrency = max(1, min(
             len(links),
             int(getattr(self.config, 'TOP_N', 10) or 10),
@@ -231,13 +234,10 @@ class ScrapeModule:
             "maxConcurrency": max_concurrency
         }
 
-        retries = 0
-        max_retries = 3
-        while retries <= max_retries:
-            try:
-                response = requests.post(self.batch_api_url, headers=self._firecrawl_headers(), json=body, timeout=35)
-            except requests.exceptions.Timeout as exc:
-                raise RetryableError("timeout") from exc
+        retry_executor = create_retry_executor(self.config)
+
+        def _do_start_batch():
+            response = requests.post(self.batch_api_url, headers=self._firecrawl_headers(), json=body, timeout=35)
 
             if response.status_code in (200, 201):
                 data = response.json()
@@ -245,17 +245,21 @@ class ScrapeModule:
                 if not job_id:
                     raise SkippableError("Firecrawl batch scrape did not return a job id")
                 return job_id
-            if response.status_code == 429:
-                retries += 1
-                if retries > max_retries:
-                    raise RetryableError("Rate limit exceeded after max retries")
-                time.sleep(60)
-                continue
-            if response.status_code == 402:
-                raise CriticalError("HTTP 402: Insufficient credits")
-            raise SkippableError(f"HTTP {response.status_code}: {response.text}")
 
-        raise RetryableError("Unable to start Firecrawl batch scrape")
+            # Classify and raise appropriate error
+            error_msg = f"HTTP {response.status_code}: {response.text}"
+            err = classify_error(response.status_code, error_msg)
+            raise err
+
+        try:
+            return retry_executor.execute(_do_start_batch)
+        except (RetryableError, CriticalError, SkippableError):
+            raise
+        except requests.exceptions.Timeout as exc:
+            raise RetryableError("timeout") from exc
+        except Exception as e:
+            err = classify_error(0, f"Unexpected error: {e}", original_exception=e)
+            raise err
 
     def _poll_firecrawl_batch(self, job_id: str) -> dict | None:
         deadline = time.monotonic() + float(getattr(self.config, 'FIRECRAWL_BATCH_TIMEOUT_SECONDS', 300.0) or 300.0)
@@ -458,129 +462,142 @@ class ScrapeModule:
         if self.rate_limiter:
             self.rate_limiter.wait()
 
-        retries = 0
-        max_retries = 3
-        while retries <= max_retries:
-            try:
-                # Use ConnectionManager if available, otherwise raw requests
-                if self.connection_manager:
-                    response = self.connection_manager.post(
-                        self.api_url,
-                        json=body,
-                        request_type="scrape",
-                    )
-                else:
-                    response = requests.post(self.api_url, headers=headers, json=body, timeout=35)
+        retry_executor = create_retry_executor(self.config)
 
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('success'):
-                        md_content = data.get('data', {}).get('markdown', '')
-                        content_length = len(md_content) if md_content else 0
+        def _do_scrape():
+            # Use ConnectionManager if available, otherwise raw requests
+            if self.connection_manager:
+                response = self.connection_manager.post(
+                    self.api_url,
+                    json=body,
+                    request_type="scrape",
+                )
+            else:
+                response = requests.post(self.api_url, headers=headers, json=body, timeout=35)
 
-                        self.db.insert_scraped_page(
-                            filtered_link_id=filtered_link_id,
-                            company_id=company_id,
-                            url=url,
-                            source_type=source_type,
-                            markdown_content=md_content,
-                            content_length=content_length,
-                            scrape_status="success",
-                            credits_used=1.0,
-                            error_message=None
-                        )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    md_content = data.get('data', {}).get('markdown', '')
+                    content_length = len(md_content) if md_content else 0
 
-                        self.logger.log_step_end(
-                            log_id,
-                            status="success",
-                            credits_used=1.0,
-                            data_saved=True,
-                            metadata={"content_length": content_length}
-                        )
-                        # Report success to rate limiter
-                        if self.rate_limiter:
-                            self.rate_limiter.report_success()
-
-                        # Store in url_cache so future requests for this URL are deduplicated
-                        self.db.insert_url_cache(
-                            url_hash=url_hash,
-                            url=url,
-                            scrape_status='success',
-                            content_hash=hashlib.sha256((md_content or '').encode('utf-8')).hexdigest(),
-                            ttl_expires_at=vn_cache_expiry(self.config.CACHE_TTL_DAYS)
-                        )
-
-                        return {"status": "success", "content_length": content_length, "source_type": source_type, "cached": False}
-                    else:
-                        error_msg = data.get('error', 'Unknown error inside 200 OK')
-                        raise ValueError(error_msg)
-
-                elif response.status_code == 429:
-                    if self.rate_limiter:
-                        self.rate_limiter.report_error(429)
-                    retries += 1
-                    if retries > max_retries:
-                        raise RetryableError("Rate limit exceeded after max retries")
-                    print("HTTP 429 Rate limit exceeded. Waiting 60 seconds...")
-                    time.sleep(60)
-                    continue
-
-                elif response.status_code == 402:
-                    error_msg = "HTTP 402: Insufficient credits"
-                    print(f"CRITICAL ERROR: {error_msg}")
-                    # Log as failed
                     self.db.insert_scraped_page(
                         filtered_link_id=filtered_link_id,
                         company_id=company_id,
                         url=url,
                         source_type=source_type,
-                        markdown_content=None,
-                        content_length=0,
-                        scrape_status="failed",
-                        credits_used=0,
-                        error_message=error_msg
+                        markdown_content=md_content,
+                        content_length=content_length,
+                        scrape_status="success",
+                        credits_used=1.0,
+                        error_message=None
                     )
-                    self.logger.log_step_end(log_id, status="failed", credits_used=0, error_message=error_msg, error_category="critical")
-                    raise CriticalError(error_msg)
 
+                    self.logger.log_step_end(
+                        log_id,
+                        status="success",
+                        credits_used=1.0,
+                        data_saved=True,
+                        metadata={"content_length": content_length}
+                    )
+                    # Report success to rate limiter
+                    if self.rate_limiter:
+                        self.rate_limiter.report_success()
+
+                    # Store in url_cache so future requests for this URL are deduplicated
+                    self.db.insert_url_cache(
+                        url_hash=url_hash,
+                        url=url,
+                        scrape_status='success',
+                        content_hash=hashlib.sha256((md_content or '').encode('utf-8')).hexdigest(),
+                        ttl_expires_at=vn_cache_expiry(self.config.CACHE_TTL_DAYS)
+                    )
+
+                    return {"status": "success", "content_length": content_length, "source_type": source_type, "cached": False}
                 else:
-                    error_msg = f"HTTP {response.status_code}: {response.text}"
-                    self.logger.log_step_end(log_id, status="failed", credits_used=0, error_message=error_msg, error_category="skippable")
-                    raise SkippableError(error_msg)
+                    error_msg = data.get('error', 'Unknown error inside 200 OK')
+                    raise ValueError(error_msg)
 
-            except Exception as e:
-                if isinstance(e, (RuntimeError, CriticalError)):
-                    raise
+            # Non-200 status codes: classify and raise appropriate error
+            error_msg = f"HTTP {response.status_code}: {response.text}"
+            err = classify_error(response.status_code, error_msg)
+            if self.rate_limiter:
+                self.rate_limiter.report_error(response.status_code)
+            raise err
 
-                error_msg = str(e)
+        try:
+            return retry_executor.execute(_do_scrape)
+        except CriticalError as e:
+            # CriticalError: log the failure and re-raise
+            error_msg = str(e)
+            self.db.insert_scraped_page(
+                filtered_link_id=filtered_link_id,
+                company_id=company_id,
+                url=url,
+                source_type=source_type,
+                markdown_content=None,
+                content_length=0,
+                scrape_status="failed",
+                credits_used=0,
+                error_message=error_msg
+            )
+            self.logger.log_step_end(log_id, status="failed", credits_used=0, error_message=error_msg, error_category="critical")
+            raise
+        except (RetryableError, SkippableError) as e:
+            # Retryable/Skippable errors: log and return error status
+            error_msg = str(e)
+            is_timeout = "timeout" in error_msg.lower()
+            status_val = "skipped" if (is_timeout and source_type in ["facebook", "linkedin"]) else ("timeout" if is_timeout else "failed")
+            stored_error = "skipped - secondary source" if status_val == "skipped" else error_msg
+            
+            self.db.insert_scraped_page(
+                filtered_link_id=filtered_link_id,
+                company_id=company_id,
+                url=url,
+                source_type=source_type,
+                markdown_content=None,
+                content_length=0,
+                scrape_status=status_val,
+                credits_used=0,
+                error_message=stored_error
+            )
+            log_status = "skipped" if status_val == "skipped" else "failed"
+            category = "retryable" if isinstance(e, RetryableError) else "skippable"
+            self.logger.log_step_end(log_id, status=log_status, credits_used=0, error_message=stored_error, error_category=category)
+            
+            return {"status": status_val, "content_length": 0, "source_type": source_type, "error": stored_error}
+        except Exception as e:
+            if isinstance(e, RuntimeError):
+                raise
+            
+            error_msg = str(e)
+            is_timeout = isinstance(e, requests.exceptions.Timeout) or "timeout" in error_msg.lower()
+            status_val = "failed"
 
-                is_timeout = isinstance(e, requests.exceptions.Timeout) or "timeout" in error_msg.lower()
-                status_val = "failed"
+            if is_timeout:
+                if source_type in ["facebook", "linkedin"]:
+                    error_msg = "skipped - secondary source"
+                    status_val = "skipped"
+                else:
+                    error_msg = "timeout"
+                    status_val = "timeout"
 
-                if is_timeout:
-                    if source_type in ["facebook", "linkedin"]:
-                        error_msg = "skipped - secondary source"
-                        status_val = "skipped"
-                    else:
-                        error_msg = "timeout"
-                        status_val = "timeout"
+            self.db.insert_scraped_page(
+                filtered_link_id=filtered_link_id,
+                company_id=company_id,
+                url=url,
+                source_type=source_type,
+                markdown_content=None,
+                content_length=0,
+                scrape_status=status_val,
+                credits_used=0,
+                error_message=error_msg
+            )
+            log_status = "skipped" if status_val == "skipped" else "failed"
+            category = e.category if isinstance(e, PipelineError) else "unknown"
+            self.logger.log_step_end(log_id, status=log_status, credits_used=0, error_message=error_msg, error_category=category)
 
-                self.db.insert_scraped_page(
-                    filtered_link_id=filtered_link_id,
-                    company_id=company_id,
-                    url=url,
-                    source_type=source_type,
-                    markdown_content=None,
-                    content_length=0,
-                    scrape_status=status_val,
-                    credits_used=0,
-                    error_message=error_msg
-                )
-                log_status = "skipped" if status_val == "skipped" else "failed"
-                category = e.category if isinstance(e, PipelineError) else "unknown"
-                self.logger.log_step_end(log_id, status=log_status, credits_used=0, error_message=error_msg, error_category=category)
-
-                return {"status": status_val, "content_length": 0, "source_type": source_type, "error": error_msg}
+            return {"status": status_val, "content_length": 0, "source_type": source_type, "error": error_msg}
 
     def scrape_company(self, company_id: int, delay_seconds: float = None) -> list:
         """Scrape top-scored links for a company; falls back to priority-sorted should_scrape=1 links."""

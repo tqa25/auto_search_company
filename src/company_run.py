@@ -55,61 +55,75 @@ class CompanyRun:
                 pipeline.cfg.FORCE_REFRESH = False
 
     def _run_with_retries(self, company_id: int, company_name: str, next_step: str, replay_mode: bool, job_controller=None):
-        retry_count = 0
-        max_retries = 2
-
-        while retry_count < max_retries:
-            try:
-                return self._run_attempt(
-                    company_id=company_id,
-                    company_name=company_name,
-                    next_step=next_step,
-                    replay_mode=replay_mode,
-                    job_controller=job_controller,
-                )
-            except RetryableError as exc:
-                retry_count += 1
-                error_msg = str(exc)
-                print(f"  -> RETRY #{retry_count}: {error_msg}")
-                if retry_count < max_retries:
-                    backoff_time = 60 * retry_count
-                    print(f"     Waiting {backoff_time}s before retry...")
-                    time.sleep(backoff_time)
-                    continue
-                print(f"  -> FAILED: Exceeded max retries ({max_retries})")
-                self._set_status(company_id, "failed", "Failed", "failed", 0, job_controller)
-                return {"outcome": "failed", "reason": "max_retries"}
-            except SkippableError as exc:
-                error_msg = str(exc)
-                print(f"  -> SKIPPED: {error_msg}")
-                # SkippableError means "skip this company, move on" (invalid data /
-                # no results / non-retryable source error). But if earlier steps
-                # already satisfied strict completion, finalize as done instead of
-                # discarding that work as failed.
-                audit = audit_company_completion(
-                    self.pipeline.db, company_id, self.pipeline.db.get_company(company_id)
-                )
-                if audit.get("completion_status") == "strict_done":
-                    self._set_status(company_id, "done", "Done", "done", 100, job_controller)
-                    return {"outcome": "success", "reason": "strict_done_before_skip"}
-                self._set_status(company_id, "failed", "Failed", "failed", 0, job_controller)
-                return {"outcome": "failed", "reason": "skippable_error"}
-            except CriticalError as exc:
-                error_msg = str(exc)
-                print(f"  -> ⛔ CRITICAL: {error_msg}")
-                current_status = self.pipeline.db.get_company(company_id)
-                if current_status and current_status["status"] in ("ai_extract_pending", "extracting"):
-                    self._set_status(company_id, "ai_extract_pending", "AI Extract", "ai_extract", 82, job_controller)
-                    print("  -> Checkpoint bảo toàn: status='ai_extract_pending' — dữ liệu đã cào được giữ lại.")
-                print("  -> Stopping entire pipeline.")
-                raise
-            except Exception as exc:
-                error_msg = str(exc)
-                print(f"  -> FAILED (unknown error): {error_msg}")
-                self._set_status(company_id, "failed", "Failed", "failed", 0, job_controller)
-                return {"outcome": "failed", "reason": "unknown_error"}
-
-        return {"outcome": "failed", "reason": "unreachable_retry_state"}
+        """
+        Run a single attempt. Individual operations (search, scrape, ai_extract) now use
+        RetryExecutor internally with MAX_ATTEMPTS. This method no longer retries the
+        entire company — operation-level retries are handled by the unified executor.
+        
+        Status mapping when operations exhaust retries:
+        - Search or scrape exhausted → 'failed' (re-run from start of that step)
+        - AI extraction exhausted → keep 'ai_extract_pending' (preserve scraped data)
+        - CriticalError → preserve current checkpoint, stop entire batch
+        """
+        try:
+            return self._run_attempt(
+                company_id=company_id,
+                company_name=company_name,
+                next_step=next_step,
+                replay_mode=replay_mode,
+                job_controller=job_controller,
+            )
+        except RetryableError as exc:
+            # Operation exhausted retries — determine final status based on current step
+            error_msg = str(exc)
+            print(f"  -> Operation exhausted retries: {error_msg}")
+            
+            # Get current company status to determine which step failed
+            company = self.pipeline.db.get_company(company_id)
+            current_status = company["status"] if company else "pending"
+            
+            # Map status to final status per §5.4
+            if current_status in ("searching", "searched", "scraping"):
+                # Search or scrape exhausted → 'failed'
+                final_status = "failed"
+            elif current_status in ("ai_extract_pending", "extracting"):
+                # AI extraction exhausted → keep 'ai_extract_pending'
+                final_status = "ai_extract_pending"
+            else:
+                # Default
+                final_status = "failed"
+            
+            self._set_status(company_id, final_status, "Failed", "failed", 0, job_controller)
+            return {"outcome": "failed", "reason": "max_attempts_exhausted"}
+        except SkippableError as exc:
+            error_msg = str(exc)
+            print(f"  -> SKIPPED: {error_msg}")
+            # SkippableError means "skip this company, move on" (invalid data /
+            # no results / non-retryable source error). But if earlier steps
+            # already satisfied strict completion, finalize as done instead of
+            # discarding that work as failed.
+            audit = audit_company_completion(
+                self.pipeline.db, company_id, self.pipeline.db.get_company(company_id)
+            )
+            if audit.get("completion_status") == "strict_done":
+                self._set_status(company_id, "done", "Done", "done", 100, job_controller)
+                return {"outcome": "success", "reason": "strict_done_before_skip"}
+            self._set_status(company_id, "failed", "Failed", "failed", 0, job_controller)
+            return {"outcome": "failed", "reason": "skippable_error"}
+        except CriticalError as exc:
+            error_msg = str(exc)
+            print(f"  -> ⛔ CRITICAL: {error_msg}")
+            current_status = self.pipeline.db.get_company(company_id)
+            if current_status and current_status["status"] in ("ai_extract_pending", "extracting"):
+                self._set_status(company_id, "ai_extract_pending", "AI Extract", "ai_extract", 82, job_controller)
+                print("  -> Checkpoint bảo toàn: status='ai_extract_pending' — dữ liệu đã cào được giữ lại.")
+            print("  -> Stopping entire pipeline.")
+            raise
+        except Exception as exc:
+            error_msg = str(exc)
+            print(f"  -> FAILED (unknown error): {error_msg}")
+            self._set_status(company_id, "failed", "Failed", "failed", 0, job_controller)
+            return {"outcome": "failed", "reason": "unknown_error"}
 
     def _run_attempt(self, company_id: int, company_name: str, next_step: str, replay_mode: bool, job_controller=None):
         pipeline = self.pipeline

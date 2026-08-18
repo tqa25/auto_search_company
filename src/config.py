@@ -177,8 +177,13 @@ class Config:
         self.DELAY_SECONDS: float = _parse_float(
             os.getenv("DELAY_SECONDS"), default=3.0
         )
-        self.MAX_RETRIES: int = _parse_int(
+        self._max_retries: int = _parse_int(
             os.getenv("MAX_RETRIES"), default=3
+        )
+        # MAX_ATTEMPTS = 1 initial + retries (new semantic)
+        # e.g., MAX_ATTEMPTS=3 means 1 initial + 2 retries = 3 total calls
+        self.MAX_ATTEMPTS: int = _parse_int(
+            os.getenv("MAX_ATTEMPTS"), default=3
         )
 
         # --- Pipeline group ---
@@ -287,6 +292,7 @@ class Config:
             f"FORCE_REFRESH={self.FORCE_REFRESH!r}, "
             f"DELAY_SECONDS={self.DELAY_SECONDS!r}, "
             f"MAX_RETRIES={self.MAX_RETRIES!r}, "
+            f"MAX_ATTEMPTS={self.MAX_ATTEMPTS!r}, "
             f"EXECUTION_MODE={self.EXECUTION_MODE!r}, "
             f"BATCH_SIZE={self.BATCH_SIZE!r}, "
             f"ABBREVIATION_STOP_WORDS={self.ABBREVIATION_STOP_WORDS!r}, "
@@ -297,6 +303,22 @@ class Config:
             f"AI_EXTRACTOR_MODEL={self.AI_EXTRACTOR_MODEL!r}"
             f")"
         )
+    
+    @property
+    def MAX_RETRIES(self) -> int:
+        """Deprecated: Use MAX_ATTEMPTS instead. MAX_ATTEMPTS = 1 initial + retries."""
+        import warnings
+        warnings.warn(
+            "MAX_RETRIES is deprecated. Use MAX_ATTEMPTS (1 initial + N retries). "
+            "MAX_RETRIES will be removed in a future version.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self._max_retries
+    
+    @MAX_RETRIES.setter
+    def MAX_RETRIES(self, value: int):
+        self._max_retries = value
 
 
 # Module-level default instance — import this for convenience.
