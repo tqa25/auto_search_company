@@ -124,9 +124,14 @@ class TestSearchCompanySingleStrategy:
         # Step 2 will infer the Vietnamese name "Công ty TNHH XYZ"
         # Step 3 (Expand) runs with the Vietnamese name.
         
+        # Provide enough responses for retries (each call may retry up to 3 times)
         mock_post.side_effect = [
-            _make_firecrawl_response(["https://masothue.com/abc"]), # Step 1: masothue link -> infers "Công ty TNHH XYZ"
-            _make_firecrawl_response(["https://vietnamworks.com/xyz"]) # Step 3: Expand search with VN name
+            _make_firecrawl_response(["https://masothue.com/abc"]),  # Step 1 success
+            _make_firecrawl_response(["https://masothue.com/abc"]),  # retry 1 (not used)
+            _make_firecrawl_response(["https://masothue.com/abc"]),  # retry 2 (not used)
+            _make_firecrawl_response(["https://vietnamworks.com/xyz"]), # Step 3 success
+            _make_firecrawl_response(["https://vietnamworks.com/xyz"]), # retry 1 (not used)
+            _make_firecrawl_response(["https://vietnamworks.com/xyz"]), # retry 2 (not used)
         ]
 
         results = search_module.search_company(cid)
@@ -207,8 +212,9 @@ class TestErrorHandling:
 
     @patch("src.search_module.requests.post")
     def test_500_server_error(self, mock_post, search_module):
+        from src.errors import RetryableError
         mock_post.return_value = _make_firecrawl_response([], status_code=500)
-        with pytest.raises(FirecrawlSearchError):
+        with pytest.raises(RetryableError):
             search_module._firecrawl_search("test query")
 
 class TestSearchStats:

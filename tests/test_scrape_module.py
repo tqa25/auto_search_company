@@ -18,6 +18,8 @@ def make_scrape_config(**overrides):
         "FIRECRAWL_MAX_CONCURRENCY": 10,
         "FIRECRAWL_BATCH_POLL_INTERVAL_SECONDS": 0,
         "FIRECRAWL_BATCH_TIMEOUT_SECONDS": 5,
+        "MAX_ATTEMPTS": 3,
+        "MAX_RETRIES": 3,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -75,13 +77,14 @@ def test_scrape_url_402_abort(mock_post, setup_db):
 
     mock_resp = MagicMock()
     mock_resp.status_code = 402
+    mock_resp.text = 'no credits'
     mock_post.return_value = mock_resp
 
     from src.errors import CriticalError
     with pytest.raises(CriticalError) as excinfo:
         scraper.scrape_url(1)
 
-    assert "Insufficient credits" in str(excinfo.value)
+    assert "quota exhausted" in str(excinfo.value).lower()
 
     pages = db.get_scraped_pages_for_company(company_id)
     assert len(pages) == 1
@@ -240,4 +243,4 @@ def test_scrape_company_batch_402_remains_critical(mock_post, setup_db):
     pages = db.get_scraped_pages_for_company(company_id)
     assert len(pages) == 2
     assert {p['scrape_status'] for p in pages} == {'failed'}
-    assert all('Insufficient credits' in p['error_message'] for p in pages)
+    assert all('quota exhausted' in p['error_message'].lower() for p in pages)
