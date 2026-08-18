@@ -32,6 +32,10 @@ class PipelineError(Exception):
 
 class RetryableError(PipelineError):
     """Temporary error — should retry (429, timeout, network, transient failures)."""
+    def __init__(self, message, company_id=None, step=None, retry_after=None):
+        super().__init__(message, company_id=company_id, step=step)
+        self.retry_after = retry_after
+
     @property
     def category(self):
         return "retryable"
