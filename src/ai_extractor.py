@@ -189,11 +189,11 @@ Rules:
 
         retry_executor = create_retry_executor(self.config)
 
-        def _do_extract():
-            self.logger.logger.info(f"Calling Gemini API ({self.config.AI_EXTRACTOR_MODEL}) for page ID {scraped_page_id}...")
+        def _do_extract(model_name: str):
+            self.logger.logger.info(f"Calling Gemini API ({model_name}) for page ID {scraped_page_id}...")
 
             response = self.client.models.generate_content(
-                model=self.config.AI_EXTRACTOR_MODEL,
+                model=model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.1,
@@ -327,7 +327,16 @@ Rules:
             }
 
         try:
-            return retry_executor.execute(_do_extract)
+            try:
+                return retry_executor.execute(lambda: _do_extract(self.config.AI_EXTRACTOR_MODEL))
+            except RetryableError as primary_exc:
+                if self.config.AI_EXTRACTOR_MODEL == "models/gemini-3.5-flash":
+                    raise  # already on the fallback model, nothing left to fall back to
+                self.logger.logger.warning(
+                    f"Primary model {self.config.AI_EXTRACTOR_MODEL} exhausted retries for page {scraped_page_id}; "
+                    f"attempting fallback to models/gemini-3.5-flash..."
+                )
+                return retry_executor.execute(lambda: _do_extract("models/gemini-3.5-flash"))
         except CriticalError as e:
             self.logger.logger.error(f"Gemini API Rate Limit/Quota Exceeded (429/Quota)! Stop processing.")
             self.logger.log_step_end(log_id, "FAILED", error_message="Rate Limit/Quota Exceeded", error_category="critical")
