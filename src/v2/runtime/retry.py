@@ -148,7 +148,7 @@ class RetryExecutor:
             step = min(poll_interval, delay - elapsed)
             time.sleep(step)
             elapsed += step
-        return should_stop() if should_stop else False
+        return False
 
     def _log_attempt(self, level: str, context: Optional[dict], operation_attempt: int, status_or_error: str, decision: str, delay_seconds: float = 0.0, duration_ms: float = 0.0):
         """Log a structured attempt with context."""
@@ -261,16 +261,13 @@ def classify_error(
     # Retryable errors — transient, worth retrying
     retryable_codes = {408, 429, 500, 502, 503, 504}
     if status_code in retryable_codes:
-        # Pass retry_after only for 429 (Too Many Requests)
-        if status_code == 429:
-            return RetryableError(f"HTTP {status_code}: {message}", retry_after=retry_after_seconds)
-        return RetryableError(f"HTTP {status_code}: {message}")
+        return RetryableError(f"HTTP {status_code}: {message}", retry_after=retry_after_seconds)
     
     # Network-level retryable errors
     if original_exception is not None:
         import requests
         if isinstance(original_exception, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
-            return RetryableError(f"Network error: {original_exception}")
+            return RetryableError(f"Network error: {original_exception}", retry_after=retry_after_seconds)
     
     # Transient error messages (even if status code unclear)
     transient_markers = [
@@ -278,7 +275,7 @@ def classify_error(
         "temporarily unavailable", "try again later", "rate limit"
     ]
     if any(marker in msg_lower for marker in transient_markers):
-        return RetryableError(f"Transient error: {message}")
+        return RetryableError(f"Transient error: {message}", retry_after=retry_after_seconds)
     
     # Skippable errors — company-specific, don't retry, continue batch
     skippable_codes = {400, 403, 404, 410, 422}
@@ -290,7 +287,7 @@ def classify_error(
         return SkippableError(f"HTTP {status_code}: {message}")
     
     # Unknown exception without status code: retryable by default
-    return RetryableError(f"Unknown error: {message}")
+    return RetryableError(f"Unknown error: {message}", retry_after=retry_after_seconds)
 
 
 def create_retry_executor(config: Config) -> RetryExecutor:

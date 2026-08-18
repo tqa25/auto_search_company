@@ -79,9 +79,7 @@ class FirecrawlDeepSearch:
                     data = resp.json()
                     if not data.get("success"):
                         error_msg = str(data.get('error', 'Unknown Error'))
-                        retry_after = None
-                        if resp.status_code == 429:
-                            retry_after = parse_retry_after(resp.headers.get("Retry-After"))
+                        retry_after = parse_retry_after(resp.headers.get("Retry-After"))
                         err = classify_error(resp.status_code, error_msg, retry_after_seconds=retry_after)
                         self.pipeline_logger.log_step_end(
                             log_id, status="failed", error_message=error_msg,
