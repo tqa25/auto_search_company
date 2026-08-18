@@ -314,7 +314,9 @@ CHỈ TRẢ VỀ JSON THUẦN TÚY (KHÔNG GIẢI THÍCH):
                 network_latency_ms=duration * 1000,
                 metadata={"duration_seconds": round(duration, 2)}
             )
-            return self._empty_result("error")
+            from src.v2.runtime.retry import classify_error
+            err = classify_error(0, error_msg, original_exception=e)
+            raise err from e
 
     # ------------------------------------------------------------------
     # Helpers
