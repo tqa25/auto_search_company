@@ -1,9 +1,10 @@
 # Implementation status
 
 Last updated: 2026-08-18 +07
-Overall state: Stage 1 Work Item 3 (retry) — code complete and independently
-verified against the acceptance criteria in
-`docs/v2-stage1-critical-fixes-implementation-plan.md` §6.8. Docs in sync.
+Overall state: Stage 1 Work Item 3 (retry) — code complete, independently
+verified against `docs/v2-stage1-critical-fixes-implementation-plan.md` §6.8,
+then put through an independent 8-angle code review that found and fixed
+4 more real bugs. Docs in sync.
 
 Read first: `docs/architecture/MAP.md` (how the system works) and `docs/architecture/INDEX.md` (which contract doc covers what).
 
@@ -20,53 +21,68 @@ checks, zero mismatches); `data/company_data.db` untouched.
 |---|---|---|
 | WI1 — remove fixed waits (§4) | **held** | §4.1b A/B measurement spends real Firecrawl credit |
 | WI2 — cache-hit + unique index (§5) | **held** | migration writes to `data/company_data.db` (1.98 GB); needs backup |
-| WI3 — retry correctness (§6) | **code complete, verified** | none — zero paid API, zero schema change |
+| WI3 — retry correctness (§6) | **code complete, verified twice** | none — zero paid API, zero schema change |
 
-WI3 on branch `refactor/stage1-retry-executor`:
+WI3 on branch `refactor/stage1-retry-executor` went through two verification
+passes, each finding real bugs the previous pass had missed:
 
-A first pass claimed "code complete" but an independent re-check against
-`docs/v2-stage1-critical-fixes-implementation-plan.md` §6.8 found 6 real gaps.
-All were fixed in a second pass:
+**Pass 1** (self re-check against §6.8 acceptance criteria) fixed: `base_delay`
+1.0s → 2.0s, HTTP 408 added to retryable codes, `Retry-After` header honored
+via `classify_error(..., retry_after_seconds=)` and `parse_retry_after()`,
+`execute()` gained `should_stop=` (interruptible backoff) and `context=`
+(structured per-attempt logging), `gemini_quick_search.py` stopped swallowing
+unclassified errors into a fake-successful empty result, 12 new tests added.
 
-- `src/v2/runtime/retry.py`: `base_delay` corrected 1.0s → 2.0s (policy default);
-  HTTP 408 added to retryable codes; `classify_error()` gained
-  `retry_after_seconds` — a 429 now carries the provider's `Retry-After` value
-  on `RetryableError.retry_after`, and `_calculate_delay()` honors it instead of
-  computing exponential backoff; new module function `parse_retry_after()`
-  parses both delta-seconds and HTTP-date header forms; `execute()` gained
-  `should_stop=` (interruptible backoff via `_interruptible_sleep`, polling
-  every 0.5s instead of a blocking `time.sleep`) and `context=` (structured
-  per-attempt logging: company_id, operation, provider, attempt, max_attempts,
-  status, decision, delay_seconds, duration_ms — no secrets logged).
-- `src/search_module.py`, `src/scrape_module.py`, `src/firecrawl_deep_search.py`:
-  parse the `Retry-After` response header on 429 and pass it into
-  `classify_error(...)`.
-- `src/gemini_quick_search.py`: the catch-all exception handler no longer
-  swallows unclassified errors into a fake-successful empty result — it now
-  classifies via `classify_error()` and re-raises, so transient failures reach
-  the retry/status-mapping layer instead of being reported as "searched, found
-  nothing."
-- `tests/test_retry.py`: 12 new tests added (timeout/5xx retry-then-succeed
-  sequences, Retry-After header honored as delay, `parse_retry_after` both
-  forms, should_stop interrupts backoff early, structured log fields present,
-  retry doesn't duplicate a side effect, connection_pool status-retry disabled,
-  rate_limiter has no call-triggering method) — 35/35 passing, run 3x with no
-  flakiness. One pre-existing test (`test_exponential_backoff_with_jitter`)
-  had hardcoded interval bounds assuming the old 1.0s base_delay; updated to
-  match the corrected 2.0s default.
+**Pass 2** (independent 8-angle code review, one verifier agent per candidate
+finding, none of it self-graded) found and fixed 4 more real bugs, all now
+fixed and re-verified — 225 passed / 1 pre-existing baseline failure, no new
+regressions:
+
+- `src/firecrawl_deep_search.py`: a `Retry-After` parse was gated on
+  `resp.status_code == 429` while already nested inside an
+  `if resp.status_code == 200:` block — dead code, introduced during Pass 1,
+  that could never fire. Removed the dead guard; `classify_error()` now
+  attaches `retry_after_seconds` to every `RetryableError` it returns
+  (previously only for the literal 429 case), not just the ones it happened
+  to special-case.
+- `src/v2/runtime/retry.py`: `_interruptible_sleep()` re-checked `should_stop()`
+  one extra time after the backoff delay had already fully elapsed, so it
+  could report "interrupted" even when the sleep completed normally. Now
+  returns `False` unconditionally once the loop exits by elapsed time.
+- `src/ai_extractor.py`: the retry-executor migration had silently dropped a
+  resilience path — the old code fell back from the primary Gemini model to
+  `models/gemini-3.5-flash` after repeated 503s; `gemini_quick_search.py` kept
+  this fallback, `ai_extractor.py` lost it. No data loss (checkpoint stayed at
+  `ai_extract_pending`), but extraction failed outright during a Gemini outage
+  instead of trying the cheaper model first. Restored: `_do_extract()` now
+  takes the model name as a parameter, and after the primary model's full
+  attempt budget is exhausted with a `RetryableError`, one more full attempt
+  cycle runs against the fallback model before giving up.
+- `src/reparse_module.py`: `reextract()` already isolated per-page failures
+  correctly (one bad page never aborted the rest of the loop — that part was
+  never broken), but on exception it logged and moved on without recording
+  anything in `results` for that page, so a failed page silently vanished from
+  the UI instead of showing as failed. Now appends
+  `{"status": "failed", "reason": ..., "page_id": ...}`.
 
 **Known residual scope gap — not fixed, flagged for a follow-up, not silently
 dropped:** `should_stop` is implemented and unit-tested in `RetryExecutor.execute()`,
 but no production call site passes it yet. `search_module.py`, `scrape_module.py`,
 `firecrawl_deep_search.py`, `ai_extractor.py` all call `execute()` without a
-`should_stop` argument. In production, a shutdown request today still waits out
-an in-progress backoff sleep — the interrupt *mechanism* exists and is correct,
-it is just not wired to `JobController.should_stop()` yet. Wiring it requires
-threading an optional `should_stop` parameter through `company_run.py` →
-`search_module.search()` / `scrape_module` / `ai_extractor` call chains, which
-was judged out of scope for this fix pass (it touches call signatures beyond
-the two files the original bug report named) and is left as explicit follow-up
-work, not silently assumed done.
+`should_stop` argument — a shutdown request today still waits out an
+in-progress backoff sleep. Wiring it requires threading an optional
+`should_stop` parameter through `company_run.py` → each adapter's call chain,
+judged out of scope for a targeted bug-fix pass. Independently confirmed by
+the Pass 2 review (not just self-reported).
+
+Also noted by Pass 2, not fixed (cleanup/consistency, not correctness):
+`gemini_quick_search.py` still hand-rolls string matching for its 429/503
+special cases instead of using `classify_error()` for everything; the
+`Retry-After`-header-extraction pattern is duplicated near-identically across
+5 call sites instead of one shared helper; code and doc updates for this work
+item were committed separately rather than atomically per AGENTS.md §7 (the
+final tree still passes `check-doc-sync.sh`, but individual commits in the
+history don't each carry their own doc update).
 
 Next action: none blocking — WI3 is done. WI1 and WI2 remain **held** pending a
 user decision on spending real API credit / touching the live DB.
